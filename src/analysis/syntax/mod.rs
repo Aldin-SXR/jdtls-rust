@@ -1,7 +1,9 @@
+pub mod completion;
+pub mod diagnostics;
 pub mod folding;
+pub mod navigation;
 pub mod outline;
 pub mod parser;
+pub mod selection;
 pub mod snippets;
 pub mod tokens;
-
-pub use parser::JavaParser;

@@ -6,7 +6,7 @@ fn main() {
     let bridge_src = "ecj-bridge/src";
     let shaded_jar = "ecj-bridge/target/ecj-bridge-shaded.jar";
 
-    println!("cargo:rerun-if-changed={}", bridge_src);
+    emit_rerun_if_changed(Path::new(bridge_src));
     println!("cargo:rerun-if-changed={}", bridge_pom);
 
     // Skip Maven build when SKIP_ECJ_BUILD is set.
@@ -66,4 +66,18 @@ fn write_jar_stub() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let rs_path = Path::new(&out_dir).join("ecj_jar_bytes.rs");
     std::fs::write(&rs_path, "pub static ECJ_JAR_BYTES: &[u8] = &[];\n").unwrap();
+}
+
+fn emit_rerun_if_changed(path: &Path) {
+    println!("cargo:rerun-if-changed={}", path.display());
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                emit_rerun_if_changed(&entry_path);
+            } else {
+                println!("cargo:rerun-if-changed={}", entry_path.display());
+            }
+        }
+    }
 }

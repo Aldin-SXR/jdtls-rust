@@ -31,7 +31,8 @@ public class CompletionService {
             List<String> classpath,
             String sourceLevel,
             String targetUri,
-            int offset) {
+            int offset,
+            String importPrefix) {
 
         String source = sourceFiles.get(targetUri);
         if (source == null) return Collections.emptyList();
@@ -40,7 +41,9 @@ public class CompletionService {
 
         try {
             // ── Check if we're inside an import statement ─────────────────────
-            String importPrefix = importPrefixAt(source, offset);
+            // Use the prefix pre-computed by the Rust server (authoritative) if available,
+            // otherwise fall back to scanning the source ourselves.
+            if (importPrefix == null) importPrefix = importPrefixAt(source, offset);
             if (importPrefix != null) {
                 ensureJrtIndex();
                 addImportCompletions(importPrefix, results);
@@ -218,41 +221,80 @@ public class CompletionService {
     }
 
     private void addImportCompletions(String prefix, List<BridgeCompletion> results) {
-        int lastDot = prefix.lastIndexOf('.');
-        if (lastDot < 0) {
-            // Typing the top-level package (e.g. "jav")
+        if (!prefix.contains(".")) {
+            // Typing top-level package name (e.g. "jav" → "java", "javax")
             for (String pkg : JRT_TOP_PACKAGES) {
                 if (pkg.startsWith(prefix)) {
                     BridgeCompletion c = new BridgeCompletion();
-                    c.label = pkg;
-                    c.kind = 9; // Module
-                    c.sortText = pkg;
+                    c.label = pkg; c.kind = 9;
+                    c.detail = "(package)";
+                    c.insertText = pkg; c.filterText = pkg;
+                    c.sortText = "1" + pkg;
                     results.add(c);
                 }
             }
-        } else {
-            // Typing inside a package (e.g. "java.util.")
-            String parentPkg = prefix.substring(0, lastDot);    // "java.util"
-            String partial   = prefix.substring(lastDot + 1);   // ""  or "Arr"
-
-            List<String> children = JRT_PKG_INDEX.getOrDefault(parentPkg, List.of());
-            for (String name : children) {
-                if (name.startsWith(partial)) {
-                    boolean isClass = Character.isUpperCase(name.charAt(0));
-                    BridgeCompletion c = new BridgeCompletion();
-                    c.label = name;
-                    c.kind = isClass ? 7 : 9; // Class or Module/package
-                    c.detail = parentPkg + "." + name;
-                    c.sortText = (isClass ? "2" : "1") + name;
-                    results.add(c);
-                }
-            }
+            return;
         }
+
+
+        // Typing inside a package hierarchy: prefix ends with "." or has partial name.
+        // Find parent package (everything up to last dot) and partial typed after last dot.
+        int lastDot = prefix.lastIndexOf('.');
+        String parentPkg = prefix.substring(0, lastDot);  // e.g. "java" or "java.util"
+        String partial   = prefix.substring(lastDot + 1); // e.g. "" or "Arr"
+
+        // label = full FQN (shown in dropdown like jdtls).
+        // insertText/filterText = relative suffix after parentPkg (what Monaco inserts/filters on).
+        // This way the standard wordRange (covering only what the user typed after the last dot)
+        // works correctly without any special range logic.
+        // All direct children of parentPkg (sub-packages and classes).
+        List<String> children = JRT_PKG_INDEX.getOrDefault(parentPkg, List.of());
+
+        // 1. Direct sub-packages starting with partial.
+        for (String name : children) {
+            if (Character.isUpperCase(name.charAt(0))) continue; // skip classes
+            if (!name.startsWith(partial)) continue;
+            String fqn = parentPkg + "." + name;
+            BridgeCompletion c = new BridgeCompletion();
+            c.label = fqn; c.kind = 9;
+            c.detail = "(package)";
+            c.insertText = name; c.filterText = name;
+            c.sortText = "1" + name;
+            results.add(c);
+        }
+
+        // 2. Classes directly inside parentPkg starting with partial.
+        for (String name : children) {
+            if (!Character.isUpperCase(name.charAt(0))) continue;
+            if (!name.startsWith(partial)) continue;
+            String fqn = parentPkg + "." + name;
+            BridgeCompletion c = new BridgeCompletion();
+            c.label = fqn; c.kind = 7;
+            c.detail = fqn;
+            c.insertText = name; c.filterText = name;
+            c.sortText = "2" + name;
+            results.add(c);
+        }
+    }
+
+    // ── Public helpers for other services ────────────────────────────────────
+
+    /** Find all fully-qualified class names whose simple name equals {@code simpleName}. */
+    public static List<String> searchBySimpleName(String simpleName) {
+        ensureJrtIndex();
+        List<String> results = new ArrayList<>();
+        JRT_PKG_INDEX.forEach((pkg, children) -> {
+            if (children.contains(simpleName)) {
+                results.add(pkg + "." + simpleName);
+            }
+        });
+        Collections.sort(results);
+        return results;
     }
 
     // ── jrt:/ index ──────────────────────────────────────────────────────────
 
-    private static void ensureJrtIndex() {
+    static void ensureJrtIndex() {
         if (jrtIndexBuilt) return;
         synchronized (JRT_PKG_INDEX) {
             if (jrtIndexBuilt) return;

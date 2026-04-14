@@ -30,6 +30,3 @@ tempfile = "3"         # extract embedded JAR to tmp at startup
 
 [build-dependencies]
 # nothing needed unless we add JAR embedding later
-
-[dev-dependencies]
-tokio-test = "0.4"

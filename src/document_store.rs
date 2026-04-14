@@ -1,8 +1,9 @@
+use crate::analysis::syntax::parser::JavaParser;
 use dashmap::DashMap;
 use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
 use ropey::Rope;
 use std::sync::Arc;
-use tree_sitter::{Parser, Tree};
+use tree_sitter::Tree;
 
 /// All state associated with one open document.
 #[derive(Clone)]
@@ -34,9 +35,12 @@ impl DocumentStore {
         }
     }
 
-    pub fn open(&self, uri: Url, language_id: String, version: i32, text: String, parser: &mut Parser) {
+    pub fn open(&self, uri: Url, language_id: String, version: i32, text: String, parser: &mut JavaParser) {
         let rope = Rope::from_str(&text);
-        let tree = parser.parse(text.as_bytes(), None).map(Arc::new);
+        let tree = parser.parse_fresh(&text).map(Arc::new);
+        if self.contains(&uri) {
+            tracing::debug!("Re-opening already-tracked document: {}", uri);
+        }
         self.files.insert(uri.clone(), FileState {
             uri,
             content: rope,
@@ -56,7 +60,7 @@ impl DocumentStore {
         uri: &Url,
         version: i32,
         changes: Vec<TextDocumentContentChangeEvent>,
-        parser: &mut Parser,
+        parser: &mut JavaParser,
     ) {
         if let Some(mut state) = self.files.get_mut(uri) {
             for change in changes {
@@ -79,7 +83,7 @@ impl DocumentStore {
             // tree-sitter can use old tree for incremental parsing, but we
             // need InputEdit which requires computing byte offsets — for now
             // do a full re-parse (still fast, ~1ms for typical files).
-            state.tree = parser.parse(text.as_bytes(), old_tree).map(Arc::new);
+            state.tree = parser.parse(&text, old_tree).map(Arc::new);
         }
     }
 
@@ -87,13 +91,18 @@ impl DocumentStore {
         self.files.get(uri)
     }
 
-    /// Snapshot of all open file contents, keyed by URI string.
-    /// Passed to ecj-bridge with each request.
+    /// Snapshot of all open Java file contents, keyed by URI string.
+    /// Only Java files are sent to ecj-bridge; other language files are skipped.
     pub fn all_contents(&self) -> std::collections::HashMap<String, String> {
         self.files
             .iter()
+            .filter(|e| e.language_id == "java")
             .map(|e| (e.uri.to_string(), e.content.to_string()))
             .collect()
+    }
+
+    pub fn snapshots(&self) -> Vec<FileState> {
+        self.files.iter().map(|entry| entry.value().clone()).collect()
     }
 
     pub fn contains(&self, uri: &Url) -> bool {

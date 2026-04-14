@@ -6,6 +6,12 @@ use tower_lsp::lsp_types::{
 };
 use std::collections::HashMap;
 
+/// Build an LSP `WorkspaceEdit` directly from a list of `BridgeFileEdit`s.
+/// Used when the bridge returns a `WorkspaceEdit` response (e.g. organize-imports).
+pub fn workspace_edit_from_bridge(file_edits: &[BridgeFileEdit]) -> WorkspaceEdit {
+    workspace_edit(file_edits)
+}
+
 pub fn to_lsp(actions: &[BridgeAction]) -> Vec<CodeAction> {
     actions.iter().map(|a| {
         let kind = a.kind.clone().map(|k| CodeActionKind::from(k));
@@ -14,6 +20,7 @@ pub fn to_lsp(actions: &[BridgeAction]) -> Vec<CodeAction> {
             title: a.title.clone(),
             kind,
             edit: Some(edit),
+            is_preferred: if a.is_preferred { Some(true) } else { None },
             ..Default::default()
         }
     }).collect()

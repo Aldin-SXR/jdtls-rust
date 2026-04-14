@@ -22,6 +22,7 @@ public class BridgeProtocol {
         public String kind;     // NavKind for Navigate requests
         public BridgeRange range;
         public String newName;
+        public String importPrefix; // pre-computed import prefix from Rust (avoids race condition)
         public String source;   // for Format requests
         public int tabSize;
         public boolean insertSpaces;
@@ -116,6 +117,7 @@ public class BridgeProtocol {
         public int severity;  // 1=Error 2=Warning 3=Info 4=Hint
         public String message;
         public String code;
+        public int categoryId;   // CategorizedProblem.CAT_* constant
         public List<Integer> tags;
     }
 
@@ -140,6 +142,7 @@ public class BridgeProtocol {
         public String title;
         public String kind;
         public List<BridgeFileEdit> edits;
+        public boolean isPreferred;
     }
 
     public static class BridgeFileEdit {
@@ -161,5 +164,19 @@ public class BridgeProtocol {
     public static class BridgeParameter {
         public String label;
         public String documentation;
+    }
+
+    public static class BridgeInlayHint {
+        public int line;
+        public int character;
+        public String label;
+        public int kind; // 1=Type, 2=Parameter
+    }
+
+    public static class InlayHintsResponse extends Response {
+        public List<BridgeInlayHint> hints;
+        public InlayHintsResponse(long id, List<BridgeInlayHint> hints) {
+            this.id = id; this.method = "inlayHints"; this.hints = hints;
+        }
     }
 }

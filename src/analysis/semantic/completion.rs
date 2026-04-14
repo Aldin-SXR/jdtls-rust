@@ -1,9 +1,9 @@
 //! Convert BridgeCompletion → lsp_types::CompletionItem.
 
-use super::protocol::BridgeCompletion;
+use super::protocol::{BridgeCompletion, BridgeTextEdit};
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, MarkupContent, MarkupKind,
-    Position, Range, TextEdit,
+    CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, MarkupContent,
+    MarkupKind, Position, Range, TextEdit,
 };
 
 pub fn to_lsp(c: &BridgeCompletion) -> CompletionItem {
@@ -20,6 +20,10 @@ pub fn to_lsp(c: &BridgeCompletion) -> CompletionItem {
         })
     });
 
+    let additional_text_edits = c.additional_edits.as_ref().map(|edits| {
+        edits.iter().map(bridge_text_edit_to_lsp).collect::<Vec<_>>()
+    });
+
     CompletionItem {
         label: c.label.clone(),
         kind: Some(kind),
@@ -29,7 +33,18 @@ pub fn to_lsp(c: &BridgeCompletion) -> CompletionItem {
         insert_text_format,
         sort_text: c.sort_text.clone(),
         filter_text: c.filter_text.clone(),
+        additional_text_edits,
         ..Default::default()
+    }
+}
+
+fn bridge_text_edit_to_lsp(e: &BridgeTextEdit) -> TextEdit {
+    TextEdit {
+        range: Range {
+            start: Position { line: e.start_line, character: e.start_char },
+            end: Position { line: e.end_line, character: e.end_char },
+        },
+        new_text: e.new_text.clone(),
     }
 }
 

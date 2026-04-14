@@ -257,24 +257,28 @@ public class InMemoryNameEnvironment implements INameEnvironment {
      */
     static class JrtClasspathEntry implements ClasspathEntry {
         private final java.nio.file.FileSystem jrtFs;
-        private final java.nio.file.Path modulesRoot;
-        /** Cache: package path → list of module paths that contain it */
-        private final Map<String, Boolean> packageCache = new ConcurrentHashMap<>();
-        private List<java.nio.file.Path> moduleList;
+        /** Shared across all instances — enumerated once per JVM lifetime. */
+        private static volatile List<java.nio.file.Path> sharedModuleList;
+        private static final Map<String, Boolean> sharedPackageCache = new ConcurrentHashMap<>();
 
         JrtClasspathEntry(java.nio.file.FileSystem fs) throws IOException {
             this.jrtFs = fs;
-            this.modulesRoot = fs.getPath("/modules");
-            // Eagerly enumerate modules once
-            try (var stream = Files.list(modulesRoot)) {
-                this.moduleList = stream.toList();
+            if (sharedModuleList == null) {
+                synchronized (JrtClasspathEntry.class) {
+                    if (sharedModuleList == null) {
+                        java.nio.file.Path modulesRoot = fs.getPath("/modules");
+                        try (var stream = Files.list(modulesRoot)) {
+                            sharedModuleList = stream.toList();
+                        }
+                    }
+                }
             }
         }
 
         @Override
         public NameEnvironmentAnswer findClass(String binaryName) {
             String classFile = binaryName + ".class";
-            for (java.nio.file.Path module : moduleList) {
+            for (java.nio.file.Path module : sharedModuleList) {
                 java.nio.file.Path p = module.resolve(classFile);
                 if (Files.exists(p)) {
                     try {
@@ -291,8 +295,8 @@ public class InMemoryNameEnvironment implements INameEnvironment {
 
         @Override
         public boolean isPackage(String packagePath) {
-            return packageCache.computeIfAbsent(packagePath, pkg -> {
-                for (java.nio.file.Path module : moduleList) {
+            return sharedPackageCache.computeIfAbsent(packagePath, pkg -> {
+                for (java.nio.file.Path module : sharedModuleList) {
                     if (Files.isDirectory(module.resolve(pkg))) return true;
                 }
                 return false;

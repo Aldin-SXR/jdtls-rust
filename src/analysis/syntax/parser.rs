@@ -1,8 +1,4 @@
-use tree_sitter::{Language, Parser, Tree};
-
-extern "C" {
-    fn tree_sitter_java() -> Language;
-}
+use tree_sitter::{Parser, Tree};
 
 /// Wraps a tree-sitter Parser for Java.
 /// Not Send — keep one per thread or behind a Mutex.
@@ -13,8 +9,7 @@ pub struct JavaParser {
 impl JavaParser {
     pub fn new() -> Self {
         let mut p = Parser::new();
-        let lang = unsafe { tree_sitter_java() };
-        p.set_language(&lang).expect("tree-sitter-java language init failed");
+        p.set_language(&tree_sitter_java::language()).expect("tree-sitter-java language init failed");
         Self { inner: p }
     }
 
@@ -27,9 +22,6 @@ impl JavaParser {
         self.inner.parse(source.as_bytes(), None)
     }
 
-    pub fn inner_mut(&mut self) -> &mut Parser {
-        &mut self.inner
-    }
 }
 
 impl Default for JavaParser {

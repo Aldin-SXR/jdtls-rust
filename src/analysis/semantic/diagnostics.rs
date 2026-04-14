@@ -28,7 +28,14 @@ pub fn to_lsp(d: &BridgeDiagnostic) -> Option<(Url, Diagnostic)> {
             end: Position { line: d.end_line, character: d.end_char },
         },
         severity: Some(severity),
-        code: d.code.as_ref().map(|c| NumberOrString::String(c.clone())),
+        // Prefer the explicit code string; fall back to the ECJ category ID.
+        code: d.code.as_ref()
+            .map(|c| NumberOrString::String(c.clone()))
+            .or_else(|| if d.category_id > 0 {
+                Some(NumberOrString::Number(d.category_id as i32))
+            } else {
+                None
+            }),
         source: Some("jdtls-rust".to_owned()),
         message: d.message.clone(),
         tags,

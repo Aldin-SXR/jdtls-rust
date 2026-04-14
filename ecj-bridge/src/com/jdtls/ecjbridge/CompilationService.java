@@ -37,15 +37,20 @@ public class CompilationService {
 
         ICompilerRequestor requestor = result -> {
             // Collect compiled bytecode into nameEnv for cross-file resolution
-            if (!result.hasErrors()) {
-                for (ClassFile cf : result.getClassFiles()) {
+            ClassFile[] classFiles = result.getClassFiles();
+            if (!result.hasErrors() && classFiles != null) {
+                for (ClassFile cf : classFiles) {
                     String name = new String(cf.fileName()).replace('\\', '/');
                     if (name.endsWith(".class")) name = name.substring(0, name.length() - 6);
                     nameEnv.addCompiledClass(name, cf.getBytes());
                 }
             }
             // Collect problems
-            for (var problem : result.getAllProblems()) {
+            var problems = result.getAllProblems();
+            if (problems == null) {
+                return;
+            }
+            for (var problem : problems) {
                 BridgeDiagnostic d = new BridgeDiagnostic();
                 d.uri = originatingUri(problem.getOriginatingFileName(), sourceFiles);
                 d.startLine = problem.getSourceLineNumber() - 1; // LSP is 0-based
@@ -55,6 +60,7 @@ public class CompilationService {
                 d.severity = problem.isError() ? 1 : problem.isWarning() ? 2 : 3;
                 d.message = problem.getMessage();
                 d.code = String.valueOf(problem.getID());
+                d.categoryId = problem.getCategoryID();
 
                 // ECJ problem source start/end
                 int start = problem.getSourceStart();
@@ -158,6 +164,17 @@ public class CompilationService {
         } catch (Exception e) {
             return uri;
         }
+    }
+
+    /** Convert 0-based line/col to a char offset in source. */
+    public static int lineColToOffset(String source, int line, int col) {
+        int cur = 0;
+        for (int i = 0; i < line && cur < source.length(); i++) {
+            int nl = source.indexOf('\n', cur);
+            if (nl < 0) return source.length();
+            cur = nl + 1;
+        }
+        return Math.min(cur + col, source.length());
     }
 
     /** Convert a 0-based char offset in source to [line, col] (both 0-based). */

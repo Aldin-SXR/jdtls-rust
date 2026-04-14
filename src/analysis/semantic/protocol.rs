@@ -22,6 +22,11 @@ pub enum BridgeRequest {
         source_level: String,
         uri: String,
         offset: usize,
+        /// If the cursor is inside an `import` statement, the prefix typed so far
+        /// (e.g. "java." or "java.util."). Computed by the Rust server from the
+        /// authoritative document-store content to avoid race conditions.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        import_prefix: Option<String>,
     },
     Hover {
         id: u64,
@@ -87,6 +92,13 @@ pub enum BridgeRequest {
         tab_size: u32,
         insert_spaces: bool,
     },
+    InlayHints {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        uri: String,
+    },
     Shutdown { id: u64 },
 }
 
@@ -99,6 +111,7 @@ pub enum NavKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BridgeRange {
     pub start_line: u32,
     pub start_char: u32,
@@ -148,6 +161,10 @@ pub enum BridgeResponse {
         uri: String,
         edits: Vec<BridgeTextEdit>,
     },
+    InlayHintsResult {
+        id: u64,
+        hints: Vec<BridgeInlayHint>,
+    },
     Ok { id: u64 },
     Error {
         id: u64,
@@ -166,6 +183,7 @@ impl BridgeResponse {
             | BridgeResponse::SignatureHelp { id, .. }
             | BridgeResponse::WorkspaceEdit { id, .. }
             | BridgeResponse::TextEdits { id, .. }
+            | BridgeResponse::InlayHintsResult { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
         }
@@ -185,6 +203,8 @@ pub struct BridgeDiagnostic {
     pub severity: u8, // 1=Error 2=Warning 3=Info 4=Hint
     pub message: String,
     pub code: Option<String>,
+    #[serde(default)]
+    pub category_id: u32,
     pub tags: Option<Vec<u8>>,
 }
 
@@ -213,10 +233,13 @@ pub struct BridgeLocation {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BridgeAction {
     pub title: String,
     pub kind: Option<String>,
     pub edits: Vec<BridgeFileEdit>,
+    #[serde(default)]
+    pub is_preferred: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,4 +271,13 @@ pub struct BridgeSignature {
 pub struct BridgeParameter {
     pub label: String,
     pub documentation: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeInlayHint {
+    pub line: u32,
+    pub character: u32,
+    pub label: String,
+    pub kind: u8, // 1=Type, 2=Parameter
 }

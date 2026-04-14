@@ -5,7 +5,7 @@ use super::protocol::{BridgeRequest, BridgeResponse};
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -33,6 +33,13 @@ struct EcjInner {
     child: Child,
     writer: BufWriter<ChildStdin>,
     pending: PendingMap,
+}
+
+impl Drop for EcjInner {
+    fn drop(&mut self) {
+        // Kill the bridge process if it is still running when we are dropped.
+        let _ = self.child.kill();
+    }
 }
 
 impl EcjProcess {
@@ -85,6 +92,7 @@ impl EcjProcess {
             | BridgeRequest::Rename { id, .. }
             | BridgeRequest::OrganizeImports { id, .. }
             | BridgeRequest::Format { id, .. }
+            | BridgeRequest::InlayHints { id, .. }
             | BridgeRequest::Shutdown { id } => *id,
         };
 
@@ -96,9 +104,13 @@ impl EcjProcess {
 
             let line = serde_json::to_string(&req).context("serialize bridge request")?;
             debug!(id, "→ ecj-bridge: {}", &line[..line.len().min(200)]);
-            inner.writer.write_all(line.as_bytes())?;
-            inner.writer.write_all(b"\n")?;
-            inner.writer.flush()?;
+            if let Err(err) = inner.writer.write_all(line.as_bytes())
+                .and_then(|_| inner.writer.write_all(b"\n"))
+                .and_then(|_| inner.writer.flush())
+            {
+                inner.pending.lock().await.remove(&id);
+                return Err(err.into());
+            }
         }
 
         rx.await.map_err(|_| anyhow!("ecj-bridge process died before responding to id={id}"))
@@ -143,6 +155,13 @@ fn reader_loop(stdout: ChildStdout, pending: PendingMap) {
                 }
             }
         }
+    }
+    loop {
+        if let Ok(mut map) = pending.try_lock() {
+            map.clear();
+            break;
+        }
+        std::thread::yield_now();
     }
     warn!("ecj-bridge stdout closed");
 }

@@ -1,6 +1,6 @@
 //! Helpers for converting LSP position/offset for document handlers.
 
-use tower_lsp::lsp_types::{Position, Url};
+use tower_lsp::lsp_types::Position;
 use ropey::Rope;
 
 /// Convert an LSP Position to a byte offset into the document content.

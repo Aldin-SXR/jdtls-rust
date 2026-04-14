@@ -9,7 +9,6 @@ use anyhow::{anyhow, Result};
 use tower_lsp::lsp_types::Url;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::warn;
 
 /// Central dispatcher: owns the ECJ process and the document store.
 pub struct Dispatcher {
@@ -65,15 +64,27 @@ impl Dispatcher {
         }).await
     }
 
-    pub async fn complete(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
+    /// `content_snapshot` is the content of `uri` at the time `offset` was computed.
+    /// It overrides the store entry so ECJ sees the same content the offset was derived from,
+    /// avoiding a race between `didChange` and `completion`.
+    pub async fn complete(
+        &self,
+        uri: &Url,
+        offset: usize,
+        import_prefix: Option<String>,
+        content_snapshot: String,
+    ) -> Result<BridgeResponse> {
         let (classpath, source_level) = self.classpath_and_level().await;
+        let mut files = self.store.all_contents();
+        files.insert(uri.to_string(), content_snapshot);
         self.send(BridgeRequest::Complete {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
             uri: uri.to_string(),
             offset,
+            import_prefix,
         }).await
     }
 
@@ -154,6 +165,17 @@ impl Dispatcher {
     pub async fn organize_imports(&self, uri: &Url) -> Result<BridgeResponse> {
         let (classpath, source_level) = self.classpath_and_level().await;
         self.send(BridgeRequest::OrganizeImports {
+            id: next_id(),
+            files: self.store.all_contents(),
+            classpath,
+            source_level,
+            uri: uri.to_string(),
+        }).await
+    }
+
+    pub async fn inlay_hints(&self, uri: &Url) -> Result<BridgeResponse> {
+        let (classpath, source_level) = self.classpath_and_level().await;
+        self.send(BridgeRequest::InlayHints {
             id: next_id(),
             files: self.store.all_contents(),
             classpath,
