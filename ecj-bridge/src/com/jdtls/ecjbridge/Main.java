@@ -86,7 +86,7 @@ public class Main {
             }
             case "hover" -> {
                 String hover = navigation.hover(
-                    req.files, orDefault(req.sourceLevel), req.uri, req.offset);
+                    req.files, orDefault(req.sourceLevel), orEmpty(req.classpath), req.uri, req.offset);
                 yield new HoverResponse(req.id, hover);
             }
             case "navigate" -> {
@@ -117,6 +117,11 @@ public class Main {
                 List<BridgeInlayHint> hints = navigation.inlayHints(
                     req.files, orDefault(req.sourceLevel), req.uri);
                 yield new InlayHintsResponse(req.id, hints);
+            }
+            case "codeLens" -> {
+                List<BridgeCodeLens> lenses = navigation.codeLens(
+                    req.files, orDefault(req.sourceLevel), req.uri);
+                yield new CodeLensResponse(req.id, lenses);
             }
             case "organizeImports" -> {
                 List<BridgeTextEdit> edits = organizeImports(req, compiler);

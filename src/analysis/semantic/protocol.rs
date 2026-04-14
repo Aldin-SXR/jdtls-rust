@@ -99,6 +99,13 @@ pub enum BridgeRequest {
         source_level: String,
         uri: String,
     },
+    CodeLens {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        uri: String,
+    },
     Shutdown { id: u64 },
 }
 
@@ -165,6 +172,10 @@ pub enum BridgeResponse {
         id: u64,
         hints: Vec<BridgeInlayHint>,
     },
+    CodeLenses {
+        id: u64,
+        lenses: Vec<BridgeCodeLens>,
+    },
     Ok { id: u64 },
     Error {
         id: u64,
@@ -184,6 +195,7 @@ impl BridgeResponse {
             | BridgeResponse::WorkspaceEdit { id, .. }
             | BridgeResponse::TextEdits { id, .. }
             | BridgeResponse::InlayHintsResult { id, .. }
+            | BridgeResponse::CodeLenses { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
         }
@@ -280,4 +292,18 @@ pub struct BridgeInlayHint {
     pub character: u32,
     pub label: String,
     pub kind: u8, // 1=Type, 2=Parameter
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeCodeLens {
+    pub start_line: u32,
+    pub start_char: u32,
+    pub end_line: u32,
+    pub end_char: u32,
+    pub title: String,
+    /// Command ID to invoke when clicked, or `None` for an informational-only lens.
+    pub command: Option<String>,
+    /// Arguments forwarded to the command.
+    pub args: Option<Vec<String>>,
 }

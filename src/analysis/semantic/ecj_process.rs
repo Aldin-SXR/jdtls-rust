@@ -93,6 +93,7 @@ impl EcjProcess {
             | BridgeRequest::OrganizeImports { id, .. }
             | BridgeRequest::Format { id, .. }
             | BridgeRequest::InlayHints { id, .. }
+            | BridgeRequest::CodeLens { id, .. }
             | BridgeRequest::Shutdown { id } => *id,
         };
 

@@ -245,6 +245,9 @@ impl LanguageServer for JavaLanguageServer {
                     ),
                 ),
                 inlay_hint_provider: Some(OneOf::Left(true)),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
                 call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
                 // type_hierarchy is not in ServerCapabilities for lsp-types 0.94
                 ..Default::default()
@@ -884,6 +887,49 @@ impl LanguageServer for JavaLanguageServer {
             }
             Err(e) => {
                 warn!("inlay hints error: {e}");
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    // ── Code Lenses ───────────────────────────────────────────────────────────
+
+    async fn code_lens(&self, params: CodeLensParams) -> LspResult<Option<Vec<CodeLens>>> {
+        let uri = &params.text_document.uri;
+        if !self.dispatcher.is_ecj_ready().await {
+            return Ok(None);
+        }
+        match self.dispatcher.code_lens(uri).await {
+            Ok(BridgeResponse::CodeLenses { lenses, .. }) => {
+                let items = lenses.iter().map(|l| {
+                    let range = Range {
+                        start: Position { line: l.start_line, character: l.start_char },
+                        end: Position { line: l.end_line, character: l.end_char },
+                    };
+                    let command = l.command.as_ref().map(|cmd| Command {
+                        title: l.title.clone(),
+                        command: cmd.clone(),
+                        arguments: l.args.as_ref().map(|args| {
+                            args.iter().map(|a| serde_json::Value::String(a.clone())).collect()
+                        }),
+                    });
+                    // Informational lenses (no command) still need a title in the command field.
+                    let command = command.unwrap_or_else(|| Command {
+                        title: l.title.clone(),
+                        command: String::new(),
+                        arguments: None,
+                    });
+                    CodeLens { range, command: Some(command), data: None }
+                }).collect();
+                Ok(Some(items))
+            }
+            Ok(BridgeResponse::Error { message, .. }) => {
+                warn!("code lens ECJ error: {message}");
+                Ok(None)
+            }
+            Err(e) => {
+                warn!("code lens error: {e}");
                 Ok(None)
             }
             _ => Ok(None),

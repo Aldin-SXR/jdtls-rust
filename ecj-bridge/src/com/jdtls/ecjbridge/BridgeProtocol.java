@@ -179,4 +179,18 @@ public class BridgeProtocol {
             this.id = id; this.method = "inlayHints"; this.hints = hints;
         }
     }
+
+    public static class BridgeCodeLens {
+        public int startLine, startChar, endLine, endChar;
+        public String title;
+        public String command;    // null = informational (no click action)
+        public List<String> args; // arguments passed to the command
+    }
+
+    public static class CodeLensResponse extends Response {
+        public List<BridgeCodeLens> lenses;
+        public CodeLensResponse(long id, List<BridgeCodeLens> lenses) {
+            this.id = id; this.method = "codeLenses"; this.lenses = lenses;
+        }
+    }
 }

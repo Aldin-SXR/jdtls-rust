@@ -173,6 +173,17 @@ impl Dispatcher {
         }).await
     }
 
+    pub async fn code_lens(&self, uri: &Url) -> Result<BridgeResponse> {
+        let (classpath, source_level) = self.classpath_and_level().await;
+        self.send(BridgeRequest::CodeLens {
+            id: next_id(),
+            files: self.store.all_contents(),
+            classpath,
+            source_level,
+            uri: uri.to_string(),
+        }).await
+    }
+
     pub async fn inlay_hints(&self, uri: &Url) -> Result<BridgeResponse> {
         let (classpath, source_level) = self.classpath_and_level().await;
         self.send(BridgeRequest::InlayHints {

@@ -5,6 +5,11 @@ import org.eclipse.jdt.core.dom.*;
 import java.net.URI;
 import java.util.*;
 
+import org.eclipse.jdt.core.dom.IBinding;
+import org.eclipse.jdt.core.dom.IMethodBinding;
+import org.eclipse.jdt.core.dom.ITypeBinding;
+import org.eclipse.jdt.core.dom.IVariableBinding;
+
 import com.jdtls.ecjbridge.BridgeProtocol.*;
 
 /**
@@ -64,22 +69,100 @@ public class AstNavigationService {
         }
     }
 
-    public String hover(Map<String, String> sourceFiles, String sourceLevel, String targetUri, int offset) {
+    public String hover(Map<String, String> sourceFiles, String sourceLevel, List<String> classpath,
+                        String targetUri, int offset) {
+        // 1. Fast path: same-file AST lookup (no bindings, no classpath needed).
         ParsedUnit parsed = parse(sourceFiles, sourceLevel, targetUri);
-        if (parsed == null) return "";
-
-        Decl decl = resolveDeclaration(parsed, offset);
-        if (decl == null) return "";
-
-        StringBuilder markdown = new StringBuilder();
-        markdown.append("```java\n").append(renderSignature(parsed.source, decl)).append("\n```");
-
-        String docs = renderDocumentation(decl);
-        if (!docs.isBlank()) {
-            markdown.append("\n\n").append(docs);
+        if (parsed != null) {
+            Decl decl = resolveDeclaration(parsed, offset);
+            if (decl != null) {
+                StringBuilder markdown = new StringBuilder();
+                markdown.append("```java\n").append(renderSignature(parsed.source, decl)).append("\n```");
+                String docs = renderDocumentation(decl);
+                if (!docs.isBlank()) {
+                    markdown.append("\n\n").append(docs);
+                }
+                return markdown.toString();
+            }
         }
 
-        return markdown.toString();
+        // 2. Binding-based fallback: resolves JDK / library types via JDT bindings.
+        return hoverWithBindings(sourceFiles, sourceLevel, classpath, targetUri, offset);
+    }
+
+    private String hoverWithBindings(Map<String, String> sourceFiles, String sourceLevel,
+                                     List<String> classpath, String targetUri, int offset) {
+        String source = sourceFiles.get(targetUri);
+        if (source == null) return "";
+
+        ASTParser parser = ASTParser.newParser(AST.getJLSLatest());
+        parser.setSource(source.toCharArray());
+        parser.setKind(ASTParser.K_COMPILATION_UNIT);
+        parser.setResolveBindings(true);
+        parser.setBindingsRecovery(true);
+        parser.setStatementsRecovery(true);
+        parser.setCompilerOptions(compilerOptions(sourceLevel));
+        parser.setUnitName(unitName(targetUri));
+        // Include the running VM's boot classpath so JDK types (System, String, …)
+        // are always resolvable, plus any user-provided classpath entries.
+        String[] cp = classpath != null ? classpath.toArray(new String[0]) : new String[0];
+        parser.setEnvironment(cp, null, null, /* includeRunningVMBootclasspath */ true);
+
+        CompilationUnit cu = (CompilationUnit) parser.createAST(null);
+
+        ASTNode node = nodeAt(cu, offset);
+        SimpleName name = asSimpleName(node);
+        if (name == null) return "";
+
+        IBinding binding = name.resolveBinding();
+        if (binding == null) return "";
+
+        return renderBinding(binding);
+    }
+
+    private String renderBinding(IBinding binding) {
+        if (binding instanceof IVariableBinding var) return renderVariableBinding(var);
+        if (binding instanceof IMethodBinding method) return renderMethodBinding(method);
+        if (binding instanceof ITypeBinding type) return renderTypeBinding(type);
+        return "";
+    }
+
+    private String renderVariableBinding(IVariableBinding var) {
+        ITypeBinding type = var.getType();
+        String typeName = type != null ? type.getQualifiedName() : "?";
+        String prefix = "";
+        if (var.isField()) {
+            ITypeBinding declaring = var.getDeclaringClass();
+            if (declaring != null) prefix = declaring.getQualifiedName() + ".";
+        }
+        return "```java\n" + typeName + " " + prefix + var.getName() + "\n```";
+    }
+
+    private String renderMethodBinding(IMethodBinding method) {
+        StringBuilder sb = new StringBuilder("```java\n");
+        ITypeBinding declaring = method.getDeclaringClass();
+        if (!method.isConstructor()) {
+            ITypeBinding ret = method.getReturnType();
+            sb.append(ret != null ? ret.getQualifiedName() : "void").append(" ");
+        }
+        if (declaring != null) sb.append(declaring.getQualifiedName()).append(".");
+        sb.append(method.getName()).append("(");
+        ITypeBinding[] params = method.getParameterTypes();
+        for (int i = 0; i < params.length; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(params[i].getQualifiedName());
+        }
+        sb.append(")\n```");
+        return sb.toString();
+    }
+
+    private String renderTypeBinding(ITypeBinding type) {
+        String kind;
+        if (type.isInterface()) kind = "interface";
+        else if (type.isEnum()) kind = "enum";
+        else if (type.isAnnotation()) kind = "@interface";
+        else kind = "class";
+        return "```java\n" + kind + " " + type.getQualifiedName() + "\n```";
     }
 
     public List<BridgeLocation> navigate(
@@ -264,6 +347,149 @@ public class AstNavigationService {
         });
 
         return hints;
+    }
+
+    public List<BridgeCodeLens> codeLens(Map<String, String> sourceFiles, String sourceLevel, String targetUri) {
+        ParsedUnit parsed = parse(sourceFiles, sourceLevel, targetUri);
+        if (parsed == null) return Collections.emptyList();
+
+        List<BridgeCodeLens> lenses = new ArrayList<>();
+
+        parsed.cu.accept(new ASTVisitor() {
+            @Override
+            public boolean visit(MethodDeclaration node) {
+                SimpleName name = node.getName();
+                int refs = countMethodReferences(parsed, node);
+                BridgeCodeLens refLens = makeLens(parsed.source, name,
+                        refs + " reference" + (refs == 1 ? "" : "s"), null, null);
+                lenses.add(refLens);
+
+                // Run lens for public static void main(String[])
+                if (isMainMethod(node)) {
+                    BridgeCodeLens runLens = makeLens(parsed.source, name,
+                            "▶ Run", "jdtls-rust.run",
+                            List.of(parsed.uri, String.valueOf(name.getStartPosition())));
+                    lenses.add(runLens);
+                }
+
+                // Test run lens for @Test annotated methods
+                if (hasAnnotation(node, "Test")) {
+                    BridgeCodeLens testLens = makeLens(parsed.source, name,
+                            "▶ Run Test", "jdtls-rust.runTest",
+                            List.of(parsed.uri, name.getIdentifier()));
+                    lenses.add(testLens);
+                }
+
+                return true;
+            }
+
+            @Override
+            public boolean visit(TypeDeclaration node) {
+                SimpleName name = node.getName();
+                int refs = countTypeReferences(parsed, name);
+                lenses.add(makeLens(parsed.source, name,
+                        refs + " reference" + (refs == 1 ? "" : "s"), null, null));
+                return true;
+            }
+        });
+
+        return lenses;
+    }
+
+    private BridgeCodeLens makeLens(String source, SimpleName anchor, String title,
+                                    String command, List<String> args) {
+        int[] lc = CompilationService.offsetToLineCol(source, anchor.getStartPosition());
+        BridgeCodeLens lens = new BridgeCodeLens();
+        lens.startLine = lc[0];
+        lens.startChar = lc[1];
+        int[] end = CompilationService.offsetToLineCol(source, anchor.getStartPosition() + anchor.getLength());
+        lens.endLine = end[0];
+        lens.endChar = end[1];
+        lens.title = title;
+        lens.command = command;
+        lens.args = args;
+        return lens;
+    }
+
+    /**
+     * Count invocations of a method by checking:
+     * 1. Parent AST node is a MethodInvocation/SuperMethodInvocation with matching name.
+     * 2. Argument count matches the declaration's parameter count (disambiguates overloads
+     *    and unrelated same-name methods like List.add vs Main.add).
+     */
+    private int countMethodReferences(ParsedUnit parsed, MethodDeclaration declaration) {
+        String identifier = declaration.getName().getIdentifier();
+        int startPos = declaration.getName().getStartPosition();
+        int paramCount = declaration.parameters().size();
+        int[] count = {0};
+
+        parsed.cu.accept(new ASTVisitor() {
+            @Override
+            public boolean visit(SimpleName node) {
+                if (!identifier.equals(node.getIdentifier())) return true;
+                if (node.getStartPosition() == startPos) return true; // skip declaration itself
+                ASTNode parent = node.getParent();
+                if (parent instanceof MethodInvocation mi && mi.getName() == node) {
+                    if (mi.arguments().size() == paramCount) count[0]++;
+                } else if (parent instanceof SuperMethodInvocation smi && smi.getName() == node) {
+                    if (smi.arguments().size() == paramCount) count[0]++;
+                }
+                return true;
+            }
+        });
+
+        return count[0];
+    }
+
+    /** Count usages of a type by checking parent is a SimpleType (type reference context). */
+    private int countTypeReferences(ParsedUnit parsed, SimpleName declaration) {
+        String identifier = declaration.getIdentifier();
+        int startPos = declaration.getStartPosition();
+        int[] count = {0};
+
+        parsed.cu.accept(new ASTVisitor() {
+            @Override
+            public boolean visit(SimpleName node) {
+                if (!identifier.equals(node.getIdentifier())) return true;
+                if (node.getStartPosition() == startPos) return true; // skip declaration
+                ASTNode parent = node.getParent();
+                if (parent instanceof SimpleType) {
+                    count[0]++;
+                }
+                return true;
+            }
+        });
+
+        return count[0];
+    }
+
+    private boolean isMainMethod(MethodDeclaration node) {
+        if (!"main".equals(node.getName().getIdentifier())) return false;
+        if (node.parameters().size() != 1) return false;
+        // Check public static void modifiers
+        int mods = node.getModifiers();
+        if ((mods & org.eclipse.jdt.core.dom.Modifier.PUBLIC) == 0) return false;
+        if ((mods & org.eclipse.jdt.core.dom.Modifier.STATIC) == 0) return false;
+        Type returnType = node.getReturnType2();
+        if (returnType == null || !"void".equals(returnType.toString())) return false;
+        // Check String[] parameter
+        Object paramObj = node.parameters().get(0);
+        if (!(paramObj instanceof SingleVariableDeclaration param)) return false;
+        return param.getType().toString().contains("String");
+    }
+
+    private boolean hasAnnotation(MethodDeclaration node, String simpleName) {
+        for (Object modObj : node.modifiers()) {
+            if (modObj instanceof MarkerAnnotation ann
+                    && simpleName.equals(ann.getTypeName().getFullyQualifiedName())) {
+                return true;
+            }
+            if (modObj instanceof NormalAnnotation ann
+                    && simpleName.equals(ann.getTypeName().getFullyQualifiedName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private ParsedUnit parse(Map<String, String> sourceFiles, String sourceLevel, String targetUri) {
