@@ -137,11 +137,11 @@ impl JavaLanguageServer {
         let mut seen = std::collections::HashSet::new();
         items.into_iter()
             .filter(|item| {
+                // Deduplicate by (label, kind) so that the same variable/method
+                // offered by both tree-sitter and the ECJ bridge doesn't appear twice.
                 seen.insert((
                     item.label.clone(),
                     item.kind.map(|kind| format!("{kind:?}")),
-                    item.detail.clone(),
-                    item.insert_text.clone(),
                 ))
             })
             .collect()
@@ -322,6 +322,33 @@ impl LanguageServer for JavaLanguageServer {
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
+        let trigger_char: Option<&str> = params
+            .context
+            .as_ref()
+            .and_then(|c| c.trigger_character.as_deref());
+
+        // Wait until the stored content is up-to-date around the cursor.
+        // A plain line-length check is not enough: if the cursor sits before an
+        // existing delimiter like `;`, the stale document can still be "long
+        // enough" while missing the just-typed identifier or trigger character.
+        {
+            let mut change_rx = self.compile_tx.subscribe();
+            let deadline = tokio::time::Instant::now()
+                + std::time::Duration::from_millis(150);
+            loop {
+                let up_to_date = self.store.get(uri).map(|state| {
+                    completion_store_is_fresh(&state.content_string(), pos, trigger_char)
+                }).unwrap_or(true); // document not open yet → don't spin
+
+                if up_to_date || tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::select! {
+                    _ = change_rx.changed() => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
+                }
+            }
+        }
 
         let (offset, content, tree) = {
             match self.store.get(uri) {
@@ -334,30 +361,50 @@ impl LanguageServer for JavaLanguageServer {
             }
         };
 
-        let trigger_char: Option<&str> = params
-            .context
-            .as_ref()
-            .and_then(|c| c.trigger_character.as_deref());
-
         let import_prefix: Option<String> =
             detect_import_prefix(&content, pos.line, pos.character, trigger_char);
         let in_import = import_prefix.is_some();
+        let in_member_access = is_member_access_context(&content, offset);
 
         let mut items: Vec<CompletionItem> = Vec::new();
 
-        if !in_import {
+        if !in_import && !in_member_access {
             if let Some(tree) = tree.as_ref() {
                 items.extend(syntax_completion::local_completions(tree, &content, offset));
             }
-            items.extend(snippets::java_snippets());
+            if is_expression_context(&content, offset) {
+                items.extend(snippets::expression_keywords());
+            } else {
+                items.extend(snippets::java_snippets());
+            }
         }
+
+        // Compute the word range at the cursor — needed so that completion items
+        // with additionalTextEdits (auto-import) also carry an explicit textEdit.
+        // Monaco only applies additionalTextEdits when the item has a textEdit.
+        let word_range = word_range_at(&content, pos);
 
         // Semantic completions from ECJ
         if self.dispatcher.is_ecj_ready().await {
             match self.dispatcher.complete(uri, offset, import_prefix, content.clone()).await {
                 Ok(BridgeResponse::Completions { items: bridge_items, .. }) => {
-                    let semantic: Vec<CompletionItem> =
-                        bridge_items.iter().map(comp_conv::to_lsp).collect();
+                    let semantic: Vec<CompletionItem> = bridge_items.iter().map(|c| {
+                        let mut item = comp_conv::to_lsp(c);
+                        // For items that carry auto-import edits, attach an explicit
+                        // textEdit so Monaco applies the additionalTextEdits.
+                        if item.additional_text_edits.as_ref().map_or(false, |e| !e.is_empty()) {
+                            if let Some(range) = word_range {
+                                let new_text = item.insert_text.clone().unwrap_or_else(|| item.label.clone());
+                                item.text_edit = Some(tower_lsp::lsp_types::CompletionTextEdit::Edit(
+                                    tower_lsp::lsp_types::TextEdit {
+                                        range,
+                                        new_text,
+                                    }
+                                ));
+                            }
+                        }
+                        item
+                    }).collect();
                     if in_import {
                         items = semantic;
                     } else {
@@ -683,14 +730,18 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
-        let range = &params.range;
         if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
 
+        let mut effective_range = params.range;
+        for diagnostic in &params.context.diagnostics {
+            effective_range = merge_ranges(effective_range, diagnostic.range);
+        }
+
         let bridge_range = BridgeRange {
-            start_line: range.start.line,
-            start_char: range.start.character,
-            end_line: range.end.line,
-            end_char: range.end.character,
+            start_line: effective_range.start.line,
+            start_char: effective_range.start.character,
+            end_line: effective_range.end.line,
+            end_char: effective_range.end.character,
         };
 
         let mut lsp_actions: Vec<CodeActionOrCommand> = Vec::new();
@@ -910,9 +961,7 @@ impl LanguageServer for JavaLanguageServer {
                     let command = l.command.as_ref().map(|cmd| Command {
                         title: l.title.clone(),
                         command: cmd.clone(),
-                        arguments: l.args.as_ref().map(|args| {
-                            args.iter().map(|a| serde_json::Value::String(a.clone())).collect()
-                        }),
+                        arguments: l.args.clone(),
                     });
                     // Informational lenses (no command) still need a title in the command field.
                     let command = command.unwrap_or_else(|| Command {
@@ -1006,6 +1055,140 @@ fn utf16_col_to_byte(s: &str, utf16_col: usize) -> usize {
     s.len()
 }
 
+/// Heuristic freshness check for completion requests.
+///
+/// Besides ensuring the line is long enough for the cursor, this also catches
+/// the common stale-content case where the user typed immediately before an
+/// existing delimiter (`;`, `)`, `,`, …). In that case the stored line can
+/// still be long enough while missing the newly-typed identifier or trigger
+/// character.
+fn completion_store_is_fresh(
+    content: &str,
+    pos: tower_lsp::lsp_types::Position,
+    trigger_char: Option<&str>,
+) -> bool {
+    let line = pos.line as usize;
+    let Some(line_text) = content.lines().nth(line) else {
+        return false;
+    };
+    let byte_col = utf16_col_to_byte(line_text, pos.character as usize);
+    if byte_col > line_text.len() {
+        return false;
+    }
+
+    let before = &line_text[..byte_col];
+    if let Some(tc) = trigger_char {
+        return before.ends_with(tc);
+    }
+
+    if byte_col == 0 || byte_col == line_text.len() {
+        return true;
+    }
+
+    let prev = before.chars().next_back();
+    let next = line_text[byte_col..].chars().next();
+    !matches!(
+        (prev, next),
+        (Some(prev), Some(next))
+            if (!is_java_ident_part(prev) && is_completion_boundary(next))
+                || (is_completion_boundary(prev) && next.is_whitespace())
+    )
+}
+
+/// Returns the LSP Range covering the Java identifier immediately before the cursor.
+/// This is attached as `textEdit` on completion items that also carry
+/// `additionalTextEdits` (auto-import), because Monaco only applies
+/// `additionalTextEdits` when the item has an explicit `textEdit`.
+fn word_range_at(content: &str, pos: tower_lsp::lsp_types::Position) -> Option<tower_lsp::lsp_types::Range> {
+    let line = pos.line as usize;
+    let line_text = content.lines().nth(line)?;
+    let col_bytes = utf16_col_to_byte(line_text, pos.character as usize);
+    let col_bytes = col_bytes.min(line_text.len());
+    let text_before = &line_text[..col_bytes];
+
+    // Walk back to find the start of the identifier
+    let word_start_bytes = text_before
+        .char_indices()
+        .rev()
+        .find_map(|(i, c)| {
+            if !c.is_alphanumeric() && c != '_' {
+                Some(i + c.len_utf8())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    let word_start_col = utf16_len(&line_text[..word_start_bytes]) as u32;
+    Some(tower_lsp::lsp_types::Range {
+        start: tower_lsp::lsp_types::Position { line: pos.line, character: word_start_col },
+        end:   pos,
+    })
+}
+
+/// Compute the UTF-16 length of a UTF-8 string slice.
+fn utf16_len(s: &str) -> usize {
+    s.chars().map(|c| c.len_utf16()).sum()
+}
+
+fn is_java_ident_part(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '$'
+}
+
+fn is_completion_boundary(c: char) -> bool {
+    matches!(c, ';' | ')' | ',' | ']' | '}' | '\n' | '\r')
+}
+
+fn is_member_access_context(content: &str, offset: usize) -> bool {
+    let bytes = content.as_bytes();
+    let mut i = offset.min(bytes.len());
+    while i > 0 && matches!(bytes[i - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'$') {
+        i -= 1;
+    }
+    i > 0 && bytes[i - 1] == b'.'
+}
+
+fn merge_ranges(a: Range, b: Range) -> Range {
+    let start = if position_leq(a.start, b.start) { a.start } else { b.start };
+    let end = if position_leq(a.end, b.end) { b.end } else { a.end };
+    Range { start, end }
+}
+
+fn position_leq(a: Position, b: Position) -> bool {
+    a.line < b.line || (a.line == b.line && a.character <= b.character)
+}
+
+/// Returns true if the cursor is in an expression position: after `=`, `(`, `,`,
+/// arithmetic/bitwise operators, or the `return` keyword.  In these positions
+/// statement-level snippets (for/while/class/abstract/…) are not valid and
+/// should be suppressed.
+fn is_expression_context(content: &str, offset: usize) -> bool {
+    let bytes = content.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = offset.min(bytes.len()).saturating_sub(1);
+    // Skip whitespace backwards
+    while i > 0
+        && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r')
+    {
+        i -= 1;
+    }
+    match bytes[i] {
+        b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'|' | b'&' | b'^' | b'(' | b',' => true,
+        _ => {
+            // Check if last non-whitespace token is the `return` keyword
+            let prefix = &content[..=i];
+            let trimmed = prefix.trim_end();
+            trimmed.ends_with("return")
+                && trimmed
+                    .as_bytes()
+                    .get(trimmed.len().wrapping_sub(7))
+                    .map_or(true, |&b| !b.is_ascii_alphanumeric() && b != b'_')
+        }
+    }
+}
+
 /// Detect if the cursor is inside a Java import statement and return the typed prefix.
 ///
 /// Uses the LSP line number directly rather than computing backward from a byte offset,
@@ -1057,7 +1240,8 @@ pub fn detect_import_prefix(
 
 #[cfg(test)]
 mod tests {
-    use super::detect_import_prefix;
+    use super::{completion_store_is_fresh, detect_import_prefix};
+    use tower_lsp::lsp_types::Position;
 
     // ── Normal (non-stale) cases ──────────────────────────────────────────────
 
@@ -1150,5 +1334,29 @@ mod tests {
         // Typing "." on a non-import line must not produce a false positive.
         let src = "    System.out\n";
         assert_eq!(detect_import_prefix(src, 0, 14, Some(".")), None);
+    }
+
+    #[test]
+    fn completion_wait_detects_stale_insert_before_semicolon() {
+        let stale = "class T { void m() { int x = ; } }\n";
+        assert!(
+            !completion_store_is_fresh(
+                stale,
+                Position { line: 0, character: 30 },
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn completion_wait_accepts_updated_insert_before_semicolon() {
+        let fresh = "class T { void m() { int x = A; } }\n";
+        assert!(
+            completion_store_is_fresh(
+                fresh,
+                Position { line: 0, character: 30 },
+                None,
+            )
+        );
     }
 }

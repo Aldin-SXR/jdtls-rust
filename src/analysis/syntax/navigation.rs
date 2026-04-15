@@ -40,9 +40,8 @@ pub fn references(tree: &Tree, source: &str, offset: usize) -> Vec<Range> {
         return Vec::new();
     };
 
-    let name = node_text(decl.name_node, source);
     let mut ranges = Vec::new();
-    collect_identifier_ranges(decl.scope_node, source, name, &mut ranges);
+    collect_reference_ranges(tree.root_node(), decl.scope_node, source, decl, &mut ranges);
     ranges
 }
 
@@ -58,6 +57,17 @@ pub fn document_highlights(tree: &Tree, source: &str, offset: usize) -> Vec<Docu
 
 fn resolve_declaration<'tree>(root: Node<'tree>, source: &str, offset: usize) -> Option<Decl<'tree>> {
     let identifier = identifier_at_offset(root, offset)?;
+    resolve_declaration_for_identifier(root, source, identifier)
+}
+
+fn resolve_declaration_for_identifier<'tree>(
+    root: Node<'tree>,
+    source: &str,
+    identifier: Node<'tree>,
+) -> Option<Decl<'tree>> {
+    if identifier.kind() != "identifier" {
+        return None;
+    }
 
     if let Some(decl) = declaration_from_name_node(identifier) {
         return Some(with_scope(decl));
@@ -70,7 +80,7 @@ fn resolve_declaration<'tree>(root: Node<'tree>, source: &str, offset: usize) ->
     }
 
     if let Some(type_node) = enclosing_type(identifier) {
-        if let Some(member_decl) = find_type_member_declaration(type_node, source, name) {
+        if let Some(member_decl) = resolve_type_member_declaration(type_node, source, identifier) {
             return Some(with_scope(member_decl));
         }
     }
@@ -261,6 +271,40 @@ fn declaration_from_name_node<'tree>(node: Node<'tree>) -> Option<Decl<'tree>> {
     None
 }
 
+fn resolve_type_member_declaration<'tree>(
+    type_node: Node<'tree>,
+    source: &str,
+    identifier: Node<'tree>,
+) -> Option<Decl<'tree>> {
+    let name = node_text(identifier, source);
+    let parent = identifier.parent()?;
+
+    if parent.kind() == "method_invocation" && parent.child_by_field_name("name") == Some(identifier) {
+        if let Some(object) = parent.child_by_field_name("object") {
+            if object.kind() != "this" {
+                return None;
+            }
+        }
+
+        let arg_count = parent
+            .child_by_field_name("arguments")
+            .map(argument_count)
+            .unwrap_or(0);
+        return find_method_member_declaration(type_node, source, name, arg_count);
+    }
+
+    if parent.kind() == "field_access" && parent.child_by_field_name("field") == Some(identifier) {
+        if let Some(object) = parent.child_by_field_name("object") {
+            if object.kind() != "this" {
+                return None;
+            }
+        }
+        return find_field_member_declaration(type_node, source, name);
+    }
+
+    find_type_member_declaration(type_node, source, name)
+}
+
 fn find_type_member_declaration<'tree>(type_node: Node<'tree>, source: &str, name: &str) -> Option<Decl<'tree>> {
     let body = type_node.child_by_field_name("body")?;
     let mut cursor = body.walk();
@@ -283,30 +327,6 @@ fn find_type_member_declaration<'tree>(type_node: Node<'tree>, source: &str, nam
                     }
                 }
             }
-            "method_declaration" => {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    if node_text(name_node, source) == name {
-                        return Some(Decl {
-                            kind: DeclKind::Method,
-                            decl_node: child,
-                            name_node,
-                            scope_node: body,
-                        });
-                    }
-                }
-            }
-            "constructor_declaration" => {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    if node_text(name_node, source) == name {
-                        return Some(Decl {
-                            kind: DeclKind::Constructor,
-                            decl_node: child,
-                            name_node,
-                            scope_node: body,
-                        });
-                    }
-                }
-            }
             "enum_constant" => {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     if node_text(name_node, source) == name {
@@ -323,6 +343,78 @@ fn find_type_member_declaration<'tree>(type_node: Node<'tree>, source: &str, nam
         }
     }
 
+    None
+}
+
+fn find_method_member_declaration<'tree>(
+    type_node: Node<'tree>,
+    source: &str,
+    name: &str,
+    arg_count: usize,
+) -> Option<Decl<'tree>> {
+    let body = type_node.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if matches!(child.kind(), "method_declaration" | "constructor_declaration") {
+            let Some(name_node) = child.child_by_field_name("name") else {
+                continue;
+            };
+            if node_text(name_node, source) != name {
+                continue;
+            }
+            let params = child
+                .child_by_field_name("parameters")
+                .map(parameter_count)
+                .unwrap_or(0);
+            if params != arg_count {
+                continue;
+            }
+
+            let kind = if child.kind() == "constructor_declaration" {
+                DeclKind::Constructor
+            } else {
+                DeclKind::Method
+            };
+            return Some(Decl {
+                kind,
+                decl_node: child,
+                name_node,
+                scope_node: body,
+            });
+        }
+    }
+    None
+}
+
+fn find_field_member_declaration<'tree>(
+    type_node: Node<'tree>,
+    source: &str,
+    name: &str,
+) -> Option<Decl<'tree>> {
+    let body = type_node.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() != "field_declaration" {
+            continue;
+        }
+
+        let mut vars = child.walk();
+        for node in child.children(&mut vars) {
+            if node.kind() != "variable_declarator" {
+                continue;
+            }
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if node_text(name_node, source) == name {
+                    return Some(Decl {
+                        kind: DeclKind::Field,
+                        decl_node: node,
+                        name_node,
+                        scope_node: body,
+                    });
+                }
+            }
+        }
+    }
     None
 }
 
@@ -350,15 +442,51 @@ fn find_type_declaration<'tree>(root: Node<'tree>, source: &str, name: &str) -> 
     None
 }
 
-fn collect_identifier_ranges(node: Node, source: &str, name: &str, out: &mut Vec<Range>) {
-    if node.kind() == "identifier" && node_text(node, source) == name {
+fn collect_reference_ranges<'tree>(
+    root: Node<'tree>,
+    node: Node<'tree>,
+    source: &str,
+    target: Decl<'tree>,
+    out: &mut Vec<Range>,
+) {
+    if node.kind() == "identifier"
+        && node_text(node, source) == node_text(target.name_node, source)
+        && resolve_declaration_for_identifier(root, source, node)
+            .map(|decl| same_declaration(decl, target))
+            .unwrap_or(false)
+    {
         out.push(node_range(node));
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_identifier_ranges(child, source, name, out);
+        collect_reference_ranges(root, child, source, target, out);
     }
+}
+
+fn same_declaration(left: Decl<'_>, right: Decl<'_>) -> bool {
+    left.kind == right.kind
+        && left.name_node.start_byte() == right.name_node.start_byte()
+        && left.name_node.end_byte() == right.name_node.end_byte()
+}
+
+fn argument_count(node: Node) -> usize {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .filter(|child| child.kind() != "," && child.kind() != "(" && child.kind() != ")")
+        .count()
+}
+
+fn parameter_count(node: Node) -> usize {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .filter(|child| {
+            matches!(
+                child.kind(),
+                "formal_parameter" | "spread_parameter" | "receiver_parameter" | "catch_formal_parameter"
+            )
+        })
+        .count()
 }
 
 fn render_decl(source: &str, decl: Decl<'_>) -> String {
@@ -618,5 +746,31 @@ mod tests {
         let refs = references(&tree, source, usage);
 
         assert_eq!(refs.len(), 3);
+    }
+
+    #[test]
+    fn separates_unqualified_method_from_qualified_invocation() {
+        let source = "class Test { void run(java.util.List<String> items) { items.add(\"x\"); add(1, 2); } int add(int a, int b) { return a + b; } }";
+        let tree = parse(source);
+        let usage = source.rfind("add(1, 2)").unwrap() + 1;
+        let refs = references(&tree, source, usage);
+
+        assert_eq!(refs.len(), 2);
+        assert!(source.contains("items.add(\"x\")"));
+        assert!(source.contains("int add(int a, int b)"));
+        let invocation_col = source.find("add(1, 2)").unwrap() as u32;
+        assert!(refs.iter().any(|range| range.start.character == invocation_col));
+        let qualified_col = source.find("items.add(\"x\")").unwrap() as u32 + 6;
+        assert!(!refs.iter().any(|range| range.start.character == qualified_col));
+    }
+
+    #[test]
+    fn ignores_incomplete_bare_method_identifier() {
+        let source = "class Test { void run() { add } int add(int a, int b) { return a + b; } }";
+        let tree = parse(source);
+        let decl = source.find("add(int a").unwrap();
+        let refs = references(&tree, source, decl);
+
+        assert_eq!(refs.len(), 1);
     }
 }

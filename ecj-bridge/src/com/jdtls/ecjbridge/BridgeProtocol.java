@@ -184,7 +184,7 @@ public class BridgeProtocol {
         public int startLine, startChar, endLine, endChar;
         public String title;
         public String command;    // null = informational (no click action)
-        public List<String> args; // arguments passed to the command
+        public List<Object> args; // arguments passed to the command
     }
 
     public static class CodeLensResponse extends Response {

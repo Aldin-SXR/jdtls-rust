@@ -4,6 +4,16 @@ use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, InsertTextFormat, Documentation, MarkupContent, MarkupKind,
 };
 
+/// Keywords valid in expression position (after `=`, `return`, etc.).
+/// Used instead of `java_snippets()` when the cursor is in an expression context.
+pub fn expression_keywords() -> Vec<CompletionItem> {
+    vec![
+        keyword("new"), keyword("null"), keyword("true"), keyword("false"),
+        keyword("this"), keyword("super"), keyword("instanceof"),
+        snippet("lambda", "lambda expression", "(${1:params}) -> ${0}"),
+    ]
+}
+
 /// Return the full set of static Java snippets.
 pub fn java_snippets() -> Vec<CompletionItem> {
     vec![

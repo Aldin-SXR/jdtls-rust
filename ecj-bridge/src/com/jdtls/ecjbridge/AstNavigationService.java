@@ -2,8 +2,17 @@ package com.jdtls.ecjbridge;
 
 import org.eclipse.jdt.core.dom.*;
 
+import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 import org.eclipse.jdt.core.dom.IBinding;
 import org.eclipse.jdt.core.dom.IMethodBinding;
@@ -20,14 +29,27 @@ import com.jdtls.ecjbridge.BridgeProtocol.*;
  * compilation unit alone.
  */
 public class AstNavigationService {
+    private static final Map<String, String> SOURCE_CACHE = new HashMap<>();
 
     private static final class ParsedUnit {
         final String uri;
         final String source;
         final CompilationUnit cu;
+        final CompilationUnit bindingCu;
 
-        ParsedUnit(String uri, String source, CompilationUnit cu) {
+        ParsedUnit(String uri, String source, CompilationUnit cu, CompilationUnit bindingCu) {
             this.uri = uri;
+            this.source = source;
+            this.cu = cu;
+            this.bindingCu = bindingCu;
+        }
+    }
+
+    private static final class ExternalParsedUnit {
+        final String source;
+        final CompilationUnit cu;
+
+        ExternalParsedUnit(String source, CompilationUnit cu) {
             this.source = source;
             this.cu = cu;
         }
@@ -54,6 +76,16 @@ public class AstNavigationService {
             this.declarationNode = declarationNode;
             this.nameNode = nameNode;
             this.scopeNode = scopeNode;
+        }
+    }
+
+    private static final class BindingResolution {
+        final Decl decl;
+        final boolean attempted;
+
+        BindingResolution(Decl decl, boolean attempted) {
+            this.decl = decl;
+            this.attempted = attempted;
         }
     }
 
@@ -116,8 +148,12 @@ public class AstNavigationService {
 
         IBinding binding = name.resolveBinding();
         if (binding == null) return "";
-
-        return renderBinding(binding);
+        String signature = renderBinding(binding);
+        String documentation = renderExternalDocumentation(binding, sourceLevel);
+        if (documentation.isBlank()) {
+            return signature;
+        }
+        return signature + "\n\n" + documentation;
     }
 
     private String renderBinding(IBinding binding) {
@@ -129,40 +165,98 @@ public class AstNavigationService {
 
     private String renderVariableBinding(IVariableBinding var) {
         ITypeBinding type = var.getType();
-        String typeName = type != null ? type.getQualifiedName() : "?";
-        String prefix = "";
+        String typeName = type != null ? bindingSimpleName(type) : "?";
+        StringBuilder sb = new StringBuilder("```java\n");
         if (var.isField()) {
+            appendModifiers(sb, var.getModifiers());
             ITypeBinding declaring = var.getDeclaringClass();
-            if (declaring != null) prefix = declaring.getQualifiedName() + ".";
+            String className = declaring != null ? declaring.getName() + "." : "";
+            sb.append(typeName).append(" ").append(className).append(var.getName());
+        } else {
+            sb.append(typeName).append(" ").append(var.getName());
         }
-        return "```java\n" + typeName + " " + prefix + var.getName() + "\n```";
+        return sb.append("\n```").toString();
     }
 
     private String renderMethodBinding(IMethodBinding method) {
         StringBuilder sb = new StringBuilder("```java\n");
+        appendModifiers(sb, method.getModifiers());
         ITypeBinding declaring = method.getDeclaringClass();
         if (!method.isConstructor()) {
             ITypeBinding ret = method.getReturnType();
-            sb.append(ret != null ? ret.getQualifiedName() : "void").append(" ");
+            sb.append(ret != null ? bindingSimpleName(ret) : "void").append(" ");
         }
-        if (declaring != null) sb.append(declaring.getQualifiedName()).append(".");
+        if (declaring != null) sb.append(declaring.getName()).append(".");
         sb.append(method.getName()).append("(");
         ITypeBinding[] params = method.getParameterTypes();
         for (int i = 0; i < params.length; i++) {
             if (i > 0) sb.append(", ");
-            sb.append(params[i].getQualifiedName());
+            sb.append(bindingSimpleName(params[i]));
         }
         sb.append(")\n```");
         return sb.toString();
     }
 
     private String renderTypeBinding(ITypeBinding type) {
+        StringBuilder sb = new StringBuilder("```java\n");
+        appendModifiers(sb, type.getModifiers());
         String kind;
         if (type.isInterface()) kind = "interface";
         else if (type.isEnum()) kind = "enum";
         else if (type.isAnnotation()) kind = "@interface";
         else kind = "class";
-        return "```java\n" + kind + " " + type.getQualifiedName() + "\n```";
+        sb.append(kind).append(" ").append(type.getName());
+        ITypeBinding superclass = type.getSuperclass();
+        if (superclass != null && !"java.lang.Object".equals(superclass.getQualifiedName())) {
+            sb.append(" extends ").append(superclass.getName());
+        }
+        ITypeBinding[] interfaces = type.getInterfaces();
+        if (interfaces.length > 0) {
+            sb.append(type.isInterface() ? " extends " : " implements ");
+            for (int i = 0; i < interfaces.length; i++) {
+                if (i > 0) sb.append(", ");
+                sb.append(interfaces[i].getName());
+            }
+        }
+        return sb.append("\n```").toString();
+    }
+
+    /** Simple (unqualified) name for a type binding, preserving generics and arrays. */
+    private String bindingSimpleName(ITypeBinding type) {
+        if (type == null) return "?";
+        if (type.isArray()) {
+            return bindingSimpleName(type.getElementType()) + "[]".repeat(type.getDimensions());
+        }
+        if (type.isParameterizedType()) {
+            StringBuilder sb = new StringBuilder(type.getErasure().getName());
+            ITypeBinding[] args = type.getTypeArguments();
+            if (args.length > 0) {
+                sb.append("<");
+                for (int i = 0; i < args.length; i++) {
+                    if (i > 0) sb.append(", ");
+                    sb.append(bindingSimpleName(args[i]));
+                }
+                sb.append(">");
+            }
+            return sb.toString();
+        }
+        if (type.isWildcardType()) {
+            ITypeBinding bound = type.getBound();
+            if (bound == null) return "?";
+            return type.isUpperbound() ? "? extends " + bindingSimpleName(bound)
+                                       : "? super " + bindingSimpleName(bound);
+        }
+        return type.getName();
+    }
+
+    private void appendModifiers(StringBuilder sb, int mods) {
+        if ((mods & org.eclipse.jdt.core.dom.Modifier.PUBLIC) != 0) sb.append("public ");
+        else if ((mods & org.eclipse.jdt.core.dom.Modifier.PROTECTED) != 0) sb.append("protected ");
+        else if ((mods & org.eclipse.jdt.core.dom.Modifier.PRIVATE) != 0) sb.append("private ");
+        if ((mods & org.eclipse.jdt.core.dom.Modifier.STATIC) != 0) sb.append("static ");
+        if ((mods & org.eclipse.jdt.core.dom.Modifier.FINAL) != 0) sb.append("final ");
+        if ((mods & org.eclipse.jdt.core.dom.Modifier.ABSTRACT) != 0) sb.append("abstract ");
+        if ((mods & org.eclipse.jdt.core.dom.Modifier.SYNCHRONIZED) != 0) sb.append("synchronized ");
     }
 
     public List<BridgeLocation> navigate(
@@ -197,32 +291,7 @@ public class AstNavigationService {
         Decl decl = resolveDeclaration(parsed, offset);
         if (decl == null) return Collections.emptyList();
 
-        String identifier = decl.nameNode.getIdentifier();
-        ASTNode scope = referenceScope(decl);
-        List<BridgeLocation> locations = new ArrayList<>();
-        Set<String> seen = new LinkedHashSet<>();
-
-        scope.accept(new ASTVisitor() {
-            @Override
-            public boolean visit(SimpleName node) {
-                if (!identifier.equals(node.getIdentifier())) {
-                    return true;
-                }
-                Decl resolved = resolveDeclarationAtName(parsed, node);
-                if (resolved == null || !sameDeclaration(resolved, decl)) {
-                    return true;
-                }
-
-                BridgeLocation loc = toLocation(parsed.uri, parsed.source, node);
-                String key = loc.startLine + ":" + loc.startChar + ":" + loc.endLine + ":" + loc.endChar;
-                if (seen.add(key)) {
-                    locations.add(loc);
-                }
-                return true;
-            }
-        });
-
-        return locations;
+        return referenceLocations(parsed, decl);
     }
 
     public SignatureResult signatureHelp(
@@ -359,16 +428,21 @@ public class AstNavigationService {
             @Override
             public boolean visit(MethodDeclaration node) {
                 SimpleName name = node.getName();
-                int refs = countMethodReferences(parsed, node);
-                BridgeCodeLens refLens = makeLens(parsed.source, name,
-                        refs + " reference" + (refs == 1 ? "" : "s"), null, null);
+                Decl decl = withScope(new Decl(
+                        node.isConstructor() ? DeclKind.CONSTRUCTOR : DeclKind.METHOD,
+                        node,
+                        name,
+                        node));
+                List<BridgeLocation> refs = referenceLocations(parsed, decl);
+                int usages = Math.max(0, refs.size() - 1);
+                BridgeCodeLens refLens = makeReferenceLens(parsed, name, refs, usages);
                 lenses.add(refLens);
 
                 // Run lens for public static void main(String[])
                 if (isMainMethod(node)) {
                     BridgeCodeLens runLens = makeLens(parsed.source, name,
                             "▶ Run", "jdtls-rust.run",
-                            List.of(parsed.uri, String.valueOf(name.getStartPosition())));
+                            List.of((Object) parsed.uri, String.valueOf(name.getStartPosition())));
                     lenses.add(runLens);
                 }
 
@@ -376,7 +450,7 @@ public class AstNavigationService {
                 if (hasAnnotation(node, "Test")) {
                     BridgeCodeLens testLens = makeLens(parsed.source, name,
                             "▶ Run Test", "jdtls-rust.runTest",
-                            List.of(parsed.uri, name.getIdentifier()));
+                            List.of((Object) parsed.uri, name.getIdentifier()));
                     lenses.add(testLens);
                 }
 
@@ -386,9 +460,10 @@ public class AstNavigationService {
             @Override
             public boolean visit(TypeDeclaration node) {
                 SimpleName name = node.getName();
-                int refs = countTypeReferences(parsed, name);
-                lenses.add(makeLens(parsed.source, name,
-                        refs + " reference" + (refs == 1 ? "" : "s"), null, null));
+                Decl decl = withScope(new Decl(DeclKind.TYPE, node, name, node));
+                List<BridgeLocation> refs = referenceLocations(parsed, decl);
+                int usages = Math.max(0, refs.size() - 1);
+                lenses.add(makeReferenceLens(parsed, name, refs, usages));
                 return true;
             }
         });
@@ -396,8 +471,22 @@ public class AstNavigationService {
         return lenses;
     }
 
+    private BridgeCodeLens makeReferenceLens(ParsedUnit parsed, SimpleName anchor,
+                                             List<BridgeLocation> refs, int usageCount) {
+        String title = usageCount + " reference" + (usageCount == 1 ? "" : "s");
+        if (usageCount == 0) {
+            return makeLens(parsed.source, anchor, title, null, null);
+        }
+        return makeLens(
+                parsed.source,
+                anchor,
+                title,
+                "editor.action.showReferences",
+                buildShowReferencesArgs(parsed.uri, parsed.source, anchor, refs));
+    }
+
     private BridgeCodeLens makeLens(String source, SimpleName anchor, String title,
-                                    String command, List<String> args) {
+                                    String command, List<Object> args) {
         int[] lc = CompilationService.offsetToLineCol(source, anchor.getStartPosition());
         BridgeCodeLens lens = new BridgeCodeLens();
         lens.startLine = lc[0];
@@ -411,56 +500,91 @@ public class AstNavigationService {
         return lens;
     }
 
-    /**
-     * Count invocations of a method by checking:
-     * 1. Parent AST node is a MethodInvocation/SuperMethodInvocation with matching name.
-     * 2. Argument count matches the declaration's parameter count (disambiguates overloads
-     *    and unrelated same-name methods like List.add vs Main.add).
-     */
-    private int countMethodReferences(ParsedUnit parsed, MethodDeclaration declaration) {
-        String identifier = declaration.getName().getIdentifier();
-        int startPos = declaration.getName().getStartPosition();
-        int paramCount = declaration.parameters().size();
-        int[] count = {0};
+    private List<BridgeLocation> referenceLocations(ParsedUnit parsed, Decl decl) {
+        String identifier = decl.nameNode.getIdentifier();
+        ASTNode scope = referenceScope(decl);
+        List<BridgeLocation> locations = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
 
-        parsed.cu.accept(new ASTVisitor() {
+        scope.accept(new ASTVisitor() {
             @Override
             public boolean visit(SimpleName node) {
-                if (!identifier.equals(node.getIdentifier())) return true;
-                if (node.getStartPosition() == startPos) return true; // skip declaration itself
-                ASTNode parent = node.getParent();
-                if (parent instanceof MethodInvocation mi && mi.getName() == node) {
-                    if (mi.arguments().size() == paramCount) count[0]++;
-                } else if (parent instanceof SuperMethodInvocation smi && smi.getName() == node) {
-                    if (smi.arguments().size() == paramCount) count[0]++;
+                if (!identifier.equals(node.getIdentifier())) {
+                    return true;
+                }
+                Decl resolved = resolveDeclarationAtName(parsed, node);
+                if (resolved == null || !sameDeclaration(resolved, decl)) {
+                    return true;
+                }
+
+                BridgeLocation loc = toLocation(parsed.uri, parsed.source, node);
+                String key = loc.startLine + ":" + loc.startChar + ":" + loc.endLine + ":" + loc.endChar;
+                if (seen.add(key)) {
+                    locations.add(loc);
                 }
                 return true;
             }
         });
 
-        return count[0];
+        return locations;
     }
 
-    /** Count usages of a type by checking parent is a SimpleType (type reference context). */
-    private int countTypeReferences(ParsedUnit parsed, SimpleName declaration) {
-        String identifier = declaration.getIdentifier();
-        int startPos = declaration.getStartPosition();
-        int[] count = {0};
+    private List<Object> buildShowReferencesArgs(String uri, String source, SimpleName anchor,
+                                                 List<BridgeLocation> refs) {
+        List<Object> args = new ArrayList<>();
+        args.add(uriComponents(uri));
+        args.add(positionValue(source, anchor.getStartPosition()));
+        List<Object> locations = new ArrayList<>();
+        for (BridgeLocation ref : refs) {
+            locations.add(locationValue(ref));
+        }
+        args.add(locations);
+        return args;
+    }
 
-        parsed.cu.accept(new ASTVisitor() {
-            @Override
-            public boolean visit(SimpleName node) {
-                if (!identifier.equals(node.getIdentifier())) return true;
-                if (node.getStartPosition() == startPos) return true; // skip declaration
-                ASTNode parent = node.getParent();
-                if (parent instanceof SimpleType) {
-                    count[0]++;
-                }
-                return true;
-            }
-        });
+    private Map<String, Object> uriComponents(String uri) {
+        try {
+            URI parsed = new URI(uri);
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("$mid", 1);
+            value.put("scheme", parsed.getScheme());
+            value.put("authority", parsed.getRawAuthority() == null ? "" : parsed.getRawAuthority());
+            value.put("path", parsed.getRawPath() == null ? "" : parsed.getRawPath());
+            value.put("query", parsed.getRawQuery() == null ? "" : parsed.getRawQuery());
+            value.put("fragment", parsed.getRawFragment() == null ? "" : parsed.getRawFragment());
+            return value;
+        } catch (Exception e) {
+            Map<String, Object> fallback = new LinkedHashMap<>();
+            fallback.put("$mid", 1);
+            fallback.put("scheme", "file");
+            fallback.put("authority", "");
+            fallback.put("path", uri);
+            fallback.put("query", "");
+            fallback.put("fragment", "");
+            return fallback;
+        }
+    }
 
-        return count[0];
+    private Map<String, Object> positionValue(String source, int offset) {
+        int[] lc = CompilationService.offsetToLineCol(source, offset);
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("lineNumber", lc[0] + 1);
+        value.put("column", lc[1] + 1);
+        return value;
+    }
+
+    private Map<String, Object> locationValue(BridgeLocation ref) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("uri", uriComponents(ref.uri));
+
+        Map<String, Object> range = new LinkedHashMap<>();
+        range.put("startLineNumber", ref.startLine + 1);
+        range.put("startColumn", ref.startChar + 1);
+        range.put("endLineNumber", ref.endLine + 1);
+        range.put("endColumn", ref.endChar + 1);
+
+        value.put("range", range);
+        return value;
     }
 
     private boolean isMainMethod(MethodDeclaration node) {
@@ -506,7 +630,21 @@ public class AstNavigationService {
         parser.setUnitName(unitName(targetUri));
 
         CompilationUnit cu = (CompilationUnit) parser.createAST(null);
-        return new ParsedUnit(targetUri, source, cu);
+        CompilationUnit bindingCu = parseWithBindings(source, sourceLevel, targetUri);
+        return new ParsedUnit(targetUri, source, cu, bindingCu);
+    }
+
+    private CompilationUnit parseWithBindings(String source, String sourceLevel, String targetUri) {
+        ASTParser parser = ASTParser.newParser(AST.getJLSLatest());
+        parser.setSource(source.toCharArray());
+        parser.setKind(ASTParser.K_COMPILATION_UNIT);
+        parser.setResolveBindings(true);
+        parser.setBindingsRecovery(true);
+        parser.setStatementsRecovery(true);
+        parser.setCompilerOptions(compilerOptions(sourceLevel));
+        parser.setUnitName(unitName(targetUri));
+        parser.setEnvironment(new String[0], null, null, true);
+        return (CompilationUnit) parser.createAST(null);
     }
 
     private Map<String, String> compilerOptions(String sourceLevel) {
@@ -558,7 +696,12 @@ public class AstNavigationService {
 
         AbstractTypeDeclaration enclosingType = enclosingType(name);
         if (enclosingType != null) {
-            Decl member = findTypeMember(enclosingType, name.getIdentifier());
+            BindingResolution binding = resolveTypeMemberWithBindings(parsed, name);
+            if (binding.attempted) {
+                return binding.decl != null ? withScope(binding.decl) : null;
+            }
+
+            Decl member = resolveTypeMember(enclosingType, name);
             if (member != null) {
                 return withScope(member);
             }
@@ -666,7 +809,107 @@ public class AstNavigationService {
         return new Decl(decl.kind, decl.declarationNode, decl.nameNode, scope != null ? scope : decl.scopeNode);
     }
 
-    private Decl findTypeMember(AbstractTypeDeclaration type, String identifier) {
+    private Decl resolveTypeMember(AbstractTypeDeclaration type, SimpleName usage) {
+        ASTNode parent = usage.getParent();
+
+        if (parent instanceof MethodInvocation invocation && invocation.getName() == usage) {
+            Expression expr = invocation.getExpression();
+            if (expr != null && !(expr instanceof ThisExpression)) {
+                return null;
+            }
+            return findMethodMember(type, usage.getIdentifier(), invocation.arguments().size());
+        }
+
+        if (parent instanceof SuperMethodInvocation invocation && invocation.getName() == usage) {
+            return findMethodMember(type, usage.getIdentifier(), invocation.arguments().size());
+        }
+
+        if (parent instanceof FieldAccess access && access.getName() == usage) {
+            Expression expr = access.getExpression();
+            if (expr != null && !(expr instanceof ThisExpression)) {
+                return null;
+            }
+            return findFieldMember(type, usage.getIdentifier());
+        }
+
+        return findTypeMember(type, usage.getIdentifier());
+    }
+
+    private BindingResolution resolveTypeMemberWithBindings(ParsedUnit parsed, SimpleName usage) {
+        if (parsed.bindingCu == null) {
+            return new BindingResolution(null, false);
+        }
+
+        ASTNode bindingNode = nodeAt(parsed.bindingCu, usage.getStartPosition());
+        SimpleName bindingName = asSimpleName(bindingNode);
+        if (bindingName == null
+                || bindingName.getStartPosition() != usage.getStartPosition()
+                || !usage.getIdentifier().equals(bindingName.getIdentifier())) {
+            return new BindingResolution(null, false);
+        }
+
+        ASTNode parent = bindingName.getParent();
+        if (parent instanceof MethodInvocation invocation && invocation.getName() == bindingName) {
+            IMethodBinding binding = invocation.resolveMethodBinding();
+            if (!matchesInvocationArity(binding, invocation.arguments().size())) {
+                return new BindingResolution(null, true);
+            }
+            return resolveMethodBinding(parsed.bindingCu, binding);
+        }
+        if (parent instanceof SuperMethodInvocation invocation && invocation.getName() == bindingName) {
+            IMethodBinding binding = invocation.resolveMethodBinding();
+            if (!matchesInvocationArity(binding, invocation.arguments().size())) {
+                return new BindingResolution(null, true);
+            }
+            return resolveMethodBinding(parsed.bindingCu, binding);
+        }
+        return new BindingResolution(null, false);
+    }
+
+    private boolean matchesInvocationArity(IMethodBinding binding, int argCount) {
+        if (binding == null) {
+            return false;
+        }
+
+        int paramCount = binding.getParameterTypes().length;
+        if (binding.isVarargs()) {
+            return argCount >= Math.max(0, paramCount - 1);
+        }
+        return argCount == paramCount;
+    }
+
+    private BindingResolution resolveMethodBinding(CompilationUnit cu, IMethodBinding binding) {
+        if (binding == null) {
+            return new BindingResolution(null, true);
+        }
+
+        AbstractTypeDeclaration type = findTypeDeclaration(cu, binding.getDeclaringClass());
+        if (type == null) {
+            return new BindingResolution(null, true);
+        }
+
+        ASTNode declaration = findMethodDeclaration(type, binding);
+        if (declaration instanceof MethodDeclaration method) {
+            DeclKind kind = method.isConstructor() ? DeclKind.CONSTRUCTOR : DeclKind.METHOD;
+            return new BindingResolution(new Decl(kind, method, method.getName(), type), true);
+        }
+
+        return new BindingResolution(null, true);
+    }
+
+    private Decl findMethodMember(AbstractTypeDeclaration type, String identifier, int argCount) {
+        for (Object bodyDeclObj : type.bodyDeclarations()) {
+            if (bodyDeclObj instanceof MethodDeclaration method
+                    && identifier.equals(method.getName().getIdentifier())
+                    && method.parameters().size() == argCount) {
+                DeclKind kind = method.isConstructor() ? DeclKind.CONSTRUCTOR : DeclKind.METHOD;
+                return new Decl(kind, method, method.getName(), type);
+            }
+        }
+        return null;
+    }
+
+    private Decl findFieldMember(AbstractTypeDeclaration type, String identifier) {
         for (Object bodyDeclObj : type.bodyDeclarations()) {
             if (bodyDeclObj instanceof FieldDeclaration field) {
                 for (Object fragObj : field.fragments()) {
@@ -675,10 +918,19 @@ public class AstNavigationService {
                         return new Decl(DeclKind.FIELD, frag, frag.getName(), type);
                     }
                 }
-            } else if (bodyDeclObj instanceof MethodDeclaration method) {
-                if (identifier.equals(method.getName().getIdentifier())) {
-                    DeclKind kind = method.isConstructor() ? DeclKind.CONSTRUCTOR : DeclKind.METHOD;
-                    return new Decl(kind, method, method.getName(), type);
+            }
+        }
+        return null;
+    }
+
+    private Decl findTypeMember(AbstractTypeDeclaration type, String identifier) {
+        for (Object bodyDeclObj : type.bodyDeclarations()) {
+            if (bodyDeclObj instanceof FieldDeclaration field) {
+                for (Object fragObj : field.fragments()) {
+                    if (fragObj instanceof VariableDeclarationFragment frag
+                            && identifier.equals(frag.getName().getIdentifier())) {
+                        return new Decl(DeclKind.FIELD, frag, frag.getName(), type);
+                    }
                 }
             } else if (bodyDeclObj instanceof AbstractTypeDeclaration nested) {
                 SimpleName name = nested.getName();
@@ -927,39 +1179,500 @@ public class AstNavigationService {
         return "";
     }
 
+    private String renderExternalDocumentation(IBinding binding, String sourceLevel) {
+        ExternalParsedUnit parsed = parseExternalSource(binding, sourceLevel);
+        if (parsed == null) {
+            return "";
+        }
+
+        ASTNode node = findExternalDeclaration(parsed.cu, binding);
+        if (node instanceof MethodDeclaration method) {
+            return renderJavadoc(method.getJavadoc());
+        }
+        if (node instanceof AbstractTypeDeclaration type) {
+            return renderJavadoc(type.getJavadoc());
+        }
+        if (node instanceof FieldDeclaration field) {
+            return renderJavadoc(field.getJavadoc());
+        }
+        if (node instanceof EnumConstantDeclaration constant) {
+            return renderJavadoc(constant.getJavadoc());
+        }
+        return "";
+    }
+
+    private ExternalParsedUnit parseExternalSource(IBinding binding, String sourceLevel) {
+        String source = readExternalSource(binding);
+        if (source == null || source.isBlank()) {
+            return null;
+        }
+
+        ASTParser parser = ASTParser.newParser(AST.getJLSLatest());
+        parser.setSource(source.toCharArray());
+        parser.setKind(ASTParser.K_COMPILATION_UNIT);
+        parser.setResolveBindings(false);
+        parser.setStatementsRecovery(true);
+        parser.setBindingsRecovery(true);
+        parser.setCompilerOptions(compilerOptions(sourceLevel));
+        CompilationUnit cu = (CompilationUnit) parser.createAST(null);
+        return new ExternalParsedUnit(source, cu);
+    }
+
+    private String readExternalSource(IBinding binding) {
+        ITypeBinding topLevelType = topLevelTypeForBinding(binding);
+        if (topLevelType == null) {
+            return null;
+        }
+
+        String path = sourcePath(topLevelType);
+        if (path == null) {
+            return null;
+        }
+
+        if (SOURCE_CACHE.containsKey(path)) {
+            return SOURCE_CACHE.get(path);
+        }
+
+        String source = readSourceFromZip(path);
+        SOURCE_CACHE.put(path, source);
+        return source;
+    }
+
+    private ITypeBinding topLevelTypeForBinding(IBinding binding) {
+        ITypeBinding type;
+        if (binding instanceof ITypeBinding t) {
+            type = t.getTypeDeclaration();
+        } else if (binding instanceof IMethodBinding m) {
+            type = m.getDeclaringClass();
+        } else if (binding instanceof IVariableBinding v) {
+            type = v.getDeclaringClass();
+        } else {
+            type = null;
+        }
+        if (type == null) {
+            return null;
+        }
+
+        ITypeBinding current = type.getTypeDeclaration();
+        while (current.getDeclaringClass() != null) {
+            current = current.getDeclaringClass().getTypeDeclaration();
+        }
+        return current;
+    }
+
+    private String sourcePath(ITypeBinding topLevelType) {
+        String packageName = topLevelType.getPackage() != null ? topLevelType.getPackage().getName() : "";
+        String simpleName = topLevelType.getName();
+        if (simpleName == null || simpleName.isBlank()) {
+            return null;
+        }
+        String rel = simpleName + ".java";
+        return packageName.isBlank() ? rel : packageName.replace('.', '/') + "/" + rel;
+    }
+
+    private String readSourceFromZip(String path) {
+        for (Path zip : sourceZipCandidates()) {
+            if (zip == null || !Files.isRegularFile(zip)) {
+                continue;
+            }
+
+            try (ZipFile file = new ZipFile(zip.toFile())) {
+                ZipEntry entry = file.getEntry(path);
+                if (entry == null) {
+                    Enumeration<? extends ZipEntry> entries = file.entries();
+                    while (entries.hasMoreElements()) {
+                        ZipEntry candidate = entries.nextElement();
+                        String name = candidate.getName();
+                        if (name.equals(path) || name.endsWith("/" + path)) {
+                            entry = candidate;
+                            break;
+                        }
+                    }
+                }
+                if (entry == null) {
+                    continue;
+                }
+                return new String(file.getInputStream(entry).readAllBytes(), StandardCharsets.UTF_8);
+            } catch (IOException ignored) {
+                // Try the next candidate.
+            }
+        }
+        return null;
+    }
+
+    private List<Path> sourceZipCandidates() {
+        String javaHome = System.getProperty("java.home", "");
+        if (javaHome.isBlank()) {
+            return List.of();
+        }
+
+        Path home = Paths.get(javaHome);
+        List<Path> candidates = new ArrayList<>();
+        candidates.add(home.resolve("lib").resolve("src.zip"));
+        candidates.add(home.resolve("src.zip"));
+        if (home.getParent() != null) {
+            candidates.add(home.getParent().resolve("src.zip"));
+            candidates.add(home.getParent().resolve("lib").resolve("src.zip"));
+        }
+        if (home.getParent() != null && home.getParent().getParent() != null) {
+            candidates.add(home.getParent().getParent().resolve("src.zip"));
+        }
+        return candidates;
+    }
+
+    private ASTNode findExternalDeclaration(CompilationUnit cu, IBinding binding) {
+        if (binding instanceof ITypeBinding typeBinding) {
+            return findTypeDeclaration(cu, typeBinding);
+        }
+        if (binding instanceof IMethodBinding methodBinding) {
+            AbstractTypeDeclaration type = findTypeDeclaration(cu, methodBinding.getDeclaringClass());
+            if (type == null) {
+                return null;
+            }
+            return findMethodDeclaration(type, methodBinding);
+        }
+        if (binding instanceof IVariableBinding variableBinding) {
+            if (variableBinding.isField() || variableBinding.isEnumConstant()) {
+                AbstractTypeDeclaration type = findTypeDeclaration(cu, variableBinding.getDeclaringClass());
+                if (type == null) {
+                    return null;
+                }
+                return findFieldDeclaration(type, variableBinding);
+            }
+        }
+        return null;
+    }
+
+    private AbstractTypeDeclaration findTypeDeclaration(CompilationUnit cu, ITypeBinding typeBinding) {
+        List<String> names = typeNameChain(typeBinding);
+        if (names.isEmpty()) {
+            return null;
+        }
+
+        AbstractTypeDeclaration current = null;
+        for (Object typeObj : cu.types()) {
+            if (typeObj instanceof AbstractTypeDeclaration type
+                    && names.get(0).equals(type.getName().getIdentifier())) {
+                current = type;
+                break;
+            }
+        }
+        if (current == null) {
+            return null;
+        }
+
+        for (int i = 1; i < names.size(); i++) {
+            current = findNestedType(current, names.get(i));
+            if (current == null) {
+                return null;
+            }
+        }
+        return current;
+    }
+
+    private List<String> typeNameChain(ITypeBinding typeBinding) {
+        List<String> names = new ArrayList<>();
+        ITypeBinding current = typeBinding != null ? typeBinding.getTypeDeclaration() : null;
+        while (current != null) {
+            String name = current.getName();
+            if (name == null || name.isBlank()) {
+                return List.of();
+            }
+            names.add(name);
+            current = current.getDeclaringClass();
+        }
+        Collections.reverse(names);
+        return names;
+    }
+
+    private AbstractTypeDeclaration findNestedType(AbstractTypeDeclaration type, String name) {
+        for (Object bodyDeclObj : type.bodyDeclarations()) {
+            if (bodyDeclObj instanceof AbstractTypeDeclaration nested
+                    && name.equals(nested.getName().getIdentifier())) {
+                return nested;
+            }
+        }
+        return null;
+    }
+
+    private ASTNode findMethodDeclaration(AbstractTypeDeclaration type, IMethodBinding binding) {
+        List<MethodDeclaration> candidates = new ArrayList<>();
+        IMethodBinding target = binding.getMethodDeclaration();
+        int paramCount = target.getParameterTypes().length;
+
+        for (Object bodyDeclObj : type.bodyDeclarations()) {
+            if (!(bodyDeclObj instanceof MethodDeclaration method)) continue;
+            if (method.isConstructor() != target.isConstructor()) continue;
+            if (!method.getName().getIdentifier().equals(target.getName())) continue;
+            if (method.parameters().size() != paramCount) continue;
+            candidates.add(method);
+        }
+
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        if (candidates.size() == 1) {
+            return candidates.get(0);
+        }
+
+        for (MethodDeclaration candidate : candidates) {
+            if (matchesMethodSignature(candidate, target)) {
+                return candidate;
+            }
+        }
+        return candidates.get(0);
+    }
+
+    private boolean matchesMethodSignature(MethodDeclaration method, IMethodBinding binding) {
+        ITypeBinding[] params = binding.getParameterTypes();
+        for (int i = 0; i < params.length; i++) {
+            Object paramObj = method.parameters().get(i);
+            if (!(paramObj instanceof SingleVariableDeclaration param)) {
+                return false;
+            }
+            if (!typeMatches(param.getType(), param.isVarargs(), params[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean typeMatches(Type sourceType, boolean varargs, ITypeBinding bindingType) {
+        String source = normalizeTypeName(sourceType.toString(), varargs);
+        if (source.isBlank()) {
+            return false;
+        }
+
+        Set<String> candidates = new LinkedHashSet<>();
+        collectBindingTypeNames(candidates, bindingType, varargs);
+        return candidates.contains(source);
+    }
+
+    private void collectBindingTypeNames(Set<String> out, ITypeBinding bindingType, boolean varargs) {
+        if (bindingType == null) {
+            return;
+        }
+        ITypeBinding type = bindingType.getErasure();
+        out.add(normalizeTypeName(type.getName(), varargs));
+        out.add(normalizeTypeName(type.getQualifiedName(), varargs));
+        out.add(normalizeTypeName(simpleTypeName(type.getQualifiedName()), varargs));
+        if (type.isArray()) {
+            ITypeBinding element = type.getElementType();
+            if (element != null) {
+                String suffix = "[]".repeat(type.getDimensions());
+                if (varargs && suffix.endsWith("[]")) {
+                    suffix = suffix.substring(0, suffix.length() - 2) + "...";
+                }
+                out.add(normalizeTypeName(element.getName() + suffix, false));
+                out.add(normalizeTypeName(element.getQualifiedName() + suffix, false));
+                out.add(normalizeTypeName(simpleTypeName(element.getQualifiedName()) + suffix, false));
+            }
+        }
+    }
+
+    private String normalizeTypeName(String value, boolean varargs) {
+        String raw = stripGenericArguments(value == null ? "" : value).replace('$', '.').replace(" ", "");
+        if (varargs) {
+            raw = raw.replace("...", "[]");
+        }
+        return raw;
+    }
+
+    private String stripGenericArguments(String value) {
+        StringBuilder out = new StringBuilder();
+        int depth = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '<') {
+                depth++;
+                continue;
+            }
+            if (ch == '>') {
+                depth = Math.max(depth - 1, 0);
+                continue;
+            }
+            if (depth == 0) {
+                out.append(ch);
+            }
+        }
+        return out.toString();
+    }
+
+    private String simpleTypeName(String qualifiedName) {
+        int idx = qualifiedName.lastIndexOf('.');
+        return idx >= 0 ? qualifiedName.substring(idx + 1) : qualifiedName;
+    }
+
+    private ASTNode findFieldDeclaration(AbstractTypeDeclaration type, IVariableBinding binding) {
+        String name = binding.getName();
+        if (binding.isEnumConstant() && type instanceof EnumDeclaration enumDecl) {
+            for (Object constantObj : enumDecl.enumConstants()) {
+                if (constantObj instanceof EnumConstantDeclaration constant
+                        && name.equals(constant.getName().getIdentifier())) {
+                    return constant;
+                }
+            }
+        }
+
+        for (Object bodyDeclObj : type.bodyDeclarations()) {
+            if (!(bodyDeclObj instanceof FieldDeclaration field)) continue;
+            for (Object fragObj : field.fragments()) {
+                if (fragObj instanceof VariableDeclarationFragment fragment
+                        && name.equals(fragment.getName().getIdentifier())) {
+                    return field;
+                }
+            }
+        }
+        return null;
+    }
+
     private String renderJavadoc(Javadoc javadoc) {
         if (javadoc == null) {
             return "";
         }
 
-        StringBuilder out = new StringBuilder();
+        List<String> summary = new ArrayList<>();
+        List<String> params = new ArrayList<>();
+        List<String> returns = new ArrayList<>();
+        List<String> throwsDocs = new ArrayList<>();
+        List<String> seeAlso = new ArrayList<>();
+        List<String> since = new ArrayList<>();
+        List<String> authors = new ArrayList<>();
+        List<String> apiNotes = new ArrayList<>();
+        List<String> implSpecs = new ArrayList<>();
+        List<String> implNotes = new ArrayList<>();
+        List<String> provides = new ArrayList<>();
+        List<String> uses = new ArrayList<>();
+        List<String> other = new ArrayList<>();
+
         for (Object tagObj : javadoc.tags()) {
             if (!(tagObj instanceof TagElement tag)) continue;
+
+            String name = tag.getTagName();
             String rendered = renderTag(tag);
-            if (!rendered.isBlank()) {
-                if (out.length() > 0) {
-                    out.append("\n");
-                }
-                out.append(rendered);
+            if (rendered.isBlank()) {
+                continue;
+            }
+
+            if (name == null) {
+                summary.add(rendered);
+            } else if ("@param".equals(name)) {
+                params.add(formatNamedTagItem(tag));
+            } else if ("@return".equals(name)) {
+                returns.add(rendered);
+            } else if ("@throws".equals(name) || "@exception".equals(name)) {
+                throwsDocs.add(formatNamedTagItem(tag));
+            } else if ("@see".equals(name)) {
+                seeAlso.add(rendered);
+            } else if ("@since".equals(name)) {
+                since.add(rendered);
+            } else if ("@author".equals(name)) {
+                authors.add(rendered);
+            } else if ("@apiNote".equals(name)) {
+                apiNotes.add(rendered);
+            } else if ("@implSpec".equals(name)) {
+                implSpecs.add(rendered);
+            } else if ("@implNote".equals(name)) {
+                implNotes.add(rendered);
+            } else if ("@provides".equals(name)) {
+                provides.add(rendered);
+            } else if ("@uses".equals(name)) {
+                uses.add(rendered);
+            } else {
+                other.add("**" + name.substring(1) + ":**\n" + rendered);
             }
         }
-        return out.toString().trim();
+
+        List<String> sections = new ArrayList<>();
+        if (!summary.isEmpty()) {
+            sections.add(String.join("\n\n", summary));
+        }
+        addSection(sections, "API Note", apiNotes, false);
+        addSection(sections, "Implementation Note", implNotes, false);
+        addSection(sections, "Implementation Requirements", implSpecs, false);
+        if (!params.isEmpty()) {
+            sections.add("**Parameters:**\n" + String.join("\n", params));
+        }
+        if (!returns.isEmpty()) {
+            sections.add("**Returns:**\n" + String.join("\n\n", returns));
+        }
+        if (!throwsDocs.isEmpty()) {
+            sections.add("**Throws:**\n" + String.join("\n", throwsDocs));
+        }
+        addSection(sections, "Provides", provides, true);
+        addSection(sections, "Uses", uses, true);
+        addSection(sections, "See", dedupePreserveOrder(seeAlso), true);
+        addSection(sections, "Since", since, true);
+        addSection(sections, "Author", authors, true);
+        sections.addAll(other);
+
+        return String.join("\n\n", sections).trim();
+    }
+
+    private void addSection(List<String> sections, String heading, List<String> items, boolean bullets) {
+        if (items.isEmpty()) {
+            return;
+        }
+
+        if (bullets) {
+            sections.add("**" + heading + ":**\n- " + String.join("\n- ", items));
+            return;
+        }
+
+        sections.add("**" + heading + ":**\n" + String.join("\n\n", items));
+    }
+
+    private List<String> dedupePreserveOrder(List<String> items) {
+        return new ArrayList<>(new LinkedHashSet<>(items));
+    }
+
+    private String formatNamedTagItem(TagElement tag) {
+        List<?> fragments = tag.fragments();
+        if (fragments.isEmpty()) {
+            return "-";
+        }
+
+        String label = normalizeWhitespace(renderFragment(fragments.get(0)));
+        String body = fragments.size() > 1
+            ? normalizeWhitespace(renderFragments(fragments.subList(1, fragments.size())))
+            : "";
+
+        if (label.isBlank()) {
+            return body.isBlank() ? "-" : "- " + body;
+        }
+        if (body.isBlank()) {
+            return "- `" + label + "`";
+        }
+        return "- `" + label + "`: " + body;
     }
 
     private String renderTag(TagElement tag) {
         String name = tag.getTagName();
-        String fragments = renderFragments(tag.fragments()).trim();
+        String fragments = normalizeWhitespace(renderFragments(tag.fragments()));
         if (name == null) {
             return fragments;
         }
         if ("@param".equals(name)) {
-            return "*param* " + fragments;
+            return fragments;
         }
         if ("@return".equals(name)) {
-            return "*returns* " + fragments;
+            return fragments;
         }
         if ("@throws".equals(name) || "@exception".equals(name)) {
-            return "*throws* " + fragments;
+            return fragments;
+        }
+        if ("@see".equals(name)) {
+            return fragments;
+        }
+        if ("@since".equals(name)) {
+            return fragments;
+        }
+        if ("@link".equals(name) || "@linkplain".equals(name) || "@code".equals(name)
+                || "@literal".equals(name)) {
+            return "`" + fragments + "`";
+        }
+        if ("@systemProperty".equals(name)) {
+            return "`" + cleanSystemPropertyReference(fragments) + "`";
         }
         return "`" + name + "` " + fragments;
     }
@@ -967,30 +1680,134 @@ public class AstNavigationService {
     private String renderFragments(List<?> fragments) {
         StringBuilder out = new StringBuilder();
         for (Object fragment : fragments) {
-            String rendered;
-            if (fragment instanceof TextElement text) {
-                rendered = text.getText();
-            } else if (fragment instanceof Name name) {
-                rendered = name.getFullyQualifiedName();
-            } else if (fragment instanceof MemberRef memberRef) {
-                rendered = memberRef.getName().getIdentifier();
-            } else if (fragment instanceof MethodRef methodRef) {
-                rendered = methodRef.getName().getIdentifier();
-            } else if (fragment instanceof TagElement nested) {
-                rendered = renderTag(nested);
-            } else {
-                rendered = fragment.toString();
-            }
-
+            String rendered = renderFragment(fragment);
             if (rendered == null || rendered.isBlank()) {
                 continue;
             }
-            if (out.length() > 0 && !Character.isWhitespace(out.charAt(out.length() - 1))) {
-                out.append(" ");
-            }
-            out.append(rendered.trim());
+            appendFragment(out, rendered);
         }
         return out.toString();
+    }
+
+    private String renderFragment(Object fragment) {
+        if (fragment instanceof TextElement text) {
+            return stripHtml(text.getText());
+        }
+        if (fragment instanceof Name name) {
+            return name.getFullyQualifiedName();
+        }
+        if (fragment instanceof MemberRef memberRef) {
+            return memberRef.getName().getIdentifier();
+        }
+        if (fragment instanceof MethodRef methodRef) {
+            return methodRef.getName().getIdentifier();
+        }
+        if (fragment instanceof TagElement nested) {
+            return renderInlineTag(nested);
+        }
+        return fragment != null ? fragment.toString() : "";
+    }
+
+    private String renderInlineTag(TagElement tag) {
+        String name = tag.getTagName();
+        String fragments = normalizeWhitespace(renderFragments(tag.fragments()));
+        if (fragments.isBlank()) {
+            return "";
+        }
+        if (name == null) {
+            return fragments;
+        }
+        if ("@link".equals(name) || "@linkplain".equals(name) || "@code".equals(name)
+                || "@literal".equals(name) || "@value".equals(name) || "@systemProperty".equals(name)) {
+            if ("@systemProperty".equals(name)) {
+                return "`" + cleanSystemPropertyReference(fragments) + "`";
+            }
+            return "`" + fragments + "`";
+        }
+        return fragments;
+    }
+
+    private void appendFragment(StringBuilder out, String fragment) {
+        String trimmed = fragment.trim();
+        if (trimmed.isEmpty()) {
+            return;
+        }
+
+        boolean punctuation = ".,;:!?)]}".indexOf(trimmed.charAt(0)) >= 0;
+        boolean opens = "([{" .indexOf(trimmed.charAt(0)) >= 0;
+        if (out.length() > 0 && !Character.isWhitespace(out.charAt(out.length() - 1)) && !punctuation) {
+            out.append(' ');
+        }
+        if (out.length() > 0 && opens && out.charAt(out.length() - 1) == ' ') {
+            out.setLength(out.length() - 1);
+        }
+        out.append(trimmed);
+    }
+
+    private String normalizeWhitespace(String text) {
+        Map<String, String> codeBlocks = new LinkedHashMap<>();
+        Matcher matcher = Pattern.compile("```[\\s\\S]*?```").matcher(text);
+        StringBuffer buffer = new StringBuffer();
+        int index = 0;
+        while (matcher.find()) {
+            String token = "@@CODE_BLOCK_" + index++ + "@@";
+            codeBlocks.put(token, normalizeCodeBlock(matcher.group()));
+            matcher.appendReplacement(buffer, Matcher.quoteReplacement(token));
+        }
+        matcher.appendTail(buffer);
+
+        String normalized = buffer.toString()
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .replaceAll("\\s+", " ")
+                .replaceAll("\\s+([.,;:!?])", "$1")
+                .replace("( ", "(")
+                .replace(" )", ")")
+                .trim();
+
+        for (Map.Entry<String, String> entry : codeBlocks.entrySet()) {
+            normalized = normalized.replace(entry.getKey(), entry.getValue());
+        }
+        return normalized;
+    }
+
+    private String normalizeCodeBlock(String codeBlock) {
+        String body = codeBlock.substring(3, codeBlock.length() - 3).trim();
+        if (body.startsWith("java")) {
+            body = body.substring(4).trim();
+            return "```java\n" + body + "\n```";
+        }
+        return "```\n" + body + "\n```";
+    }
+
+    private String cleanSystemPropertyReference(String value) {
+        String cleaned = normalizeWhitespace(value).replaceFirst("^#+", "");
+        int space = cleaned.indexOf(' ');
+        if (space > 0) {
+            String first = cleaned.substring(0, space);
+            String rest = cleaned.substring(space + 1).trim();
+            if (first.equals(rest)) {
+                return first;
+            }
+        }
+        return cleaned;
+    }
+
+    private String stripHtml(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+
+        return text
+                .replaceAll("(?i)<pre>", "\n```java\n")
+                .replaceAll("(?i)</pre>", "\n```\n")
+                .replaceAll("(?i)<blockquote>", "\n")
+                .replaceAll("(?i)</blockquote>", "\n")
+                .replaceAll("(?i)<p>", "\n\n")
+                .replaceAll("(?i)</p>", "")
+                .replaceAll("(?i)<br\\s*/?>", "\n")
+                .replaceAll("(?i)</?code>", "`")
+                .replaceAll("(?i)<[^>]+>", " ");
     }
 
     private String renderParamDocumentation(Javadoc javadoc, String paramName) {
