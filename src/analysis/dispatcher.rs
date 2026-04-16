@@ -3,7 +3,7 @@
 use crate::config::Config;
 use crate::document_store::DocumentStore;
 use super::semantic::{BridgeRequest, BridgeResponse, EcjProcess, NavKind};
-use super::semantic::protocol::BridgeRange;
+use super::semantic::protocol::{BridgeRange, BridgeDiagnostic};
 use super::semantic::ecj_process::next_id;
 use anyhow::{anyhow, Result};
 use tower_lsp::lsp_types::Url;
@@ -125,7 +125,7 @@ impl Dispatcher {
         }).await
     }
 
-    pub async fn code_action(&self, uri: &Url, range: BridgeRange) -> Result<BridgeResponse> {
+    pub async fn code_action(&self, uri: &Url, range: BridgeRange, diagnostics: Vec<BridgeDiagnostic>) -> Result<BridgeResponse> {
         let (classpath, source_level) = self.classpath_and_level().await;
         self.send(BridgeRequest::CodeAction {
             id: next_id(),
@@ -134,6 +134,7 @@ impl Dispatcher {
             source_level,
             uri: uri.to_string(),
             range,
+            diagnostics,
         }).await
     }
 
@@ -203,6 +204,76 @@ impl Dispatcher {
             uri: uri.to_string(),
             tab_size,
             insert_spaces,
+        }).await
+    }
+
+    pub async fn type_hierarchy_prepare(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
+        let (classpath, source_level) = self.classpath_and_level().await;
+        self.send(BridgeRequest::TypeHierarchyPrepare {
+            id: next_id(),
+            files: self.store.all_contents(),
+            classpath,
+            source_level,
+            uri: uri.to_string(),
+            offset,
+        }).await
+    }
+
+    pub async fn type_hierarchy_supertypes(&self, data: String) -> Result<BridgeResponse> {
+        let (classpath, source_level) = self.classpath_and_level().await;
+        self.send(BridgeRequest::TypeHierarchySupertypes {
+            id: next_id(),
+            files: self.store.all_contents(),
+            classpath,
+            source_level,
+            data,
+        }).await
+    }
+
+    pub async fn type_hierarchy_subtypes(&self, data: String) -> Result<BridgeResponse> {
+        let (classpath, source_level) = self.classpath_and_level().await;
+        self.send(BridgeRequest::TypeHierarchySubtypes {
+            id: next_id(),
+            files: self.store.all_contents(),
+            classpath,
+            source_level,
+            data,
+        }).await
+    }
+
+    pub async fn call_hierarchy_prepare(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
+        let (classpath, source_level) = self.classpath_and_level().await;
+        self.send(BridgeRequest::CallHierarchyPrepare {
+            id: next_id(),
+            files: self.store.all_contents(),
+            classpath,
+            source_level,
+            uri: uri.to_string(),
+            offset,
+        }).await
+    }
+
+    pub async fn call_hierarchy_incoming(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
+        let (classpath, source_level) = self.classpath_and_level().await;
+        self.send(BridgeRequest::CallHierarchyIncoming {
+            id: next_id(),
+            files: self.store.all_contents(),
+            classpath,
+            source_level,
+            uri: uri.to_string(),
+            offset,
+        }).await
+    }
+
+    pub async fn call_hierarchy_outgoing(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
+        let (classpath, source_level) = self.classpath_and_level().await;
+        self.send(BridgeRequest::CallHierarchyOutgoing {
+            id: next_id(),
+            files: self.store.all_contents(),
+            classpath,
+            source_level,
+            uri: uri.to_string(),
+            offset,
         }).await
     }
 

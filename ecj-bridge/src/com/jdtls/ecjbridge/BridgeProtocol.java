@@ -26,6 +26,8 @@ public class BridgeProtocol {
         public String source;   // for Format requests
         public int tabSize;
         public boolean insertSpaces;
+        public List<BridgeDiagnostic> diagnostics;
+        public String data;    // opaque data passed back for typeHierarchy supertypes/subtypes
     }
 
     public static class BridgeRange {
@@ -191,6 +193,82 @@ public class BridgeProtocol {
         public List<BridgeCodeLens> lenses;
         public CodeLensResponse(long id, List<BridgeCodeLens> lenses) {
             this.id = id; this.method = "codeLenses"; this.lenses = lenses;
+        }
+    }
+
+    // ─── Call Hierarchy ───────────────────────────────────────────────────────
+
+    public static class BridgeCallHierarchyItem {
+        public String name;
+        public int kind;       // LSP SymbolKind: 6=Method, 9=Constructor, 5=Class
+        public String detail;  // declaring class name
+        public String uri;
+        // full method range
+        public int startLine, startChar, endLine, endChar;
+        // name-only (selectionRange)
+        public int selStartLine, selStartChar, selEndLine, selEndChar;
+    }
+
+    public static class BridgeCallFromRange {
+        public int startLine, startChar, endLine, endChar;
+    }
+
+    public static class BridgeCallHierarchyIncomingCall {
+        public BridgeCallHierarchyItem from;
+        public List<BridgeCallFromRange> fromRanges;
+    }
+
+    public static class BridgeCallHierarchyOutgoingCall {
+        public BridgeCallHierarchyItem to;
+        public List<BridgeCallFromRange> fromRanges;
+    }
+
+    public static class CallHierarchyPrepareResponse extends Response {
+        public List<BridgeCallHierarchyItem> items;
+        public CallHierarchyPrepareResponse(long id, List<BridgeCallHierarchyItem> items) {
+            this.id = id; this.method = "callHierarchyPrepare"; this.items = items;
+        }
+    }
+
+    public static class CallHierarchyIncomingCallsResponse extends Response {
+        public List<BridgeCallHierarchyIncomingCall> calls;
+        public CallHierarchyIncomingCallsResponse(long id, List<BridgeCallHierarchyIncomingCall> calls) {
+            this.id = id; this.method = "callHierarchyIncomingCalls"; this.calls = calls;
+        }
+    }
+
+    public static class CallHierarchyOutgoingCallsResponse extends Response {
+        public List<BridgeCallHierarchyOutgoingCall> calls;
+        public CallHierarchyOutgoingCallsResponse(long id, List<BridgeCallHierarchyOutgoingCall> calls) {
+            this.id = id; this.method = "callHierarchyOutgoingCalls"; this.calls = calls;
+        }
+    }
+
+    // ─── Type Hierarchy ───────────────────────────────────────────────────────
+
+    public static class BridgeTypeHierarchyItem {
+        public String name;
+        public int kind;       // LSP SymbolKind: 5=Class, 11=Interface, 10=Enum
+        public String detail;  // package name
+        public String uri;
+        // full type range
+        public int startLine, startChar, endLine, endChar;
+        // name-only (selectionRange)
+        public int selStartLine, selStartChar, selEndLine, selEndChar;
+        public String data;    // opaque: "uri\toffset" used to re-resolve in supertypes/subtypes calls
+    }
+
+    public static class TypeHierarchyPrepareResponse extends Response {
+        public List<BridgeTypeHierarchyItem> items;
+        public TypeHierarchyPrepareResponse(long id, List<BridgeTypeHierarchyItem> items) {
+            this.id = id; this.method = "typeHierarchyPrepare"; this.items = items;
+        }
+    }
+
+    public static class TypeHierarchyItemsResponse extends Response {
+        public List<BridgeTypeHierarchyItem> items;
+        public TypeHierarchyItemsResponse(long id, String method, List<BridgeTypeHierarchyItem> items) {
+            this.id = id; this.method = method; this.items = items;
         }
     }
 }

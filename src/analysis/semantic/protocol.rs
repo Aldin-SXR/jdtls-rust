@@ -61,6 +61,8 @@ pub enum BridgeRequest {
         source_level: String,
         uri: String,
         range: BridgeRange,
+        #[serde(default)]
+        diagnostics: Vec<BridgeDiagnostic>,
     },
     SignatureHelp {
         id: u64,
@@ -77,6 +79,7 @@ pub enum BridgeRequest {
         source_level: String,
         uri: String,
         offset: usize,
+        #[serde(rename = "newName")]
         new_name: String,
     },
     OrganizeImports {
@@ -106,6 +109,53 @@ pub enum BridgeRequest {
         classpath: Vec<String>,
         source_level: String,
         uri: String,
+    },
+    TypeHierarchyPrepare {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        uri: String,
+        offset: usize,
+    },
+    TypeHierarchySupertypes {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        /// Opaque data from `BridgeTypeHierarchyItem.data` (uri + "\t" + offset)
+        data: String,
+    },
+    TypeHierarchySubtypes {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        data: String,
+    },
+    CallHierarchyPrepare {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        uri: String,
+        offset: usize,
+    },
+    CallHierarchyIncoming {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        uri: String,
+        offset: usize,
+    },
+    CallHierarchyOutgoing {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        uri: String,
+        offset: usize,
     },
     Shutdown { id: u64 },
 }
@@ -169,13 +219,37 @@ pub enum BridgeResponse {
         uri: String,
         edits: Vec<BridgeTextEdit>,
     },
-    InlayHintsResult {
+    InlayHints {
         id: u64,
         hints: Vec<BridgeInlayHint>,
     },
     CodeLenses {
         id: u64,
         lenses: Vec<BridgeCodeLens>,
+    },
+    TypeHierarchyPrepare {
+        id: u64,
+        items: Vec<BridgeTypeHierarchyItem>,
+    },
+    TypeHierarchySupertypes {
+        id: u64,
+        items: Vec<BridgeTypeHierarchyItem>,
+    },
+    TypeHierarchySubtypes {
+        id: u64,
+        items: Vec<BridgeTypeHierarchyItem>,
+    },
+    CallHierarchyPrepare {
+        id: u64,
+        items: Vec<BridgeCallHierarchyItem>,
+    },
+    CallHierarchyIncomingCalls {
+        id: u64,
+        calls: Vec<BridgeCallHierarchyIncomingCall>,
+    },
+    CallHierarchyOutgoingCalls {
+        id: u64,
+        calls: Vec<BridgeCallHierarchyOutgoingCall>,
     },
     Ok { id: u64 },
     Error {
@@ -195,8 +269,14 @@ impl BridgeResponse {
             | BridgeResponse::SignatureHelp { id, .. }
             | BridgeResponse::WorkspaceEdit { id, .. }
             | BridgeResponse::TextEdits { id, .. }
-            | BridgeResponse::InlayHintsResult { id, .. }
+            | BridgeResponse::InlayHints { id, .. }
             | BridgeResponse::CodeLenses { id, .. }
+            | BridgeResponse::TypeHierarchyPrepare { id, .. }
+            | BridgeResponse::TypeHierarchySupertypes { id, .. }
+            | BridgeResponse::TypeHierarchySubtypes { id, .. }
+            | BridgeResponse::CallHierarchyPrepare { id, .. }
+            | BridgeResponse::CallHierarchyIncomingCalls { id, .. }
+            | BridgeResponse::CallHierarchyOutgoingCalls { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
         }
@@ -205,7 +285,7 @@ impl BridgeResponse {
 
 // ─── Shared data types ───────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeDiagnostic {
     pub uri: String,
@@ -307,4 +387,62 @@ pub struct BridgeCodeLens {
     pub command: Option<String>,
     /// Arguments forwarded to the command.
     pub args: Option<Vec<Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeTypeHierarchyItem {
+    pub name: String,
+    pub kind: u8, // 5=Class, 10=Enum, 11=Interface
+    pub detail: Option<String>,
+    pub uri: String,
+    pub start_line: u32,
+    pub start_char: u32,
+    pub end_line: u32,
+    pub end_char: u32,
+    pub sel_start_line: u32,
+    pub sel_start_char: u32,
+    pub sel_end_line: u32,
+    pub sel_end_char: u32,
+    pub data: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeCallHierarchyItem {
+    pub name: String,
+    pub kind: u8, // 6=Method, 9=Constructor, 5=Class
+    pub detail: Option<String>,
+    pub uri: String,
+    pub start_line: u32,
+    pub start_char: u32,
+    pub end_line: u32,
+    pub end_char: u32,
+    pub sel_start_line: u32,
+    pub sel_start_char: u32,
+    pub sel_end_line: u32,
+    pub sel_end_char: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeCallFromRange {
+    pub start_line: u32,
+    pub start_char: u32,
+    pub end_line: u32,
+    pub end_char: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeCallHierarchyIncomingCall {
+    pub from: BridgeCallHierarchyItem,
+    pub from_ranges: Vec<BridgeCallFromRange>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeCallHierarchyOutgoingCall {
+    pub to: BridgeCallHierarchyItem,
+    pub from_ranges: Vec<BridgeCallFromRange>,
 }

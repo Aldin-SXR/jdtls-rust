@@ -106,6 +106,17 @@ public class AstNavigationService {
         // 1. Fast path: same-file AST lookup (no bindings, no classpath needed).
         ParsedUnit parsed = parse(sourceFiles, sourceLevel, targetUri);
         if (parsed != null) {
+            // Don't show hover when the symbol at the cursor has an error problem.
+            ASTNode hoverNode = nodeAt(parsed.cu, offset);
+            SimpleName hoverName = hoverNode != null ? asSimpleName(hoverNode) : null;
+            if (hoverName != null) {
+                int hs = hoverName.getStartPosition(), he = hs + hoverName.getLength();
+                for (org.eclipse.jdt.core.compiler.IProblem p : parsed.cu.getProblems()) {
+                    if (p.isError() && p.getSourceStart() <= he && p.getSourceEnd() >= hs) {
+                        return "";
+                    }
+                }
+            }
             Decl decl = resolveDeclaration(parsed, offset);
             if (decl != null) {
                 StringBuilder markdown = new StringBuilder();
@@ -145,6 +156,17 @@ public class AstNavigationService {
         ASTNode node = nodeAt(cu, offset);
         SimpleName name = asSimpleName(node);
         if (name == null) return "";
+
+        // Suppress hover when the symbol has an error diagnostic (e.g. "cannot be resolved to a
+        // type"). ECJ still resolves bindings via the running-VM boot classpath so `binding` would
+        // be non-null, but showing Javadoc for an unresolvable reference is misleading.
+        int nameStart = name.getStartPosition();
+        int nameEnd   = nameStart + name.getLength();
+        for (org.eclipse.jdt.core.compiler.IProblem p : cu.getProblems()) {
+            if (p.isError() && p.getSourceStart() <= nameEnd && p.getSourceEnd() >= nameStart) {
+                return "";
+            }
+        }
 
         IBinding binding = name.resolveBinding();
         if (binding == null) return "";
@@ -266,17 +288,212 @@ public class AstNavigationService {
             int offset,
             String kind) {
 
-        if (!"Definition".equals(kind) && !"Declaration".equals(kind)) {
-            return Collections.emptyList();
-        }
-
         ParsedUnit parsed = parse(sourceFiles, sourceLevel, targetUri);
         if (parsed == null) return Collections.emptyList();
 
-        Decl decl = resolveDeclaration(parsed, offset);
-        if (decl == null) return Collections.emptyList();
+        return switch (kind) {
+            case "TypeDefinition"  -> navigateTypeDefinition(parsed, sourceFiles, sourceLevel, offset);
+            case "Implementation"  -> navigateImplementation(parsed, sourceFiles, sourceLevel, offset);
+            case "Definition", "Declaration" -> {
+                Decl decl = resolveDeclaration(parsed, offset);
+                if (decl != null) yield List.of(toLocation(parsed.uri, parsed.source, decl.nameNode));
+                yield navigateCrossFile(parsed, sourceFiles, sourceLevel, offset);
+            }
+            default -> Collections.emptyList();
+        };
+    }
 
-        return List.of(toLocation(parsed.uri, parsed.source, decl.nameNode));
+    /**
+     * Cross-file fallback for goto-definition: searches every other open file for a
+     * type/method/field declaration whose name matches the identifier at the cursor.
+     * Priority: type declarations > methods > fields (to prefer the most specific match).
+     */
+    private List<BridgeLocation> navigateCrossFile(
+            ParsedUnit parsed, Map<String, String> sourceFiles, String sourceLevel, int offset) {
+
+        ASTNode node = nodeAt(parsed.cu, offset);
+        SimpleName name = asSimpleName(node);
+        if (name == null) return Collections.emptyList();
+        String identifier = name.getIdentifier();
+
+        List<BridgeLocation> typeMatches   = new ArrayList<>();
+        List<BridgeLocation> methodMatches = new ArrayList<>();
+        List<BridgeLocation> fieldMatches  = new ArrayList<>();
+
+        for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
+            String uri = entry.getKey();
+            if (uri.equals(parsed.uri)) continue;
+            ParsedUnit other = parse(sourceFiles, sourceLevel, uri);
+            if (other == null) continue;
+
+            other.cu.accept(new ASTVisitor() {
+                @Override public boolean visit(TypeDeclaration n) {
+                    if (identifier.equals(n.getName().getIdentifier()))
+                        typeMatches.add(toLocation(uri, other.source, n.getName()));
+                    return true;
+                }
+                @Override public boolean visit(EnumDeclaration n) {
+                    if (identifier.equals(n.getName().getIdentifier()))
+                        typeMatches.add(toLocation(uri, other.source, n.getName()));
+                    return true;
+                }
+                @Override public boolean visit(AnnotationTypeDeclaration n) {
+                    if (identifier.equals(n.getName().getIdentifier()))
+                        typeMatches.add(toLocation(uri, other.source, n.getName()));
+                    return true;
+                }
+                @Override public boolean visit(MethodDeclaration n) {
+                    if (!n.isConstructor() && identifier.equals(n.getName().getIdentifier()))
+                        methodMatches.add(toLocation(uri, other.source, n.getName()));
+                    return true;
+                }
+                @Override public boolean visit(VariableDeclarationFragment n) {
+                    if (identifier.equals(n.getName().getIdentifier())
+                            && n.getParent() instanceof FieldDeclaration)
+                        fieldMatches.add(toLocation(uri, other.source, n.getName()));
+                    return true;
+                }
+            });
+        }
+
+        if (!typeMatches.isEmpty())   return typeMatches;
+        if (!methodMatches.isEmpty()) return methodMatches;
+        return fieldMatches;
+    }
+
+    /**
+     * Goto-type-definition: given a variable/parameter/field at the cursor, navigate
+     * to the declaration of its declared type.
+     */
+    private List<BridgeLocation> navigateTypeDefinition(
+            ParsedUnit parsed, Map<String, String> sourceFiles, String sourceLevel, int offset) {
+
+        String typeName = resolveTypeName(parsed, offset);
+        if (typeName == null) return Collections.emptyList();
+        // Strip generic parameters (e.g. "List<String>" → "List")
+        int lt = typeName.indexOf('<');
+        if (lt >= 0) typeName = typeName.substring(0, lt).trim();
+        int dot = typeName.lastIndexOf('.');
+        if (dot >= 0) typeName = typeName.substring(dot + 1);
+        if (typeName.isEmpty()) return Collections.emptyList();
+
+        // Same file first
+        Decl found = findTypeDeclaration(parsed.cu, typeName);
+        if (found != null) return List.of(toLocation(parsed.uri, parsed.source, found.nameNode));
+
+        // Cross-file search
+        for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
+            String uri = entry.getKey();
+            if (uri.equals(parsed.uri)) continue;
+            ParsedUnit other = parse(sourceFiles, sourceLevel, uri);
+            if (other == null) continue;
+            Decl otherFound = findTypeDeclaration(other.cu, typeName);
+            if (otherFound != null) return List.of(toLocation(uri, other.source, otherFound.nameNode));
+        }
+        return Collections.emptyList();
+    }
+
+    /**
+     * Extracts the declared-type name for the node at {@code offset}.
+     * Handles: variable declarations, parameters, fields, method return types,
+     * and plain type references (SimpleType / QualifiedName).
+     */
+    private String resolveTypeName(ParsedUnit parsed, int offset) {
+        ASTNode node = nodeAt(parsed.cu, offset);
+        ASTNode current = node;
+        while (current != null) {
+            if (current instanceof SimpleName sn) {
+                ASTNode parent = sn.getParent();
+                if (parent instanceof SimpleType) return sn.getIdentifier();
+                if (parent instanceof SingleVariableDeclaration svd && svd.getName() == sn)
+                    return svd.getType().toString();
+                if (parent instanceof VariableDeclarationFragment vdf && vdf.getName() == sn) {
+                    ASTNode gp = vdf.getParent();
+                    if (gp instanceof VariableDeclarationStatement vds) return vds.getType().toString();
+                    if (gp instanceof FieldDeclaration fd) return fd.getType().toString();
+                }
+                if (parent instanceof MethodDeclaration md && md.getName() == sn
+                        && md.getReturnType2() != null)
+                    return md.getReturnType2().toString();
+            }
+            current = current.getParent();
+        }
+        // Fallback: resolve declaration of the identifier, then get its type
+        Decl decl = resolveDeclaration(parsed, offset);
+        if (decl != null) {
+            ASTNode dn = decl.declarationNode;
+            if (dn instanceof SingleVariableDeclaration svd) return svd.getType().toString();
+            if (dn instanceof VariableDeclarationFragment vdf) {
+                ASTNode p = vdf.getParent();
+                if (p instanceof VariableDeclarationStatement vds) return vds.getType().toString();
+                if (p instanceof FieldDeclaration fd) return fd.getType().toString();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Goto-implementation: finds concrete overrides of the method/interface at the cursor
+     * across all open source files.
+     */
+    private List<BridgeLocation> navigateImplementation(
+            ParsedUnit parsed, Map<String, String> sourceFiles, String sourceLevel, int offset) {
+
+        ASTNode node = nodeAt(parsed.cu, offset);
+        SimpleName name = asSimpleName(node);
+        if (name == null) return Collections.emptyList();
+
+        // Determine the declaring type and method being referenced
+        Decl decl = resolveDeclaration(parsed, offset);
+        if (decl == null || (decl.kind != DeclKind.METHOD && decl.kind != DeclKind.TYPE))
+            return Collections.emptyList();
+
+        String methodName = decl.kind == DeclKind.METHOD
+                ? decl.nameNode.getIdentifier() : null;
+        String declaringTypeName = enclosingType(decl.declarationNode) != null
+                ? enclosingType(decl.declarationNode).getName().getIdentifier()
+                : (decl.kind == DeclKind.TYPE ? decl.nameNode.getIdentifier() : null);
+        if (declaringTypeName == null) return Collections.emptyList();
+
+        List<BridgeLocation> results = new ArrayList<>();
+
+        for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
+            String uri = entry.getKey();
+            ParsedUnit other = parse(sourceFiles, sourceLevel, uri);
+            if (other == null) continue;
+
+            other.cu.accept(new ASTVisitor() {
+                @Override
+                public boolean visit(TypeDeclaration td) {
+                    // Check if this class extends/implements the declaring type
+                    boolean isSubtype = false;
+                    if (td.getSuperclassType() != null) {
+                        String superName = simpleTypeName(td.getSuperclassType().toString());
+                        if (declaringTypeName.equals(superName)) isSubtype = true;
+                    }
+                    for (Object iface : td.superInterfaceTypes()) {
+                        if (declaringTypeName.equals(simpleTypeName(iface.toString()))) {
+                            isSubtype = true;
+                            break;
+                        }
+                    }
+                    if (!isSubtype) return true;
+
+                    // Find the overriding method (or report the class for type impls)
+                    if (methodName != null) {
+                        for (MethodDeclaration md : td.getMethods()) {
+                            if (methodName.equals(md.getName().getIdentifier()) && !md.isConstructor()) {
+                                results.add(toLocation(uri, other.source, md.getName()));
+                            }
+                        }
+                    } else {
+                        results.add(toLocation(uri, other.source, td.getName()));
+                    }
+                    return true;
+                }
+            });
+        }
+        return results;
     }
 
     public List<BridgeLocation> findReferences(
@@ -291,7 +508,33 @@ public class AstNavigationService {
         Decl decl = resolveDeclaration(parsed, offset);
         if (decl == null) return Collections.emptyList();
 
-        return referenceLocations(parsed, decl);
+        // Same-file references
+        List<BridgeLocation> locations = new ArrayList<>(referenceLocations(parsed, decl));
+
+        // Cross-file references: for types only (methods/fields are too noisy by name alone)
+        if (decl.kind == DeclKind.TYPE || decl.kind == DeclKind.CONSTRUCTOR) {
+            String identifier = decl.nameNode.getIdentifier();
+            for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
+                String uri = entry.getKey();
+                if (uri.equals(parsed.uri)) continue;
+                ParsedUnit other = parse(sourceFiles, sourceLevel, uri);
+                if (other == null) continue;
+                List<BridgeLocation> otherRefs = new ArrayList<>();
+                other.cu.accept(new ASTVisitor() {
+                    @Override
+                    public boolean visit(SimpleName n) {
+                        if (identifier.equals(n.getIdentifier()) && !(n.getParent() instanceof MethodDeclaration
+                                && ((MethodDeclaration) n.getParent()).getName() == n)) {
+                            otherRefs.add(toLocation(uri, other.source, n));
+                        }
+                        return true;
+                    }
+                });
+                locations.addAll(otherRefs);
+            }
+        }
+
+        return locations;
     }
 
     public SignatureResult signatureHelp(
@@ -321,6 +564,7 @@ public class AstNavigationService {
 
     public List<BridgeInlayHint> inlayHints(
             Map<String, String> sourceFiles,
+            List<String> classpath,
             String sourceLevel,
             String targetUri) {
 
@@ -329,7 +573,6 @@ public class AstNavigationService {
 
         // Build a param-name database from all open source files.
         // Key: "methodName/argCount", Value: ordered list of param names.
-        // For constructors: "ClassName/argCount".
         Map<String, List<String>> paramDb = new HashMap<>();
         for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
             ASTParser p = ASTParser.newParser(AST.getJLSLatest());
@@ -344,35 +587,43 @@ public class AstNavigationService {
                 public boolean visit(MethodDeclaration node) {
                     List<String> names = new ArrayList<>();
                     for (Object paramObj : node.parameters()) {
-                        if (paramObj instanceof SingleVariableDeclaration svd) {
+                        if (paramObj instanceof SingleVariableDeclaration svd)
                             names.add(svd.getName().getIdentifier());
-                        }
                     }
-                    String key = node.getName().getIdentifier() + "/" + names.size();
-                    paramDb.putIfAbsent(key, names);
+                    paramDb.putIfAbsent(node.getName().getIdentifier() + "/" + names.size(), names);
                     return true;
                 }
             });
         }
 
+        // Parse with bindings + JVM boot classpath to resolve JDK method parameter names.
+        String source = sourceFiles.get(targetUri);
+        ASTParser bindingParser = ASTParser.newParser(AST.getJLSLatest());
+        bindingParser.setSource(source.toCharArray());
+        bindingParser.setKind(ASTParser.K_COMPILATION_UNIT);
+        bindingParser.setResolveBindings(true);
+        bindingParser.setBindingsRecovery(true);
+        bindingParser.setStatementsRecovery(true);
+        bindingParser.setCompilerOptions(compilerOptions(sourceLevel));
+        bindingParser.setUnitName(unitName(targetUri));
+        String[] cp = classpath != null ? classpath.toArray(new String[0]) : new String[0];
+        bindingParser.setEnvironment(cp, null, null, false); // don't use running VM boot classpath (avoids hang on Java 25+)
+        CompilationUnit bindingCu = (CompilationUnit) bindingParser.createAST(null);
+
         // Walk the target file for method / constructor invocations and emit hints.
         List<BridgeInlayHint> hints = new ArrayList<>();
-        parsed.cu.accept(new ASTVisitor() {
-            private void addHints(String methodName, @SuppressWarnings("rawtypes") List rawArgs) {
+        bindingCu.accept(new ASTVisitor() {
+            private void emitHints(@SuppressWarnings("rawtypes") List rawArgs, List<String> params) {
                 @SuppressWarnings("unchecked")
                 List<Expression> args = (List<Expression>) rawArgs;
-                if (args.isEmpty()) return;
-                String key = methodName + "/" + args.size();
-                List<String> params = paramDb.get(key);
-                if (params == null) return;
+                if (args.isEmpty() || params == null) return;
                 for (int i = 0; i < args.size() && i < params.size(); i++) {
                     Expression arg = args.get(i);
-                    // Skip trivial single-name or literal arguments — hints add noise there.
+                    // Skip trivial single-name or string/number/boolean arguments — hints add noise there.
+                    // CharacterLiteral and NullLiteral ARE shown (they're non-obvious to the reader).
                     if (arg instanceof SimpleName || arg instanceof StringLiteral
-                            || arg instanceof NumberLiteral || arg instanceof BooleanLiteral
-                            || arg instanceof NullLiteral || arg instanceof CharacterLiteral) {
+                            || arg instanceof NumberLiteral || arg instanceof BooleanLiteral)
                         continue;
-                    }
                     int[] lc = CompilationService.offsetToLineCol(parsed.source, arg.getStartPosition());
                     BridgeInlayHint hint = new BridgeInlayHint();
                     hint.line = lc[0];
@@ -383,15 +634,28 @@ public class AstNavigationService {
                 }
             }
 
+            private List<String> resolveParams(String nameKey, IMethodBinding binding,
+                                               @SuppressWarnings("rawtypes") List rawArgs) {
+                // Prefer source-derived names (more reliable), fall back to binding.
+                List<String> fromSource = paramDb.get(nameKey);
+                if (fromSource != null) return fromSource;
+                if (binding == null) return null;
+                String[] names = binding.getParameterNames();
+                if (names == null || names.length == 0) return null;
+                return Arrays.asList(names);
+            }
+
             @Override
             public boolean visit(MethodInvocation node) {
-                addHints(node.getName().getIdentifier(), node.arguments());
+                String key = node.getName().getIdentifier() + "/" + node.arguments().size();
+                emitHints(node.arguments(), resolveParams(key, node.resolveMethodBinding(), node.arguments()));
                 return true;
             }
 
             @Override
             public boolean visit(SuperMethodInvocation node) {
-                addHints(node.getName().getIdentifier(), node.arguments());
+                String key = node.getName().getIdentifier() + "/" + node.arguments().size();
+                emitHints(node.arguments(), resolveParams(key, node.resolveMethodBinding(), node.arguments()));
                 return true;
             }
 
@@ -401,7 +665,8 @@ public class AstNavigationService {
                 String name = t.isSimpleType()
                         ? ((SimpleType) t).getName().getFullyQualifiedName()
                         : t.toString();
-                addHints(name, node.arguments());
+                String key = name + "/" + node.arguments().size();
+                emitHints(node.arguments(), resolveParams(key, node.resolveConstructorBinding(), node.arguments()));
                 return true;
             }
 
@@ -409,7 +674,8 @@ public class AstNavigationService {
             public boolean visit(ConstructorInvocation node) {
                 AbstractTypeDeclaration type = enclosingType(node);
                 if (type != null) {
-                    addHints(type.getName().getIdentifier(), node.arguments());
+                    String key = type.getName().getIdentifier() + "/" + node.arguments().size();
+                    emitHints(node.arguments(), resolveParams(key, node.resolveConstructorBinding(), node.arguments()));
                 }
                 return true;
             }
@@ -438,21 +704,21 @@ public class AstNavigationService {
                 BridgeCodeLens refLens = makeReferenceLens(parsed, name, refs, usages);
                 lenses.add(refLens);
 
-                // Run lens for public static void main(String[])
-                if (isMainMethod(node)) {
-                    BridgeCodeLens runLens = makeLens(parsed.source, name,
-                            "▶ Run", "jdtls-rust.run",
-                            List.of((Object) parsed.uri, String.valueOf(name.getStartPosition())));
-                    lenses.add(runLens);
-                }
+                // Run lens for public static void main(String[]) (TODO: Comment out run actions)
+                // if (isMainMethod(node)) {
+                //     BridgeCodeLens runLens = makeLens(parsed.source, name,
+                //             "▶ Run", "jdtls-rust.run",
+                //             List.of((Object) parsed.uri, String.valueOf(name.getStartPosition())));
+                //     lenses.add(runLens);
+                // }
 
-                // Test run lens for @Test annotated methods
-                if (hasAnnotation(node, "Test")) {
-                    BridgeCodeLens testLens = makeLens(parsed.source, name,
-                            "▶ Run Test", "jdtls-rust.runTest",
-                            List.of((Object) parsed.uri, name.getIdentifier()));
-                    lenses.add(testLens);
-                }
+                // // Test run lens for @Test annotated methods
+                // if (hasAnnotation(node, "Test")) {
+                //     BridgeCodeLens testLens = makeLens(parsed.source, name,
+                //             "▶ Run Test", "jdtls-rust.runTest",
+                //             List.of((Object) parsed.uri, name.getIdentifier()));
+                //     lenses.add(testLens);
+                // }
 
                 return true;
             }
@@ -471,18 +737,325 @@ public class AstNavigationService {
         return lenses;
     }
 
+    // ── Call Hierarchy ────────────────────────────────────────────────────────
+
+    public List<BridgeProtocol.BridgeCallHierarchyItem> prepareCallHierarchy(
+            Map<String, String> sourceFiles, String sourceLevel, String uri, int offset) {
+
+        ParsedUnit parsed = parse(sourceFiles, sourceLevel, uri);
+        if (parsed == null) return Collections.emptyList();
+
+        ASTNode node = nodeAt(parsed.cu, offset);
+        MethodDeclaration md = enclosingMethod(node);
+        if (md == null) return Collections.emptyList();
+
+        return List.of(makeCallHierarchyItem(md, parsed.uri, parsed.source));
+    }
+
+    public List<BridgeProtocol.BridgeCallHierarchyIncomingCall> incomingCalls(
+            Map<String, String> sourceFiles, String sourceLevel, String uri, int offset) {
+
+        ParsedUnit parsed = parse(sourceFiles, sourceLevel, uri);
+        if (parsed == null) return Collections.emptyList();
+
+        ASTNode node = nodeAt(parsed.cu, offset);
+        MethodDeclaration targetMethod = enclosingMethod(node);
+        if (targetMethod == null) return Collections.emptyList();
+        String targetName = targetMethod.getName().getIdentifier();
+        boolean targetIsCtor = targetMethod.isConstructor();
+
+        // Collect call sites grouped by their enclosing caller method, across all files
+        Map<String, BridgeProtocol.BridgeCallHierarchyIncomingCall> result = new LinkedHashMap<>();
+
+        for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
+            String fileUri = entry.getKey();
+            ParsedUnit other = parse(sourceFiles, sourceLevel, fileUri);
+            if (other == null) continue;
+
+            Map<MethodDeclaration, List<BridgeProtocol.BridgeCallFromRange>> byMethod = new LinkedHashMap<>();
+
+            other.cu.accept(new ASTVisitor() {
+                private void record(String name, boolean isCtor, int start, int len) {
+                    if (!targetName.equals(name) || targetIsCtor != isCtor) return;
+                    MethodDeclaration caller = enclosingMethod(nodeAt(other.cu, start));
+                    if (caller == null) return;
+                    int[] s = CompilationService.offsetToLineCol(other.source, start);
+                    int[] e = CompilationService.offsetToLineCol(other.source, start + len);
+                    BridgeProtocol.BridgeCallFromRange r = new BridgeProtocol.BridgeCallFromRange();
+                    r.startLine = s[0]; r.startChar = s[1]; r.endLine = e[0]; r.endChar = e[1];
+                    byMethod.computeIfAbsent(caller, k -> new ArrayList<>()).add(r);
+                }
+                @Override public boolean visit(MethodInvocation n) {
+                    record(n.getName().getIdentifier(), false, n.getStartPosition(), n.getLength());
+                    return true;
+                }
+                @Override public boolean visit(ClassInstanceCreation n) {
+                    if (targetIsCtor && n.getType() instanceof SimpleType st)
+                        record(st.getName().getFullyQualifiedName(), true, n.getStartPosition(), n.getLength());
+                    return true;
+                }
+            });
+
+            for (Map.Entry<MethodDeclaration, List<BridgeProtocol.BridgeCallFromRange>> e2 : byMethod.entrySet()) {
+                String key = fileUri + ":" + e2.getKey().getStartPosition();
+                BridgeProtocol.BridgeCallHierarchyIncomingCall call = new BridgeProtocol.BridgeCallHierarchyIncomingCall();
+                call.from = makeCallHierarchyItem(e2.getKey(), fileUri, other.source);
+                call.fromRanges = e2.getValue();
+                result.put(key, call);
+            }
+        }
+
+        return new ArrayList<>(result.values());
+    }
+
+    public List<BridgeProtocol.BridgeCallHierarchyOutgoingCall> outgoingCalls(
+            Map<String, String> sourceFiles, String sourceLevel, String uri, int offset) {
+
+        ParsedUnit parsed = parse(sourceFiles, sourceLevel, uri);
+        if (parsed == null) return Collections.emptyList();
+
+        ASTNode node = nodeAt(parsed.cu, offset);
+        MethodDeclaration callerMethod = enclosingMethod(node);
+        if (callerMethod == null || callerMethod.getBody() == null) return Collections.emptyList();
+
+        // Pre-index all method declarations across open files: name → [(uri, md, source)]
+        Map<String, List<Object[]>> methodIndex = new HashMap<>();
+        for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
+            String fileUri = entry.getKey();
+            ParsedUnit other = parse(sourceFiles, sourceLevel, fileUri);
+            if (other == null) continue;
+            final String src = other.source;
+            other.cu.accept(new ASTVisitor() {
+                @Override public boolean visit(MethodDeclaration n) {
+                    String key = (n.isConstructor() ? "new:" : "") + n.getName().getIdentifier();
+                    methodIndex.computeIfAbsent(key, k -> new ArrayList<>())
+                            .add(new Object[]{fileUri, n, src});
+                    return true;
+                }
+            });
+        }
+
+        Map<String, BridgeProtocol.BridgeCallHierarchyOutgoingCall> result = new LinkedHashMap<>();
+
+        callerMethod.getBody().accept(new ASTVisitor() {
+            private void addOutgoing(String lookupKey, int callStart, int callLen) {
+                List<Object[]> declarations = methodIndex.get(lookupKey);
+                if (declarations == null || declarations.isEmpty()) return;
+                Object[] first = declarations.get(0);
+                String fileUri = (String) first[0];
+                MethodDeclaration toMd = (MethodDeclaration) first[1];
+                String src = (String) first[2];
+
+                String key = fileUri + ":" + toMd.getStartPosition();
+                BridgeProtocol.BridgeCallHierarchyOutgoingCall call = result.computeIfAbsent(key, k -> {
+                    BridgeProtocol.BridgeCallHierarchyOutgoingCall c = new BridgeProtocol.BridgeCallHierarchyOutgoingCall();
+                    c.to = makeCallHierarchyItem(toMd, fileUri, src);
+                    c.fromRanges = new ArrayList<>();
+                    return c;
+                });
+                int[] s = CompilationService.offsetToLineCol(parsed.source, callStart);
+                int[] e = CompilationService.offsetToLineCol(parsed.source, callStart + callLen);
+                BridgeProtocol.BridgeCallFromRange r = new BridgeProtocol.BridgeCallFromRange();
+                r.startLine = s[0]; r.startChar = s[1]; r.endLine = e[0]; r.endChar = e[1];
+                call.fromRanges.add(r);
+            }
+
+            @Override public boolean visit(MethodInvocation n) {
+                addOutgoing(n.getName().getIdentifier(), n.getStartPosition(), n.getLength());
+                return true;
+            }
+            @Override public boolean visit(ClassInstanceCreation n) {
+                if (n.getType() instanceof SimpleType st)
+                    addOutgoing("new:" + st.getName().getFullyQualifiedName(), n.getStartPosition(), n.getLength());
+                return true;
+            }
+        });
+
+        return new ArrayList<>(result.values());
+    }
+
+    // ── Type Hierarchy ────────────────────────────────────────────────────────
+
+    public List<BridgeProtocol.BridgeTypeHierarchyItem> prepareTypeHierarchy(
+            Map<String, String> sourceFiles, String sourceLevel, String uri, int offset) {
+        ParsedUnit parsed = parse(sourceFiles, sourceLevel, uri);
+        if (parsed == null) return Collections.emptyList();
+
+        ASTNode node = nodeAt(parsed.cu, offset);
+        AbstractTypeDeclaration type = enclosingType(node);
+        if (type == null) return Collections.emptyList();
+
+        return List.of(makeTypeHierarchyItem(type, parsed.uri, parsed.source));
+    }
+
+    public List<BridgeProtocol.BridgeTypeHierarchyItem> supertypes(
+            Map<String, String> sourceFiles, String sourceLevel, String data) {
+        String[] parts = data.split("\t", 2);
+        if (parts.length != 2) return Collections.emptyList();
+        String uri = parts[0];
+        int offset;
+        try { offset = Integer.parseInt(parts[1]); } catch (NumberFormatException e) { return Collections.emptyList(); }
+
+        ParsedUnit parsed = parse(sourceFiles, sourceLevel, uri);
+        if (parsed == null) return Collections.emptyList();
+
+        AbstractTypeDeclaration type = enclosingType(nodeAt(parsed.cu, offset));
+        if (type == null) return Collections.emptyList();
+
+        List<String> superNames = new ArrayList<>();
+        if (type instanceof TypeDeclaration td) {
+            if (td.getSuperclassType() != null) superNames.add(td.getSuperclassType().toString());
+            for (Object iface : td.superInterfaceTypes()) superNames.add(iface.toString());
+        } else if (type instanceof EnumDeclaration ed) {
+            for (Object iface : ed.superInterfaceTypes()) superNames.add(iface.toString());
+        }
+        if (superNames.isEmpty()) return Collections.emptyList();
+
+        List<BridgeProtocol.BridgeTypeHierarchyItem> results = new ArrayList<>();
+        for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
+            ParsedUnit other = parse(sourceFiles, sourceLevel, entry.getKey());
+            if (other == null) continue;
+            other.cu.accept(new ASTVisitor() {
+                @Override public boolean visit(TypeDeclaration n) {
+                    if (superNames.contains(n.getName().getIdentifier()))
+                        results.add(makeTypeHierarchyItem(n, other.uri, other.source));
+                    return true;
+                }
+                @Override public boolean visit(EnumDeclaration n) {
+                    if (superNames.contains(n.getName().getIdentifier()))
+                        results.add(makeTypeHierarchyItem(n, other.uri, other.source));
+                    return true;
+                }
+            });
+        }
+        return results;
+    }
+
+    public List<BridgeProtocol.BridgeTypeHierarchyItem> subtypes(
+            Map<String, String> sourceFiles, String sourceLevel, String data) {
+        String[] parts = data.split("\t", 2);
+        if (parts.length != 2) return Collections.emptyList();
+        String uri = parts[0];
+        int offset;
+        try { offset = Integer.parseInt(parts[1]); } catch (NumberFormatException e) { return Collections.emptyList(); }
+
+        ParsedUnit parsed = parse(sourceFiles, sourceLevel, uri);
+        if (parsed == null) return Collections.emptyList();
+
+        AbstractTypeDeclaration type = enclosingType(nodeAt(parsed.cu, offset));
+        if (type == null) return Collections.emptyList();
+        String targetName = type.getName().getIdentifier();
+
+        List<BridgeProtocol.BridgeTypeHierarchyItem> results = new ArrayList<>();
+        for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
+            ParsedUnit other = parse(sourceFiles, sourceLevel, entry.getKey());
+            if (other == null) continue;
+            other.cu.accept(new ASTVisitor() {
+                @Override public boolean visit(TypeDeclaration n) {
+                    if (extendsOrImplements(n, targetName))
+                        results.add(makeTypeHierarchyItem(n, other.uri, other.source));
+                    return true;
+                }
+                @Override public boolean visit(EnumDeclaration n) {
+                    for (Object iface : n.superInterfaceTypes())
+                        if (iface.toString().equals(targetName)) {
+                            results.add(makeTypeHierarchyItem(n, other.uri, other.source));
+                            break;
+                        }
+                    return true;
+                }
+            });
+        }
+        return results;
+    }
+
+    private boolean extendsOrImplements(TypeDeclaration n, String targetName) {
+        if (n.getSuperclassType() != null && n.getSuperclassType().toString().equals(targetName)) return true;
+        for (Object iface : n.superInterfaceTypes())
+            if (iface.toString().equals(targetName)) return true;
+        return false;
+    }
+
+    private BridgeProtocol.BridgeTypeHierarchyItem makeTypeHierarchyItem(
+            AbstractTypeDeclaration type, String uri, String source) {
+        BridgeProtocol.BridgeTypeHierarchyItem item = new BridgeProtocol.BridgeTypeHierarchyItem();
+        item.name = type.getName().getIdentifier();
+        item.kind = (type instanceof TypeDeclaration td && td.isInterface()) ? 11
+                  : (type instanceof EnumDeclaration) ? 10
+                  : 5; // 5=Class, 10=Enum, 11=Interface
+        // detail = package name from compilation unit
+        PackageDeclaration pkg = type.getRoot() instanceof CompilationUnit cu2 ? cu2.getPackage() : null;
+        item.detail = pkg != null ? pkg.getName().getFullyQualifiedName() : null;
+        item.uri = uri;
+        int[] start = CompilationService.offsetToLineCol(source, type.getStartPosition());
+        int[] end   = CompilationService.offsetToLineCol(source, type.getStartPosition() + type.getLength());
+        item.startLine = start[0]; item.startChar = start[1];
+        item.endLine = end[0];     item.endChar = end[1];
+        int[] selS = CompilationService.offsetToLineCol(source, type.getName().getStartPosition());
+        int[] selE = CompilationService.offsetToLineCol(source, type.getName().getStartPosition() + type.getName().getLength());
+        item.selStartLine = selS[0]; item.selStartChar = selS[1];
+        item.selEndLine = selE[0];   item.selEndChar = selE[1];
+        // Opaque data: uri + tab + byte-offset of the type name node, for re-resolution
+        item.data = uri + "\t" + type.getName().getStartPosition();
+        return item;
+    }
+
+    private MethodDeclaration enclosingMethod(ASTNode node) {
+        ASTNode current = node;
+        while (current != null) {
+            if (current instanceof MethodDeclaration md) return md;
+            current = current.getParent();
+        }
+        return null;
+    }
+
+    private BridgeProtocol.BridgeCallHierarchyItem makeCallHierarchyItem(
+            MethodDeclaration md, String uri, String source) {
+        BridgeProtocol.BridgeCallHierarchyItem item = new BridgeProtocol.BridgeCallHierarchyItem();
+        item.name = md.getName().getIdentifier();
+        item.kind = md.isConstructor() ? 9 : 6; // LSP SymbolKind: 9=Constructor, 6=Method
+        AbstractTypeDeclaration type = enclosingType(md);
+        item.detail = type != null ? type.getName().getIdentifier() : null;
+        item.uri = uri;
+        int[] start = CompilationService.offsetToLineCol(source, md.getStartPosition());
+        int[] end   = CompilationService.offsetToLineCol(source, md.getStartPosition() + md.getLength());
+        item.startLine = start[0]; item.startChar = start[1];
+        item.endLine = end[0];     item.endChar = end[1];
+        int[] selS = CompilationService.offsetToLineCol(source, md.getName().getStartPosition());
+        int[] selE = CompilationService.offsetToLineCol(source, md.getName().getStartPosition() + md.getName().getLength());
+        item.selStartLine = selS[0]; item.selStartChar = selS[1];
+        item.selEndLine = selE[0];   item.selEndChar = selE[1];
+        return item;
+    }
+
     private BridgeCodeLens makeReferenceLens(ParsedUnit parsed, SimpleName anchor,
                                              List<BridgeLocation> refs, int usageCount) {
         String title = usageCount + " reference" + (usageCount == 1 ? "" : "s");
+
+        // Exclude the declaration itself: refs includes the declaration site, usageRefs does not.
+        int[] anchorLC = CompilationService.offsetToLineCol(parsed.source, anchor.getStartPosition());
+        List<BridgeLocation> usageRefs = refs.stream()
+                .filter(r -> r.startLine != anchorLC[0] || r.startChar != anchorLC[1])
+                .collect(java.util.stream.Collectors.toList());
+
         if (usageCount == 0) {
-            return makeLens(parsed.source, anchor, title, null, null);
+            // 0 references: clickable but leads nowhere (shows empty references panel).
+            return makeLens(parsed.source, anchor, title,
+                    "editor.action.showReferences",
+                    buildShowReferencesArgs(parsed.uri, parsed.source, anchor, List.of()));
         }
-        return makeLens(
-                parsed.source,
-                anchor,
-                title,
+        if (usageCount == 1) {
+            // 1 reference: navigate directly without a popup.
+            // editor.action.showReferences with a single location causes VS Code to navigate
+            // directly (no peek panel) — same behaviour as jdtls uses for java.show.references.
+            return makeLens(parsed.source, anchor, title,
+                    "editor.action.showReferences",
+                    buildShowReferencesArgs(parsed.uri, parsed.source, anchor, usageRefs));
+        }
+        // 2+ references: open the references panel.
+        return makeLens(parsed.source, anchor, title,
                 "editor.action.showReferences",
-                buildShowReferencesArgs(parsed.uri, parsed.source, anchor, refs));
+                buildShowReferencesArgs(parsed.uri, parsed.source, anchor, usageRefs));
     }
 
     private BridgeCodeLens makeLens(String source, SimpleName anchor, String title,
@@ -539,6 +1112,21 @@ public class AstNavigationService {
             locations.add(locationValue(ref));
         }
         args.add(locations);
+        return args;
+    }
+
+    /** Args for editor.action.goToLocations: navigates directly for 1 location, picker for 2+. */
+    private List<Object> buildGoToLocationsArgs(String uri, String source, SimpleName anchor,
+                                                List<BridgeLocation> refs) {
+        List<Object> args = new ArrayList<>();
+        args.add(uriComponents(uri));
+        args.add(positionValue(source, anchor.getStartPosition()));
+        List<Object> locations = new ArrayList<>();
+        for (BridgeLocation ref : refs) {
+            locations.add(locationValue(ref));
+        }
+        args.add(locations);
+        args.add("goto"); // multiple: always navigate to first/only location without a picker
         return args;
     }
 
@@ -643,7 +1231,7 @@ public class AstNavigationService {
         parser.setStatementsRecovery(true);
         parser.setCompilerOptions(compilerOptions(sourceLevel));
         parser.setUnitName(unitName(targetUri));
-        parser.setEnvironment(new String[0], null, null, true);
+        parser.setEnvironment(new String[0], null, null, false);
         return (CompilationUnit) parser.createAST(null);
     }
 
@@ -788,14 +1376,16 @@ public class AstNavigationService {
         }
         if (parent instanceof SingleVariableDeclaration && location == SingleVariableDeclaration.NAME_PROPERTY) {
             DeclKind kind = parent.getParent() instanceof MethodDeclaration ? DeclKind.PARAMETER : DeclKind.LOCAL;
-            return new Decl(kind, parent, name, parent);
+            ASTNode scope = localScope(parent);
+            return new Decl(kind, parent, name, scope != null ? scope : parent);
         }
         if (parent instanceof VariableDeclarationFragment && location == VariableDeclarationFragment.NAME_PROPERTY) {
             ASTNode owner = parent.getParent();
             if (owner instanceof FieldDeclaration) {
                 return new Decl(DeclKind.FIELD, parent, name, owner);
             }
-            return new Decl(DeclKind.LOCAL, parent, name, owner);
+            ASTNode scope = localScope(owner);
+            return new Decl(DeclKind.LOCAL, parent, name, scope != null ? scope : owner);
         }
         return null;
     }
@@ -1662,6 +2252,10 @@ public class AstNavigationService {
             return fragments;
         }
         if ("@see".equals(name)) {
+            // Render as inline code unless it looks like a URL or a quoted string.
+            if (!fragments.startsWith("\"") && !fragments.startsWith("<a ") && !fragments.startsWith("http")) {
+                return "`" + fragments + "`";
+            }
             return fragments;
         }
         if ("@since".equals(name)) {
@@ -1756,14 +2350,20 @@ public class AstNavigationService {
         }
         matcher.appendTail(buffer);
 
-        String normalized = buffer.toString()
+        // Preserve paragraph breaks (double newlines) before collapsing whitespace.
+        // Single newlines (line-wrapping) are still collapsed to spaces.
+        String PARA = "@@PARA@@";
+        String raw = buffer.toString().replaceAll("\r?\n[ \t]*\r?\n", PARA);
+
+        String normalized = raw
                 .replace('\n', ' ')
                 .replace('\r', ' ')
                 .replaceAll("\\s+", " ")
                 .replaceAll("\\s+([.,;:!?])", "$1")
                 .replace("( ", "(")
                 .replace(" )", ")")
-                .trim();
+                .trim()
+                .replace(PARA, "\n\n");
 
         for (Map.Entry<String, String> entry : codeBlocks.entrySet()) {
             normalized = normalized.replace(entry.getKey(), entry.getValue());

@@ -6,7 +6,7 @@ use crate::analysis::semantic::completion as comp_conv;
 use crate::analysis::semantic::definition as def_conv;
 use crate::analysis::semantic::diagnostics as diag_conv;
 use crate::analysis::semantic::hover as hover_conv;
-use crate::analysis::semantic::protocol::{BridgeRange, BridgeResponse};
+use crate::analysis::semantic::protocol::{BridgeCallHierarchyItem, BridgeTypeHierarchyItem, BridgeRange, BridgeResponse, BridgeDiagnostic};
 use crate::analysis::semantic::NavKind;
 use crate::analysis::syntax::{
     completion as syntax_completion, diagnostics as syntax_diagnostics, folding, outline,
@@ -30,6 +30,31 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer};
 use tracing::{error, info, warn};
+
+fn to_bridge_diag(uri: &Url, d: &Diagnostic) -> BridgeDiagnostic {
+    BridgeDiagnostic {
+        uri: uri.to_string(),
+        start_line: d.range.start.line,
+        start_char: d.range.start.character,
+        end_line: d.range.end.line,
+        end_char: d.range.end.character,
+        severity: match d.severity {
+            Some(DiagnosticSeverity::ERROR) => 1,
+            Some(DiagnosticSeverity::WARNING) => 2,
+            Some(DiagnosticSeverity::INFORMATION) => 3,
+            Some(DiagnosticSeverity::HINT) => 4,
+            _ => 1,
+        },
+        message: d.message.clone(),
+        code: match &d.code {
+            Some(NumberOrString::String(s)) => Some(s.clone()),
+            Some(NumberOrString::Number(n)) => Some(n.to_string()),
+            None => None,
+        },
+        category_id: 0,
+        tags: None,
+    }
+}
 
 /// Collect tree-sitter and ECJ diagnostics for every open document and push
 /// them to the client.  Shared by `spawn_compile_loop` and `publish_diagnostics_for_all`.
@@ -219,8 +244,10 @@ impl LanguageServer for JavaLanguageServer {
                     CodeActionOptions {
                         code_action_kinds: Some(vec![
                             CodeActionKind::QUICKFIX,
+                            CodeActionKind::from("quickassist"),
                             CodeActionKind::REFACTOR,
                             CodeActionKind::SOURCE,
+                            CodeActionKind::from("source.generate.accessors"),
                         ]),
                         resolve_provider: Some(false),
                         work_done_progress_options: Default::default(),
@@ -366,16 +393,45 @@ impl LanguageServer for JavaLanguageServer {
         let in_import = import_prefix.is_some();
         let in_member_access = is_member_access_context(&content, offset);
 
+        // Suppress completions when the cursor is in a variable/parameter name slot.
+        if let Some(tree) = tree.as_ref() {
+            if syntax_completion::is_in_declaration_name(tree, &content, offset) {
+                return Ok(Some(CompletionResponse::Array(vec![])));
+            }
+        }
+        // Also suppress when the cursor sits right after a type name on the same line
+        // (e.g. `int |`, `final int myV|`) — the user is about to type a *new* name.
+        if syntax_completion::is_awaiting_declaration_name(&content, offset) {
+            return Ok(Some(CompletionResponse::Array(vec![])));
+        }
+        // Suppress auto-trigger right after `= ` — user hasn't started typing yet.
+        if syntax_completion::is_after_assignment_operator(&content, offset) {
+            return Ok(Some(CompletionResponse::Array(vec![])));
+        }
+
         let mut items: Vec<CompletionItem> = Vec::new();
 
         if !in_import && !in_member_access {
+            let prefix = syntax_completion::current_prefix(&content, offset);
             if let Some(tree) = tree.as_ref() {
                 items.extend(syntax_completion::local_completions(tree, &content, offset));
+                items.extend(syntax_completion::import_type_completions(tree, &content, &prefix));
             }
             if is_expression_context(&content, offset) {
                 items.extend(snippets::expression_keywords());
             } else {
-                items.extend(snippets::java_snippets());
+                let in_method = tree.as_ref()
+                    .map(|t| syntax_completion::is_inside_method_body(t, offset))
+                    .unwrap_or(false);
+                items.extend(snippets::method_body_snippets());
+                if !in_method {
+                    items.extend(snippets::class_body_snippets());
+                }
+            }
+        } else if in_member_access {
+            // Syntax-level this. completion (ECJ will override with full semantic results)
+            if let Some(tree) = tree.as_ref() {
+                items.extend(syntax_completion::this_member_completions(tree, &content, offset));
             }
         }
 
@@ -385,10 +441,19 @@ impl LanguageServer for JavaLanguageServer {
         let word_range = word_range_at(&content, pos);
 
         // Semantic completions from ECJ
+        let in_expr = is_expression_context(&content, offset);
         if self.dispatcher.is_ecj_ready().await {
             match self.dispatcher.complete(uri, offset, import_prefix, content.clone()).await {
                 Ok(BridgeResponse::Completions { items: bridge_items, .. }) => {
-                    let semantic: Vec<CompletionItem> = bridge_items.iter().map(|c| {
+                    let semantic: Vec<CompletionItem> = bridge_items.iter().filter_map(|c| {
+                        // In expression context (after `=`, `return`, etc.) void methods
+                        // cannot produce a value — suppress them.
+                        if in_expr
+                            && c.kind == 2  // METHOD
+                            && c.label.ends_with(": void")
+                        {
+                            return None;
+                        }
                         let mut item = comp_conv::to_lsp(c);
                         // For items that carry auto-import edits, attach an explicit
                         // textEdit so Monaco applies the additionalTextEdits.
@@ -403,7 +468,7 @@ impl LanguageServer for JavaLanguageServer {
                                 ));
                             }
                         }
-                        item
+                        Some(item)
                     }).collect();
                     if in_import {
                         items = semantic;
@@ -732,22 +797,21 @@ impl LanguageServer for JavaLanguageServer {
         let uri = &params.text_document.uri;
         if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
 
-        let mut effective_range = params.range;
-        for diagnostic in &params.context.diagnostics {
-            effective_range = merge_ranges(effective_range, diagnostic.range);
-        }
-
         let bridge_range = BridgeRange {
-            start_line: effective_range.start.line,
-            start_char: effective_range.start.character,
-            end_line: effective_range.end.line,
-            end_char: effective_range.end.character,
+            start_line: params.range.start.line,
+            start_char: params.range.start.character,
+            end_line: params.range.end.line,
+            end_char: params.range.end.character,
         };
+
+        let bridge_diags = params.context.diagnostics.iter()
+            .map(|d| to_bridge_diag(uri, d))
+            .collect();
 
         let mut lsp_actions: Vec<CodeActionOrCommand> = Vec::new();
 
         if let Ok(BridgeResponse::CodeActions { actions, .. }) =
-            self.dispatcher.code_action(uri, bridge_range).await
+            self.dispatcher.code_action(uri, bridge_range, bridge_diags).await
         {
             lsp_actions.extend(
                 ca_conv::to_lsp(&actions)
@@ -756,7 +820,8 @@ impl LanguageServer for JavaLanguageServer {
             );
         }
 
-        // Always offer "Organize Imports" as a source action.
+        // Organize Imports — always offered (ECJ code action also includes it, but this
+        // ensures it appears even when the ECJ organizeImports call returns no edits).
         if let Ok(BridgeResponse::WorkspaceEdit { changes, .. }) =
             self.dispatcher.organize_imports(uri).await
         {
@@ -913,7 +978,7 @@ impl LanguageServer for JavaLanguageServer {
             return Ok(None);
         }
         match self.dispatcher.inlay_hints(uri).await {
-            Ok(BridgeResponse::InlayHintsResult { hints, .. }) => {
+            Ok(BridgeResponse::InlayHints { hints, .. }) => {
                 let items = hints
                     .iter()
                     .map(|h| InlayHint {
@@ -987,30 +1052,168 @@ impl LanguageServer for JavaLanguageServer {
 
     // ── Call Hierarchy ────────────────────────────────────────────────────────
 
-    async fn prepare_call_hierarchy(&self, _params: CallHierarchyPrepareParams) -> LspResult<Option<Vec<CallHierarchyItem>>> {
-        Ok(None) // TODO: implement via ECJ
+    async fn prepare_call_hierarchy(&self, params: CallHierarchyPrepareParams) -> LspResult<Option<Vec<CallHierarchyItem>>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+        let offset = match self.store.get(uri) {
+            None => return Ok(None),
+            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
+        };
+        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
+
+        match self.dispatcher.call_hierarchy_prepare(uri, offset).await {
+            Ok(BridgeResponse::CallHierarchyPrepare { items, .. }) if !items.is_empty() => {
+                Ok(Some(items.iter().map(bridge_call_hierarchy_item_to_lsp).collect()))
+            }
+            _ => Ok(None),
+        }
     }
 
-    async fn incoming_calls(&self, _params: CallHierarchyIncomingCallsParams) -> LspResult<Option<Vec<CallHierarchyIncomingCall>>> {
-        Ok(None)
+    async fn incoming_calls(&self, params: CallHierarchyIncomingCallsParams) -> LspResult<Option<Vec<CallHierarchyIncomingCall>>> {
+        let item = &params.item;
+        let uri = &item.uri;
+        let pos = item.selection_range.start;
+        let offset = match self.store.get(uri) {
+            None => return Ok(None),
+            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
+        };
+        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
+
+        match self.dispatcher.call_hierarchy_incoming(uri, offset).await {
+            Ok(BridgeResponse::CallHierarchyIncomingCalls { calls, .. }) => {
+                let result = calls.iter().map(|c| CallHierarchyIncomingCall {
+                    from: bridge_call_hierarchy_item_to_lsp(&c.from),
+                    from_ranges: c.from_ranges.iter().map(|r| Range {
+                        start: Position { line: r.start_line, character: r.start_char },
+                        end: Position { line: r.end_line, character: r.end_char },
+                    }).collect(),
+                }).collect();
+                Ok(Some(result))
+            }
+            _ => Ok(None),
+        }
     }
 
-    async fn outgoing_calls(&self, _params: CallHierarchyOutgoingCallsParams) -> LspResult<Option<Vec<CallHierarchyOutgoingCall>>> {
-        Ok(None)
+    async fn outgoing_calls(&self, params: CallHierarchyOutgoingCallsParams) -> LspResult<Option<Vec<CallHierarchyOutgoingCall>>> {
+        let item = &params.item;
+        let uri = &item.uri;
+        let pos = item.selection_range.start;
+        let offset = match self.store.get(uri) {
+            None => return Ok(None),
+            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
+        };
+        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
+
+        match self.dispatcher.call_hierarchy_outgoing(uri, offset).await {
+            Ok(BridgeResponse::CallHierarchyOutgoingCalls { calls, .. }) => {
+                let result = calls.iter().map(|c| CallHierarchyOutgoingCall {
+                    to: bridge_call_hierarchy_item_to_lsp(&c.to),
+                    from_ranges: c.from_ranges.iter().map(|r| Range {
+                        start: Position { line: r.start_line, character: r.start_char },
+                        end: Position { line: r.end_line, character: r.end_char },
+                    }).collect(),
+                }).collect();
+                Ok(Some(result))
+            }
+            _ => Ok(None),
+        }
     }
 
     // ── Type Hierarchy ────────────────────────────────────────────────────────
 
-    async fn prepare_type_hierarchy(&self, _params: TypeHierarchyPrepareParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        Ok(None) // TODO: implement via ECJ
+    async fn prepare_type_hierarchy(&self, params: TypeHierarchyPrepareParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+        let offset = match self.store.get(uri) {
+            None => return Ok(None),
+            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
+        };
+        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
+
+        match self.dispatcher.type_hierarchy_prepare(uri, offset).await {
+            Ok(BridgeResponse::TypeHierarchyPrepare { items, .. }) if !items.is_empty() => {
+                Ok(Some(items.iter().map(bridge_type_hierarchy_item_to_lsp).collect()))
+            }
+            _ => Ok(None),
+        }
     }
 
-    async fn supertypes(&self, _params: TypeHierarchySupertypesParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        Ok(None)
+    async fn supertypes(&self, params: TypeHierarchySupertypesParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
+        let data = match params.item.data.as_ref().and_then(|v| v.as_str()) {
+            Some(s) => s.to_owned(),
+            None => return Ok(None),
+        };
+        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
+
+        match self.dispatcher.type_hierarchy_supertypes(data).await {
+            Ok(BridgeResponse::TypeHierarchySupertypes { items, .. }) => {
+                Ok(Some(items.iter().map(bridge_type_hierarchy_item_to_lsp).collect()))
+            }
+            _ => Ok(None),
+        }
     }
 
-    async fn subtypes(&self, _params: TypeHierarchySubtypesParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        Ok(None)
+    async fn subtypes(&self, params: TypeHierarchySubtypesParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
+        let data = match params.item.data.as_ref().and_then(|v| v.as_str()) {
+            Some(s) => s.to_owned(),
+            None => return Ok(None),
+        };
+        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
+
+        match self.dispatcher.type_hierarchy_subtypes(data).await {
+            Ok(BridgeResponse::TypeHierarchySubtypes { items, .. }) => {
+                Ok(Some(items.iter().map(bridge_type_hierarchy_item_to_lsp).collect()))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+fn bridge_type_hierarchy_item_to_lsp(item: &BridgeTypeHierarchyItem) -> TypeHierarchyItem {
+    let uri = Url::parse(&item.uri).unwrap_or_else(|_| Url::parse("file:///unknown").unwrap());
+    TypeHierarchyItem {
+        name: item.name.clone(),
+        kind: match item.kind {
+            10 => SymbolKind::ENUM,
+            11 => SymbolKind::INTERFACE,
+            _ => SymbolKind::CLASS,
+        },
+        tags: None,
+        detail: item.detail.clone(),
+        uri,
+        range: Range {
+            start: Position { line: item.start_line, character: item.start_char },
+            end: Position { line: item.end_line, character: item.end_char },
+        },
+        selection_range: Range {
+            start: Position { line: item.sel_start_line, character: item.sel_start_char },
+            end: Position { line: item.sel_end_line, character: item.sel_end_char },
+        },
+        data: item.data.as_ref().map(|s| serde_json::Value::String(s.clone())),
+    }
+}
+
+fn bridge_call_hierarchy_item_to_lsp(item: &BridgeCallHierarchyItem) -> CallHierarchyItem {
+    let uri = Url::parse(&item.uri).unwrap_or_else(|_| Url::parse("file:///unknown").unwrap());
+    CallHierarchyItem {
+        name: item.name.clone(),
+        kind: match item.kind {
+            9 => SymbolKind::CONSTRUCTOR,
+            5 => SymbolKind::CLASS,
+            _ => SymbolKind::METHOD,
+        },
+        tags: None,
+        detail: item.detail.clone(),
+        uri,
+        range: Range {
+            start: Position { line: item.start_line, character: item.start_char },
+            end: Position { line: item.end_line, character: item.end_char },
+        },
+        selection_range: Range {
+            start: Position { line: item.sel_start_line, character: item.sel_start_char },
+            end: Position { line: item.sel_end_line, character: item.sel_end_char },
+        },
+        data: None,
     }
 }
 
@@ -1148,15 +1351,6 @@ fn is_member_access_context(content: &str, offset: usize) -> bool {
     i > 0 && bytes[i - 1] == b'.'
 }
 
-fn merge_ranges(a: Range, b: Range) -> Range {
-    let start = if position_leq(a.start, b.start) { a.start } else { b.start };
-    let end = if position_leq(a.end, b.end) { b.end } else { a.end };
-    Range { start, end }
-}
-
-fn position_leq(a: Position, b: Position) -> bool {
-    a.line < b.line || (a.line == b.line && a.character <= b.character)
-}
 
 /// Returns true if the cursor is in an expression position: after `=`, `(`, `,`,
 /// arithmetic/bitwise operators, or the `return` keyword.  In these positions

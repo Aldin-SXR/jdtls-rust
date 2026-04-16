@@ -94,6 +94,12 @@ impl EcjProcess {
             | BridgeRequest::Format { id, .. }
             | BridgeRequest::InlayHints { id, .. }
             | BridgeRequest::CodeLens { id, .. }
+            | BridgeRequest::TypeHierarchyPrepare { id, .. }
+            | BridgeRequest::TypeHierarchySupertypes { id, .. }
+            | BridgeRequest::TypeHierarchySubtypes { id, .. }
+            | BridgeRequest::CallHierarchyPrepare { id, .. }
+            | BridgeRequest::CallHierarchyIncoming { id, .. }
+            | BridgeRequest::CallHierarchyOutgoing { id, .. }
             | BridgeRequest::Shutdown { id } => *id,
         };
 

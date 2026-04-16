@@ -79,11 +79,11 @@ impl DocumentStore {
             }
             state.version = version;
             let text = state.content.to_string();
-            let old_tree = state.tree.as_ref().map(|t| t.as_ref());
-            // tree-sitter can use old tree for incremental parsing, but we
-            // need InputEdit which requires computing byte offsets — for now
-            // do a full re-parse (still fast, ~1ms for typical files).
-            state.tree = parser.parse(&text, old_tree).map(Arc::new);
+            // Full re-parse: tree-sitter incremental parsing requires calling
+            // old_tree.edit(InputEdit) first to mark changed ranges; without it
+            // tree-sitter reuses stale node byte-ranges from the old tree that can
+            // exceed the new source length → panic in utf8_text / node.byte_range().
+            state.tree = parser.parse_fresh(&text).map(Arc::new);
         }
     }
 

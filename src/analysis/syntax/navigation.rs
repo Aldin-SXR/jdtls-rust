@@ -248,11 +248,12 @@ fn declaration_from_name_node<'tree>(node: Node<'tree>) -> Option<Decl<'tree>> {
             });
         }
         if owner.kind() == "local_variable_declaration" {
+            let scope_node = local_scope_for_decl(owner).unwrap_or(owner);
             return Some(Decl {
                 kind: DeclKind::Local,
                 decl_node: parent,
                 name_node: node,
-                scope_node: owner,
+                scope_node,
             });
         }
     }

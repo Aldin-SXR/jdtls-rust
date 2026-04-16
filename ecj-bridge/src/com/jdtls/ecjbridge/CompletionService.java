@@ -76,19 +76,7 @@ public class CompletionService {
                 return results;
             }
 
-            // ── Always collect every type member in the file ──────────────────
-            for (Object decl : cu.types()) {
-                if (decl instanceof AbstractTypeDeclaration atd) {
-                    collectTypeMembers(atd, results);
-                }
-            }
-
-            // ── Context-sensitive locals/params from the enclosing method ─────
-            if (node != null) {
-                extractLocals(node, results);
-            }
-
-            // ── Determine context ─────────────────────────────────────────────
+            // ── Determine context before collecting members ───────────────────
             boolean inDeclName = isVariableNamePosition(cu, offset);
             if (inDeclName) {
                 // Cursor is in the name slot of a variable declaration (e.g. `int |a`).
@@ -96,16 +84,65 @@ public class CompletionService {
                 return Collections.emptyList();
             }
 
-            boolean inExpression = isExpressionContext(source, offset, cu);
             String prefix = typedPrefix(source, offset);
 
+            // ── Collect members from the enclosing class + its superclass chain ─
+            // Only emit items whose name starts with the typed prefix so that
+            // `int x = Arr|` doesn't flood results with unrelated fields/methods.
+            {
+                AbstractTypeDeclaration enclosing = node != null
+                        ? enclosingType(node)
+                        : enclosingTypeAt(cu, offset);
+                if (enclosing != null) {
+                    Set<String> seen = new LinkedHashSet<>();
+                    collectTypeMembersWithHierarchy(enclosing, cu, results, seen, 0, prefix);
+                }
+            }
+
+            // ── Context-sensitive locals/params from the enclosing method ─────
+            boolean insideMethod = isInsideMethodBody(node);
+            if (insideMethod && node != null) {
+                extractLocals(node, prefix, results);
+            }
+
+            // ── Constructor snippet — only valid in class body, not inside a method ──
+            if (!insideMethod && "ctor".startsWith(prefix)) {
+                AbstractTypeDeclaration enclosingForCtor = node != null
+                        ? enclosingType(node)
+                        : enclosingTypeAt(cu, offset);
+                if (enclosingForCtor instanceof TypeDeclaration td && !td.isInterface()) {
+                    String className = td.getName().getIdentifier();
+                    BridgeCompletion ctor = new BridgeCompletion();
+                    ctor.label = "ctor";
+                    ctor.kind = 15; // Snippet
+                    ctor.detail = "constructor";
+                    ctor.filterText = "ctor";
+                    ctor.sortText = "0ctor";
+                    ctor.insertText = "${1|public,protected,private|} " + className
+                            + "(${2}) {\n\t${3:super();}${0}\n}";
+                    ctor.insertTextFormat = 2;
+                    results.add(ctor);
+                }
+            }
+
+            // ── Super constructor completions ─────────────────────────────────
+            if (node != null && !prefix.isEmpty() && "super".startsWith(prefix)
+                    && isInsideConstructor(node)) {
+                addSuperConstructorCompletions(cu, node, sourceFiles, results);
+            }
+
             // ── Type completions ──────────────────────────────────────────────
-            if (!prefix.isEmpty()) {
-                // Any context with a typed prefix: search the full JDK for matching
-                // types, attaching auto-import edits (same as jdtls via CompletionEngine).
-                addJrtTypeCompletions(prefix, cu, source, results);
-            } else if (!inExpression) {
-                // Empty prefix, non-expression position: offer already-imported simple names.
+            boolean afterNew = isAfterNewKeyword(source, clampedOffset);
+            // Same-file types are always offered (prefix or not) with highest priority.
+            addSameFileTypeCompletions(prefix, cu, results, afterNew);
+
+            if (prefix.length() >= 2) {
+                // Require at least 2 characters before searching the full JDK —
+                // a single letter prefix floods results with hundreds of unrelated types.
+                addJrtTypeCompletions(prefix, cu, source, results, afterNew);
+            } else {
+                // Empty prefix: offer already-imported simple names in all contexts
+                // (expression, statement, etc. — the user might want a type or variable).
                 for (Object imp : cu.imports()) {
                     if (imp instanceof ImportDeclaration id) {
                         String name = id.getName().getFullyQualifiedName();
@@ -162,54 +199,189 @@ public class CompletionService {
         }
     }
 
+    // ── Super constructor completions ─────────────────────────────────────────
+
+    private boolean isInsideConstructor(ASTNode node) {
+        ASTNode current = node;
+        while (current != null) {
+            if (current instanceof MethodDeclaration md && md.isConstructor()) return true;
+            current = current.getParent();
+        }
+        return false;
+    }
+
+    private void addSuperConstructorCompletions(
+            CompilationUnit cu,
+            ASTNode node,
+            Map<String, String> sourceFiles,
+            List<BridgeCompletion> results) {
+
+        // Don't offer super() if one already exists in this constructor
+        ASTNode cur = node;
+        while (cur != null) {
+            if (cur instanceof MethodDeclaration md && md.isConstructor()) {
+                if (md.getBody() != null) {
+                    for (Object stmt : md.getBody().statements()) {
+                        if (stmt instanceof SuperConstructorInvocation) return;
+                    }
+                }
+                break;
+            }
+            cur = cur.getParent();
+        }
+
+        AbstractTypeDeclaration atd = enclosingType(node);
+        if (!(atd instanceof TypeDeclaration td)) return;
+
+        Type superType = td.getSuperclassType();
+        String superName = superType != null ? simpleTypeName(superType.toString()) : null;
+
+        List<MethodDeclaration> superCtors = new ArrayList<>();
+
+        // 1. Same CU first
+        if (superName != null) {
+            for (Object t : cu.types()) {
+                if (t instanceof TypeDeclaration std
+                        && std.getName().getIdentifier().equals(superName)) {
+                    for (MethodDeclaration m : std.getMethods()) {
+                        if (m.isConstructor()) superCtors.add(m);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // 2. Other open files
+        if (superCtors.isEmpty() && superName != null && sourceFiles != null) {
+            for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
+                ASTParser p2 = ASTParser.newParser(AST.getJLSLatest());
+                p2.setSource(entry.getValue().toCharArray());
+                p2.setKind(ASTParser.K_COMPILATION_UNIT);
+                p2.setStatementsRecovery(true);
+                CompilationUnit cu2 = (CompilationUnit) p2.createAST(null);
+                for (Object t : cu2.types()) {
+                    if (t instanceof TypeDeclaration std
+                            && std.getName().getIdentifier().equals(superName)) {
+                        for (MethodDeclaration m : std.getMethods()) {
+                            if (m.isConstructor()) superCtors.add(m);
+                        }
+                        break;
+                    }
+                }
+                if (!superCtors.isEmpty()) break;
+            }
+        }
+
+        String displaySuper = superName != null ? superName : "super";
+
+        if (superCtors.isEmpty()) {
+            // Implicit default constructor
+            BridgeCompletion c = new BridgeCompletion();
+            c.label = "super()";
+            c.kind = 4; // Constructor
+            c.detail = displaySuper + "()";
+            c.insertText = "super()";
+            c.insertTextFormat = 1;
+            c.sortText = "00super";
+            results.add(c);
+            return;
+        }
+
+        for (MethodDeclaration ctor : superCtors) {
+            String sig = buildMethodSignature(ctor); // e.g. "Alda(int a)"
+            String paramsPart = sig.substring(sig.indexOf('(')); // e.g. "(int a)"
+            BridgeCompletion c = new BridgeCompletion();
+            c.label = "super" + paramsPart;
+            c.kind = 4; // Constructor
+            c.detail = displaySuper + paramsPart;
+            c.insertText = buildInsertTextFromParams("super", ctor.parameters());
+            c.insertTextFormat = ctor.parameters().isEmpty() ? 1 : 2;
+            c.sortText = "00super";
+            results.add(c);
+        }
+    }
+
     // ── Type member collection ────────────────────────────────────────────────
 
-    private void collectTypeMembers(AbstractTypeDeclaration atd, List<BridgeCompletion> results) {
+    /**
+     * Collects members (fields + methods) of {@code atd} and its superclass chain
+     * within the same compilation unit. Used for non-member-access completions so
+     * only the enclosing class (not sibling classes) is offered.
+     *
+     * @param depth 0 = enclosing class (sort "1"), 1+ = superclass (sort "2"), so
+     *              directly-declared members always precede inherited ones.
+     */
+    private void collectTypeMembersWithHierarchy(
+            AbstractTypeDeclaration atd,
+            CompilationUnit cu,
+            List<BridgeCompletion> results,
+            Set<String> seen,
+            int depth,
+            String namePrefix) {
+        String sortPfx = depth == 0 ? "1" : "2"; // own members sort before inherited
         if (atd instanceof TypeDeclaration td) {
             for (FieldDeclaration fd : td.getFields()) {
                 for (Object frag : fd.fragments()) {
-                    if (frag instanceof VariableDeclarationFragment vdf) {
-                        BridgeCompletion c = new BridgeCompletion();
-                        c.label = vdf.getName().getIdentifier();
-                        c.kind = 5; // Field
-                        c.sortText = "1" + c.label;
-                        results.add(c);
-                    }
+                    if (!(frag instanceof VariableDeclarationFragment vdf)) continue;
+                    String fname = vdf.getName().getIdentifier();
+                    if (!isValidJavaIdentifier(fname) || !seen.add("F:" + fname)) continue;
+                    if (!fname.startsWith(namePrefix)) continue;
+                    BridgeCompletion c = new BridgeCompletion();
+                    c.label = fname;
+                    c.kind = 5;
+                    c.sortText = sortPfx + fname;
+                    results.add(c);
                 }
             }
             for (MethodDeclaration md : td.getMethods()) {
+                if (md.isConstructor()) continue;
+                String mname = md.getName().getIdentifier();
+                if (!isValidJavaIdentifier(mname)
+                        || !seen.add("M:" + mname + "/" + md.parameters().size())) continue;
+                if (!mname.startsWith(namePrefix)) continue;
                 BridgeCompletion c = new BridgeCompletion();
-                c.label = md.getName().getIdentifier();
-                c.kind = 2; // Method
-                c.detail = buildMethodSignature(md);
-                c.sortText = "1" + c.label;
+                c.label = buildMethodLabel(md);
+                c.filterText = mname;
+                c.kind = 2;
+                c.sortText = sortPfx + mname;
+                c.insertText = buildInsertTextFromParams(mname, md.parameters());
+                c.insertTextFormat = md.parameters().isEmpty() ? 1 : 2;
                 results.add(c);
             }
-            // Recurse into nested types
-            for (Object member : td.bodyDeclarations()) {
-                if (member instanceof AbstractTypeDeclaration nested) {
-                    collectTypeMembers(nested, results);
+            // Traverse superclass chain (same CU only)
+            if (td.getSuperclassType() != null) {
+                AbstractTypeDeclaration parent = findTypeDeclaration(
+                        cu, simpleTypeName(td.getSuperclassType().toString()));
+                if (parent != null) {
+                    collectTypeMembersWithHierarchy(parent, cu, results, seen, depth + 1, namePrefix);
                 }
             }
         } else if (atd instanceof EnumDeclaration ed) {
             for (Object ec : ed.enumConstants()) {
                 if (ec instanceof EnumConstantDeclaration ecd) {
+                    String ename = ecd.getName().getIdentifier();
+                    if (!seen.add("E:" + ename)) continue;
+                    if (!ename.startsWith(namePrefix)) continue;
                     BridgeCompletion c = new BridgeCompletion();
-                    c.label = ecd.getName().getIdentifier();
-                    c.kind = 20; // EnumMember
-                    c.sortText = "1" + c.label;
+                    c.label = ename;
+                    c.kind = 20;
+                    c.sortText = sortPfx + ename;
                     results.add(c);
                 }
             }
             for (Object bd : ed.bodyDeclarations()) {
-                if (bd instanceof MethodDeclaration md) {
-                    BridgeCompletion c = new BridgeCompletion();
-                    c.label = md.getName().getIdentifier();
-                    c.kind = 2; // Method
-                    c.detail = buildMethodSignature(md);
-                    c.sortText = "1" + c.label;
-                    results.add(c);
-                }
+                if (!(bd instanceof MethodDeclaration md) || md.isConstructor()) continue;
+                String mname = md.getName().getIdentifier();
+                if (!seen.add("M:" + mname + "/" + md.parameters().size())) continue;
+                if (!mname.startsWith(namePrefix)) continue;
+                BridgeCompletion c = new BridgeCompletion();
+                c.label = buildMethodLabel(md);
+                c.filterText = mname;
+                c.kind = 2;
+                c.sortText = sortPfx + mname;
+                c.insertText = buildInsertTextFromParams(mname, md.parameters());
+                c.insertTextFormat = md.parameters().isEmpty() ? 1 : 2;
+                results.add(c);
             }
         }
     }
@@ -241,12 +413,15 @@ public class CompletionService {
                 if (md.isConstructor() || Modifier.isStatic(md.getModifiers())) continue;
                 if (!allowPrivate && Modifier.isPrivate(md.getModifiers())) continue;
                 String name = md.getName().getIdentifier();
+                if (!isValidJavaIdentifier(name)) continue;
                 if (!name.startsWith(prefix) || !seen.add("M:" + name + "/" + md.parameters().size())) continue;
                 BridgeCompletion c = new BridgeCompletion();
-                c.label = name;
+                c.label = buildMethodLabel(md);
+                c.filterText = name;
                 c.kind = 2;
-                c.detail = buildMethodSignature(md);
                 c.sortText = "0" + name;
+                c.insertText = buildInsertTextFromParams(name, md.parameters());
+                c.insertTextFormat = md.parameters().isEmpty() ? 1 : 2;
                 results.add(c);
             }
             if (includeInherited && td.getSuperclassType() != null) {
@@ -267,10 +442,12 @@ public class CompletionService {
                 String name = md.getName().getIdentifier();
                 if (!name.startsWith(prefix) || !seen.add("M:" + name + "/" + md.parameters().size())) continue;
                 BridgeCompletion c = new BridgeCompletion();
-                c.label = name;
+                c.label = buildMethodLabel(md);
+                c.filterText = name;
                 c.kind = 2;
-                c.detail = buildMethodSignature(md);
                 c.sortText = "0" + name;
+                c.insertText = buildInsertTextFromParams(name, md.parameters());
+                c.insertTextFormat = md.parameters().isEmpty() ? 1 : 2;
                 results.add(c);
             }
             if (includeInherited) {
@@ -283,37 +460,135 @@ public class CompletionService {
             String prefix,
             List<BridgeCompletion> results,
             Set<String> seen) {
-        addSyntheticMethod(results, seen, prefix, "clone", "Object clone()");
-        addSyntheticMethod(results, seen, prefix, "equals", "boolean equals(Object obj)");
-        addSyntheticMethod(results, seen, prefix, "finalize", "void finalize()");
-        addSyntheticMethod(results, seen, prefix, "getClass", "Class<?> getClass()");
-        addSyntheticMethod(results, seen, prefix, "hashCode", "int hashCode()");
-        addSyntheticMethod(results, seen, prefix, "notify", "void notify()");
-        addSyntheticMethod(results, seen, prefix, "notifyAll", "void notifyAll()");
-        addSyntheticMethod(results, seen, prefix, "toString", "String toString()");
-        addSyntheticMethod(results, seen, prefix, "wait", "void wait()");
-        addSyntheticMethod(results, seen, prefix, "wait", "void wait(long timeoutMillis)");
-        addSyntheticMethod(results, seen, prefix, "wait", "void wait(long timeoutMillis, int nanos)");
+        // "9" sort prefix ensures Object methods appear after directly-declared and inherited members
+        addSyntheticMethod(results, seen, prefix, "9", "clone", "Object clone()");
+        addSyntheticMethod(results, seen, prefix, "9", "equals", "boolean equals(Object obj)");
+        addSyntheticMethod(results, seen, prefix, "9", "finalize", "void finalize()");
+        addSyntheticMethod(results, seen, prefix, "9", "getClass", "Class<?> getClass()");
+        addSyntheticMethod(results, seen, prefix, "9", "hashCode", "int hashCode()");
+        addSyntheticMethod(results, seen, prefix, "9", "notify", "void notify()");
+        addSyntheticMethod(results, seen, prefix, "9", "notifyAll", "void notifyAll()");
+        addSyntheticMethod(results, seen, prefix, "9", "toString", "String toString()");
+        addSyntheticMethod(results, seen, prefix, "9", "wait", "void wait()");
+        addSyntheticMethod(results, seen, prefix, "9", "wait", "void wait(long timeoutMillis)");
+        addSyntheticMethod(results, seen, prefix, "9", "wait", "void wait(long timeoutMillis, int nanos)");
     }
 
     private void addSyntheticMethod(
             List<BridgeCompletion> results,
             Set<String> seen,
             String prefix,
+            String sortPrefix,
             String name,
-            String detail) {
+            String signature) {
+        // signature format: "ReturnType name(ParamType param, ...)"  e.g. "void wait(long ms)"
         if (!name.startsWith(prefix)) {
             return;
         }
-        if (!seen.add("M:" + name + "/" + detail)) {
+        if (!seen.add("M:" + name + "/" + signature)) {
             return;
         }
+        // Convert "void wait(long ms)" → "wait(long ms) : void"
+        String label = syntheticMethodLabel(name, signature);
         BridgeCompletion c = new BridgeCompletion();
-        c.label = name;
+        c.label = label;
+        c.filterText = name;
         c.kind = 2;
-        c.detail = detail;
-        c.sortText = "0" + name;
+        c.sortText = sortPrefix + name;
+        c.insertText = buildInsertTextFromSignature(name, signature);
+        c.insertTextFormat = c.insertText.contains("${") ? 2 : 1;
         results.add(c);
+    }
+
+    /** Converts a classic-style signature {@code "void wait(long ms)"} to jdtls label {@code "wait(long ms) : void"}. */
+    private static String syntheticMethodLabel(String name, String signature) {
+        int lp = signature.indexOf('(');
+        if (lp < 0) return name + "()";
+        String paramsPart = signature.substring(lp); // "(long ms)"
+        // Return type is everything before the method name
+        int nameIdx = signature.lastIndexOf(name, lp);
+        String returnType = nameIdx > 0 ? signature.substring(0, nameIdx).trim() : "void";
+        return name + paramsPart + " : " + returnType;
+    }
+
+    /** Parses a signature like "void wait(long ms, int nanos)" and builds a snippet. */
+    private static String buildInsertTextFromSignature(String name, String detail) {
+        int lp = detail.indexOf('(');
+        int rp = detail.lastIndexOf(')');
+        if (lp < 0 || rp <= lp + 1) return name + "()"; // no params
+        String paramStr = detail.substring(lp + 1, rp).trim();
+        if (paramStr.isEmpty()) return name + "()";
+        String[] parts = paramStr.split(",");
+        StringBuilder sb = new StringBuilder(name).append("(");
+        for (int i = 0; i < parts.length; i++) {
+            String part = parts[i].trim();
+            // Last token is the param name
+            int sp = part.lastIndexOf(' ');
+            String pname = sp >= 0 ? part.substring(sp + 1) : part;
+            if (i > 0) sb.append(", ");
+            sb.append("${").append(i + 1).append(":").append(pname).append("}");
+        }
+        sb.append(")");
+        return sb.toString();
+    }
+
+    /** Builds a snippet insertText from actual AST parameter nodes. */
+    private static String buildInsertTextFromParams(String name, List<?> params) {
+        if (params.isEmpty()) return name + "()";
+        StringBuilder sb = new StringBuilder(name).append("(");
+        int idx = 1;
+        for (Object p : params) {
+            if (p instanceof SingleVariableDeclaration svd) {
+                String pname = svd.getName().getIdentifier();
+                if (idx > 1) sb.append(", ");
+                sb.append("${").append(idx).append(":").append(pname).append("}");
+                idx++;
+            }
+        }
+        sb.append(")");
+        return sb.toString();
+    }
+
+    /** Returns true only for proper Java identifier strings (no ECJ placeholders). */
+    private static boolean isInsideMethodBody(ASTNode node) {
+        ASTNode current = node;
+        while (current != null) {
+            if (current instanceof MethodDeclaration) return true;
+            if (current instanceof Initializer) return true;
+            current = current.getParent();
+        }
+        return false;
+    }
+
+    private static boolean isValidJavaIdentifier(String s) {
+        if (s == null || s.isEmpty() || s.startsWith("$")) return false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '_') return false;
+        }
+        return true;
+    }
+
+    /**
+     * Builds a jdtls-style method label: {@code "name(ParamType param) : ReturnType"}.
+     * e.g. {@code "setAge(int age) : void"}, {@code "getAge() : int"}.
+     */
+    private String buildMethodLabel(MethodDeclaration md) {
+        String mname = md.getName().getIdentifier();
+        StringBuilder sb = new StringBuilder(mname).append("(");
+        boolean first = true;
+        for (Object p : md.parameters()) {
+            if (!first) sb.append(", ");
+            first = false;
+            if (p instanceof SingleVariableDeclaration svd) {
+                sb.append(svd.getType()).append(" ").append(svd.getName().getIdentifier());
+            }
+        }
+        sb.append(")");
+        if (md.getReturnType2() != null) {
+            sb.append(" : ").append(md.getReturnType2());
+        }
+        return sb.toString();
     }
 
     private String buildMethodSignature(MethodDeclaration md) {
@@ -366,13 +641,14 @@ public class CompletionService {
 
     // ── Local variable / parameter extraction ────────────────────────────────
 
-    private void extractLocals(ASTNode node, List<BridgeCompletion> results) {
+    private void extractLocals(ASTNode node, String namePrefix, List<BridgeCompletion> results) {
         ASTNode context = node;
         while (context != null) {
             if (context instanceof MethodDeclaration md && md.getBody() != null) {
                 LocalVarVisitor visitor = new LocalVarVisitor();
                 md.getBody().accept(visitor);
                 for (String var : visitor.vars) {
+                    if (!isValidJavaIdentifier(var) || !var.startsWith(namePrefix)) continue;
                     BridgeCompletion c = new BridgeCompletion();
                     c.label = var;
                     c.kind = 6; // Variable
@@ -381,10 +657,12 @@ public class CompletionService {
                 }
                 for (Object param : md.parameters()) {
                     if (param instanceof SingleVariableDeclaration svd) {
+                        String pname = svd.getName().getIdentifier();
+                        if (!isValidJavaIdentifier(pname) || !pname.startsWith(namePrefix)) continue;
                         BridgeCompletion c = new BridgeCompletion();
-                        c.label = svd.getName().getIdentifier();
+                        c.label = pname;
                         c.kind = 6; // Variable (parameter)
-                        c.sortText = "0" + c.label;
+                        c.sortText = "0" + pname;
                         results.add(c);
                     }
                 }
@@ -483,6 +761,64 @@ public class CompletionService {
         return results;
     }
 
+    /**
+     * Finds JRT types whose simple name is similar (but not identical) to {@code typeName}.
+     * Used for "Change to 'X' (pkg)" code actions — rename + import alternatives.
+     * Matches on case-insensitive prefix, sorted by edit distance, limited to {@code maxResults}.
+     */
+    public static List<String> searchSimilarTypeNames(String typeName, int maxResults) {
+        ensureJrtIndex();
+        String lower = typeName.toLowerCase();
+        int prefixLen = Math.min(4, lower.length());
+        String prefix = lower.substring(0, prefixLen);
+
+        List<long[]> distAndIdx = new ArrayList<>();
+        List<String> fqns = new ArrayList<>();
+
+        JRT_PKG_INDEX.forEach((pkg, children) -> {
+            // Skip internal/private JDK packages — not useful as "Change to" suggestions.
+            if (isInternalPackage(pkg)) return;
+            for (String child : children) {
+                if (child.equalsIgnoreCase(typeName)) continue; // exact match → handled by "Import"
+                if (!child.toLowerCase().startsWith(prefix)) continue;
+                int dist = levenshteinDistance(lower, child.toLowerCase());
+                int idx = fqns.size();
+                fqns.add(pkg + "." + child);
+                distAndIdx.add(new long[]{dist, idx});
+            }
+        });
+
+        distAndIdx.sort(Comparator.comparingLong((long[] a) -> a[0]).thenComparingLong(a -> a[1]));
+        List<String> results = new ArrayList<>();
+        for (int i = 0; i < Math.min(maxResults, distAndIdx.size()); i++) {
+            results.add(fqns.get((int) distAndIdx.get(i)[1]));
+        }
+        return results;
+    }
+
+    private static boolean isInternalPackage(String pkg) {
+        return pkg.startsWith("sun.")
+            || pkg.startsWith("com.sun.")
+            || pkg.startsWith("jdk.internal.")
+            || pkg.startsWith("jdk.jfr.")
+            || pkg.startsWith("com.oracle.")
+            || pkg.startsWith("jdk.nashorn.")
+            || pkg.startsWith("netscape.")
+            || pkg.equals("sun")
+            || pkg.equals("jdk.internal");
+    }
+
+    private static int levenshteinDistance(String a, String b) {
+        int[][] dp = new int[a.length() + 1][b.length() + 1];
+        for (int i = 0; i <= a.length(); i++) dp[i][0] = i;
+        for (int j = 0; j <= b.length(); j++) dp[0][j] = j;
+        for (int i = 1; i <= a.length(); i++)
+            for (int j = 1; j <= b.length(); j++)
+                dp[i][j] = Math.min(Math.min(dp[i-1][j]+1, dp[i][j-1]+1),
+                        dp[i-1][j-1] + (a.charAt(i-1) == b.charAt(j-1) ? 0 : 1));
+        return dp[a.length()][b.length()];
+    }
+
     // ── jrt:/ index ──────────────────────────────────────────────────────────
 
     static void ensureJrtIndex() {
@@ -560,6 +896,24 @@ public class CompletionService {
      * Extracts the Java identifier typed immediately before {@code offset}.
      * E.g. for {@code "int x = Arr|"} returns {@code "Arr"}.
      */
+    /**
+     * Returns true if the last non-whitespace, non-identifier token before the prefix
+     * at {@code offset} is the {@code new} keyword.
+     * e.g. {@code "new Lin|"} → true, {@code "String s = Lin|"} → false.
+     */
+    private static boolean isAfterNewKeyword(String source, int offset) {
+        // Step back past the current identifier prefix.
+        int i = Math.min(offset, source.length()) - 1;
+        while (i >= 0 && (Character.isLetterOrDigit(source.charAt(i)) || source.charAt(i) == '_')) i--;
+        // Step back past whitespace.
+        while (i >= 0 && Character.isWhitespace(source.charAt(i))) i--;
+        // Check if the three characters before are "new" preceded by a word boundary.
+        if (i < 2) return false;
+        if (source.charAt(i) != 'w' || source.charAt(i - 1) != 'e' || source.charAt(i - 2) != 'n') return false;
+        // Ensure "new" is not part of a longer identifier.
+        return i - 3 < 0 || !Character.isLetterOrDigit(source.charAt(i - 3));
+    }
+
     private String typedPrefix(String source, int offset) {
         int i = Math.min(offset, source.length()) - 1;
         while (i >= 0) {
@@ -600,12 +954,85 @@ public class CompletionService {
     }
 
     /**
+     * Adds type declarations from the current compilation unit to {@code results}.
+     * When {@code afterNew} is true, constructors are offered instead of the bare class name.
+     */
+    private void addSameFileTypeCompletions(String prefix, CompilationUnit cu,
+                                             List<BridgeCompletion> results, boolean afterNew) {
+        String lowerPrefix = prefix.toLowerCase();
+        AllTypesCollector collector = new AllTypesCollector();
+        cu.accept(collector);
+        for (AbstractTypeDeclaration atd : collector.types) {
+            String name = atd.getName().getIdentifier();
+            if (!lowerPrefix.isEmpty() && !name.toLowerCase().startsWith(lowerPrefix)) continue;
+
+            if (afterNew && atd instanceof TypeDeclaration td && !td.isInterface()) {
+                // Offer each constructor as a separate item.
+                List<MethodDeclaration> ctors = new ArrayList<>();
+                for (MethodDeclaration md : td.getMethods()) {
+                    if (md.isConstructor()) ctors.add(md);
+                }
+                if (ctors.isEmpty()) {
+                    // Implicit no-arg constructor.
+                    BridgeCompletion c = new BridgeCompletion();
+                    c.label = name + "()";
+                    c.kind = 4; // Constructor
+                    c.detail = name;
+                    c.filterText = name;
+                    c.insertText = name + "()";
+                    c.insertTextFormat = 1;
+                    c.sortText = "1-" + name;
+                    results.add(c);
+                } else {
+                    for (MethodDeclaration ctor : ctors) {
+                        String paramsPart = buildParamsPart(ctor.parameters());
+                        BridgeCompletion c = new BridgeCompletion();
+                        c.label = name + paramsPart;
+                        c.kind = 4; // Constructor
+                        c.detail = name;
+                        c.filterText = name;
+                        c.insertText = buildInsertTextFromParams(name, ctor.parameters());
+                        c.insertTextFormat = ctor.parameters().isEmpty() ? 1 : 2;
+                        c.sortText = "1-" + name;
+                        results.add(c);
+                    }
+                }
+            } else {
+                int kind = (atd instanceof TypeDeclaration td && td.isInterface()) ? 8  // Interface
+                         : (atd instanceof EnumDeclaration)                         ? 10 // Enum
+                         : 7; // Class
+                BridgeCompletion c = new BridgeCompletion();
+                c.label = name;
+                c.kind = kind;
+                c.detail = "(this file)";
+                c.sortText = "1-" + name;
+                results.add(c);
+            }
+        }
+    }
+
+    /** Builds the params display string like {@code "(int age, String name)"}. */
+    private static String buildParamsPart(List<?> params) {
+        StringBuilder sb = new StringBuilder("(");
+        boolean first = true;
+        for (Object p : params) {
+            if (!first) sb.append(", ");
+            first = false;
+            if (p instanceof SingleVariableDeclaration svd) {
+                sb.append(svd.getType()).append(" ").append(svd.getName().getIdentifier());
+            }
+        }
+        sb.append(")");
+        return sb.toString();
+    }
+
+    /**
      * Adds JDK types whose simple name starts with {@code prefix} to {@code results},
      * including an auto-import text edit for types not already imported.
-     * Mirrors what jdtls does via ECJ's CompletionEngine.
+     * When {@code afterNew} is true, items get constructor-style insertText {@code "Name()"}.
      */
     private void addJrtTypeCompletions(String prefix, CompilationUnit cu, String source,
-                                       List<BridgeCompletion> results) {
+                                       List<BridgeCompletion> results, boolean afterNew) {
         ensureJrtIndex();
 
         // Collect already-imported FQNs and locate the end of the import block.
@@ -638,19 +1065,35 @@ public class CompletionService {
 
         final int insertLine = importInsertLine;
 
+        String lowerPrefix = prefix.toLowerCase();
         JRT_PKG_INDEX.forEach((pkg, children) -> {
             for (String name : children) {
                 if (!Character.isUpperCase(name.charAt(0))) continue; // skip packages
                 if (name.contains("$")) continue;                      // skip inner classes
-                if (!name.startsWith(prefix)) continue;
+                if (!name.toLowerCase().startsWith(lowerPrefix)) continue;
 
                 String fqn = pkg + "." + name;
                 BridgeCompletion c = new BridgeCompletion();
-                c.label = name;
-                c.kind = 7; // Class
+                c.kind = afterNew ? 4 : 7; // Constructor vs Class
                 c.detail = fqn;
                 c.sortText = "3" + name;
                 c.filterText = name;
+
+                if (afterNew) {
+                    // We don't know the JDK constructors, so offer a single generic form.
+                    // Use diamond operator for java.util / java.util.concurrent generic classes,
+                    // plain parens otherwise.
+                    boolean likelyGeneric = pkg.startsWith("java.util")
+                            || pkg.startsWith("java.lang.ref")
+                            || pkg.startsWith("java.util.concurrent")
+                            || pkg.startsWith("java.util.function");
+                    String insertSuffix = likelyGeneric ? "<>()" : "()";
+                    c.label = name + insertSuffix;
+                    c.insertText = name + insertSuffix;
+                    c.insertTextFormat = 1;
+                } else {
+                    c.label = name;
+                }
 
                 if (!alreadyImported.contains(fqn)) {
                     BridgeTextEdit edit = new BridgeTextEdit();
@@ -841,5 +1284,15 @@ public class CompletionService {
     static class MemberAccessContext {
         String qualifier;
         String prefix;
+    }
+
+    /** Collects all AbstractTypeDeclaration nodes in a CompilationUnit. */
+    static class AllTypesCollector extends ASTVisitor {
+        final List<AbstractTypeDeclaration> types = new ArrayList<>();
+
+        @Override public boolean visit(TypeDeclaration node)           { types.add(node); return true; }
+        @Override public boolean visit(EnumDeclaration node)           { types.add(node); return true; }
+        @Override public boolean visit(AnnotationTypeDeclaration node) { types.add(node); return true; }
+        @Override public boolean visit(RecordDeclaration node)         { types.add(node); return true; }
     }
 }

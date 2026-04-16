@@ -2,3 +2,4 @@ eclipse.jdt.ls/
 target/
 tests/
 web/
+.DS_Store
