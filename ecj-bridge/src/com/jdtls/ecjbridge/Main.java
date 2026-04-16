@@ -464,6 +464,41 @@ public class Main {
                     actions.addAll(makeAddMatchingConstructorActions(req.uri, source, cu, d, req.files, orDefault(req.sourceLevel), orEmpty(req.classpath)));
                 }
             }
+
+            if (problemId == org.eclipse.jdt.core.compiler.IProblem.MissingSerialVersion) {
+                BridgeAction a = makeAddSerialVersionUIDAction(req.uri, source, cu, d);
+                if (a != null) actions.add(a);
+            }
+
+            if (problemId == org.eclipse.jdt.core.compiler.IProblem.NotVisibleMethod
+                    || problemId == org.eclipse.jdt.core.compiler.IProblem.NotVisibleField
+                    || problemId == org.eclipse.jdt.core.compiler.IProblem.NotVisibleConstructor
+                    || problemId == org.eclipse.jdt.core.compiler.IProblem.NotVisibleType) {
+                actions.addAll(makeChangeVisibilityActions(req.uri, source, req.files,
+                        orDefault(req.sourceLevel), orEmpty(req.classpath), problemId, msg));
+            }
+
+            if (problemId == org.eclipse.jdt.core.compiler.IProblem.UnusedMethodDeclaredThrownException
+                    || problemId == org.eclipse.jdt.core.compiler.IProblem.UnusedConstructorDeclaredThrownException) {
+                BridgeAction a = makeRemoveUnusedThrownExceptionAction(req.uri, source, cu, d);
+                if (a != null) actions.add(a);
+            }
+
+            if (problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocMissingParamTag
+                    || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocMissingReturnTag
+                    || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocMissingThrowsTag) {
+                BridgeAction single = makeAddMissingJavadocTagAction(req.uri, source, cu, d, problemId);
+                if (single != null) actions.add(single);
+                BridgeAction all = makeAddAllMissingJavadocTagsAction(req.uri, source, cu, d);
+                if (all != null) actions.add(all);
+            }
+
+            if (problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocInvalidThrowsClassName
+                    || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocUnexpectedTag
+                    || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocInvalidParamName) {
+                BridgeAction a = makeRemoveInvalidJavadocTagAction(req.uri, source, cu, d);
+                if (a != null) actions.add(a);
+            }
         }
 
         // "Add all missing imports" — unambiguous imports for every unresolved type in the file.
@@ -553,6 +588,18 @@ public class Main {
         if (!hasOverlappingDiagnostic) {
             BridgeAction javadocAction = makeAddJavadocAction(req.uri, source, cu, req.range);
             if (javadocAction != null) actions.add(javadocAction);
+        }
+
+        // Quickassists — position-based, no diagnostic required.
+        if (req.range != null) {
+            BridgeAction extractVar = makeExtractLocalVariableAction(req.uri, source, cu, req.range);
+            if (extractVar != null) actions.add(extractVar);
+
+            BridgeAction inlineVar = makeInlineLocalVariableAction(req.uri, source, cu, req.range);
+            if (inlineVar != null) actions.add(inlineVar);
+
+            BridgeAction extractMethod = makeExtractMethodAction(req.uri, source, cu, req.range);
+            if (extractMethod != null) actions.add(extractMethod);
         }
 
         return dedupeActions(actions);
@@ -869,13 +916,9 @@ public class Main {
         List<BridgeTextEdit> edits = new ArrayList<>();
         for (var es : aloc.pureAssignments) {
             if (cu.getLineNumber(es.getStartPosition()) == cu.getLineNumber(vloc.found.getStartPosition())) continue;
-            int s = es.getStartPosition(), e = s + es.getLength();
-            if (e < source.length() && source.charAt(e) == '\n') e++;
-            edits.add(removalEditFromOffsets(source, s, e));
+            edits.add(removalEditFromLine(source, cu.getLineNumber(es.getStartPosition()) - 1));
         }
-        int ds = vloc.found.getStartPosition(), de = ds + vloc.found.getLength();
-        if (de < source.length() && source.charAt(de) == '\n') de++;
-        edits.add(removalEditFromOffsets(source, ds, de));
+        edits.add(removalEditFromLine(source, cu.getLineNumber(vloc.found.getStartPosition()) - 1));
         edits.sort((a,b) -> Integer.compare(b.startLine, a.startLine));
         BridgeAction act = new BridgeAction(); act.title = "Remove '" + varName + "' and all assignments"; act.kind = "quickfix"; act.isPreferred = true;
         BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = edits; act.edits = List.of(fe); return act;
@@ -953,8 +996,13 @@ public class Main {
         int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
         StatementLocator loc = new StatementLocator(offset); cu.accept(loc);
         if (loc.found == null) return null;
-        int s = loc.found.getStartPosition(), e = s + loc.found.getLength();
+        int stmtStart = loc.found.getStartPosition();
+        int e = stmtStart + loc.found.getLength();
         if (e < source.length() && source.charAt(e) == '\n') e++;
+        // Start from the beginning of the line so the leading whitespace is also
+        // removed; without this the orphaned indent merges with the next line.
+        int lineNum = cu.getLineNumber(stmtStart) - 1; // 0-based
+        int s = lineStart(source, lineNum);
         return makeRemoveTextAction("Remove unreachable code", uri, source, s, e);
     }
 
@@ -1062,6 +1110,369 @@ public class Main {
         if (loc.found == null || !loc.found.isConstructor()) return null;
         String invocation = indentOf(source, cu.getLineNumber(loc.found.getBody().getStartPosition())) + "super();\n";
         return singleInsertionAction("Add explicit super() call", uri, source, assignmentInsertOffset(loc.found, source), invocation);
+    }
+
+    // ── serialVersionUID ─────────────────────────────────────────────────────
+
+    private static BridgeAction makeAddSerialVersionUIDAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d) {
+        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
+        TypeDeclLocator loc = new TypeDeclLocator(offset); cu.accept(loc);
+        if (loc.found == null) return null;
+        int insertOffset = bodyInsertOffset(loc.found, source);
+        if (insertOffset < 0) return null;
+        String indent = indentOf(source, cu.getLineNumber(loc.found.getStartPosition()) - 1) + "    ";
+        BridgeAction a = singleInsertionAction("Add serialVersionUID field", uri, source, insertOffset,
+                indent + "private static final long serialVersionUID = 1L;\n");
+        a.isPreferred = true;
+        return a;
+    }
+
+    // ── Visibility change ────────────────────────────────────────────────────
+
+    private static List<BridgeAction> makeChangeVisibilityActions(String uri, String source,
+            Map<String, String> files, String sourceLevel, List<String> classpath,
+            int problemId, String msg) {
+        // Parse declaring type and member name from the ECJ error message.
+        String declaringType = null;
+        String memberName    = null;
+        boolean isCtor       = false;
+
+        Matcher mMethod = Pattern.compile("The method ([\\w$]+)(?:\\(.*?\\))? from the type ([\\w$]+) is not visible").matcher(msg);
+        Matcher mField  = Pattern.compile("The field ([\\w$]+)\\.([\\w$]+) is not visible").matcher(msg);
+        Matcher mCtor   = Pattern.compile("The constructor ([\\w$]+)\\(.*?\\) is not visible").matcher(msg);
+        Matcher mType   = Pattern.compile("The type ([\\w$]+) is not visible").matcher(msg);
+
+        if (mMethod.find()) { memberName = mMethod.group(1); declaringType = mMethod.group(2); }
+        else if (mField.find()) { declaringType = mField.group(1); memberName = mField.group(2); }
+        else if (mCtor.find()) { declaringType = mCtor.group(1); isCtor = true; }
+        else if (mType.find()) { declaringType = mType.group(1); }
+        if (declaringType == null) return List.of();
+
+        final String typeName  = declaringType;
+        final String mName     = memberName;
+        final boolean isCtor2  = isCtor;
+        List<BridgeAction> results = new ArrayList<>();
+
+        for (Map.Entry<String, String> entry : files.entrySet()) {
+            String fileSource = entry.getValue();
+            org.eclipse.jdt.core.dom.CompilationUnit fileCu = parseForFixes(fileSource, sourceLevel, classpath);
+            for (Object o : fileCu.types()) {
+                if (!(o instanceof org.eclipse.jdt.core.dom.TypeDeclaration td)) continue;
+                if (!td.getName().getIdentifier().equals(typeName)) continue;
+                if (mName == null && !isCtor2) {
+                    // Type itself is not visible
+                    BridgeAction a = changeMemberVisibility(entry.getKey(), fileSource, td, "type", typeName);
+                    if (a != null) results.add(a);
+                    continue;
+                }
+                for (Object bd : td.bodyDeclarations()) {
+                    if (isCtor2 && bd instanceof org.eclipse.jdt.core.dom.MethodDeclaration md && md.isConstructor()) {
+                        BridgeAction a = changeMemberVisibility(entry.getKey(), fileSource, md, "constructor", typeName);
+                        if (a != null) results.add(a);
+                    } else if (!isCtor2 && mName != null && bd instanceof org.eclipse.jdt.core.dom.MethodDeclaration md
+                            && md.getName().getIdentifier().equals(mName)) {
+                        BridgeAction a = changeMemberVisibility(entry.getKey(), fileSource, md, "method", mName);
+                        if (a != null) results.add(a);
+                    } else if (!isCtor2 && mName != null && bd instanceof org.eclipse.jdt.core.dom.FieldDeclaration fd) {
+                        for (Object frag : fd.fragments()) {
+                            if (((org.eclipse.jdt.core.dom.VariableDeclarationFragment) frag).getName().getIdentifier().equals(mName)) {
+                                BridgeAction a = changeMemberVisibility(entry.getKey(), fileSource, fd, "field", mName);
+                                if (a != null) results.add(a);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return results;
+    }
+
+    private static BridgeAction changeMemberVisibility(String uri, String source,
+            org.eclipse.jdt.core.dom.BodyDeclaration node, String kind, String name) {
+        int flags = node.getModifiers();
+        if ((flags & org.eclipse.jdt.core.dom.Modifier.PUBLIC) != 0) return null; // already public
+        boolean isPrivate   = (flags & org.eclipse.jdt.core.dom.Modifier.PRIVATE)   != 0;
+        boolean isProtected = (flags & org.eclipse.jdt.core.dom.Modifier.PROTECTED) != 0;
+        int start = node.getStartPosition();
+        List<BridgeTextEdit> edits = new ArrayList<>();
+        if (isPrivate || isProtected) {
+            String kw = isPrivate ? "private" : "protected";
+            int idx = source.indexOf(kw, start);
+            if (idx >= 0 && idx < start + 30) {
+                int[] sl = CompilationService.offsetToLineCol(source, idx);
+                int[] el = CompilationService.offsetToLineCol(source, idx + kw.length());
+                BridgeTextEdit e = new BridgeTextEdit();
+                e.startLine = sl[0]; e.startChar = sl[1]; e.endLine = el[0]; e.endChar = el[1];
+                e.newText = "public";
+                edits.add(e);
+            }
+        } else {
+            // Package-private: prepend "public "
+            edits.add(insertionEdit(source, start, "public "));
+        }
+        if (edits.isEmpty()) return null;
+        BridgeAction a = new BridgeAction();
+        a.title = "Change visibility of '" + name + "' to public";
+        a.kind  = "quickfix";
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = edits;
+        a.edits = List.of(fe);
+        return a;
+    }
+
+    // ── Extract local variable ────────────────────────────────────────────────
+
+    private static BridgeAction makeExtractLocalVariableAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        // Only offer when there is a genuine selection (not a cursor-only click).
+        if (range.startLine == range.endLine && range.startChar == range.endChar) return null;
+        int startOff = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+        int endOff   = CompilationService.lineColToOffset(source, range.endLine,   range.endChar);
+        if (startOff >= endOff) return null;
+
+        org.eclipse.jdt.core.dom.ASTNode node = org.eclipse.jdt.core.dom.NodeFinder.perform(cu, startOff, endOff - startOff);
+        while (node != null && !(node instanceof org.eclipse.jdt.core.dom.Expression)) node = node.getParent();
+        if (!(node instanceof org.eclipse.jdt.core.dom.Expression expr)) return null;
+        // Skip trivial / already-named things
+        if (expr instanceof org.eclipse.jdt.core.dom.SimpleName
+                || expr instanceof org.eclipse.jdt.core.dom.QualifiedName
+                || expr instanceof org.eclipse.jdt.core.dom.NumberLiteral
+                || expr instanceof org.eclipse.jdt.core.dom.BooleanLiteral
+                || expr instanceof org.eclipse.jdt.core.dom.NullLiteral) return null;
+        // Skip if already the RHS of a declaration
+        if (expr.getParent() instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment) return null;
+
+        org.eclipse.jdt.core.dom.ASTNode stmt = expr;
+        while (stmt != null && !(stmt instanceof org.eclipse.jdt.core.dom.Statement)) stmt = stmt.getParent();
+        if (stmt == null) return null;
+
+        String exprText = source.substring(expr.getStartPosition(), expr.getStartPosition() + expr.getLength());
+        String varName  = suggestVariableName(expr, exprText);
+        int    lineNum  = cu.getLineNumber(stmt.getStartPosition()) - 1;
+        String indent   = indentOf(source, lineNum);
+
+        // Edit order matters: replace expression first (higher offset), then insert declaration.
+        int[] sl = CompilationService.offsetToLineCol(source, expr.getStartPosition());
+        int[] el = CompilationService.offsetToLineCol(source, expr.getStartPosition() + expr.getLength());
+        BridgeTextEdit replEdit = new BridgeTextEdit();
+        replEdit.startLine = sl[0]; replEdit.startChar = sl[1];
+        replEdit.endLine   = el[0]; replEdit.endChar   = el[1];
+        replEdit.newText   = varName;
+
+        BridgeTextEdit declEdit = insertionEdit(source, lineStart(source, lineNum),
+                indent + "var " + varName + " = " + exprText + ";\n");
+
+        // Apply higher-line edit first so offsets stay valid
+        List<BridgeTextEdit> edits = new ArrayList<>(List.of(replEdit, declEdit));
+        edits.sort((a, b) -> {
+            int c = Integer.compare(b.startLine, a.startLine);
+            return c != 0 ? c : Integer.compare(b.startChar, a.startChar);
+        });
+
+        BridgeAction a = new BridgeAction();
+        a.title = "Extract to local variable";
+        a.kind  = "refactor.extract.variable";
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = edits;
+        a.edits = List.of(fe);
+        return a;
+    }
+
+    private static String suggestVariableName(org.eclipse.jdt.core.dom.Expression expr, String text) {
+        if (expr instanceof org.eclipse.jdt.core.dom.MethodInvocation mi) {
+            String n = mi.getName().getIdentifier();
+            if (n.startsWith("get") && n.length() > 3)
+                return Character.toLowerCase(n.charAt(3)) + n.substring(4);
+            return n;
+        }
+        if (expr instanceof org.eclipse.jdt.core.dom.ClassInstanceCreation cic) {
+            String n = cic.getType().toString();
+            int lt = n.indexOf('<'); if (lt > 0) n = n.substring(0, lt);
+            return Character.toLowerCase(n.charAt(0)) + (n.length() > 1 ? n.substring(1) : "");
+        }
+        if (expr instanceof org.eclipse.jdt.core.dom.FieldAccess fa)
+            return fa.getName().getIdentifier();
+        return "value";
+    }
+
+    // ── Inline local variable ────────────────────────────────────────────────
+
+    private static BridgeAction makeInlineLocalVariableAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        int offset = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+        VarDeclLocator loc = new VarDeclLocator(offset); cu.accept(loc);
+        if (loc.found == null || loc.found.fragments().isEmpty()) return null;
+        @SuppressWarnings("unchecked")
+        org.eclipse.jdt.core.dom.VariableDeclarationFragment frag =
+                (org.eclipse.jdt.core.dom.VariableDeclarationFragment) loc.found.fragments().get(0);
+        if (frag.getInitializer() == null) return null;
+
+        String varName  = frag.getName().getIdentifier();
+        String initText = source.substring(frag.getInitializer().getStartPosition(),
+                frag.getInitializer().getStartPosition() + frag.getInitializer().getLength());
+
+        // Collect all reads of the variable in the enclosing block.
+        org.eclipse.jdt.core.dom.ASTNode block = loc.found;
+        while (block != null && !(block instanceof org.eclipse.jdt.core.dom.Block)) block = block.getParent();
+        if (block == null) return null;
+
+        List<org.eclipse.jdt.core.dom.SimpleName> reads = new ArrayList<>();
+        final org.eclipse.jdt.core.dom.SimpleName declName = frag.getName();
+        block.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
+            public boolean visit(org.eclipse.jdt.core.dom.SimpleName n) {
+                if (n.getIdentifier().equals(varName) && n != declName
+                        && !(n.getParent() instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment))
+                    reads.add(n);
+                return true;
+            }
+        });
+
+        // Don't offer inline when there are no usages — would just delete the declaration.
+        if (reads.isEmpty()) return null;
+
+        List<BridgeTextEdit> edits = new ArrayList<>();
+        for (org.eclipse.jdt.core.dom.SimpleName read : reads) {
+            int[] sl = CompilationService.offsetToLineCol(source, read.getStartPosition());
+            int[] el = CompilationService.offsetToLineCol(source, read.getStartPosition() + read.getLength());
+            BridgeTextEdit e = new BridgeTextEdit();
+            e.startLine = sl[0]; e.startChar = sl[1]; e.endLine = el[0]; e.endChar = el[1];
+            e.newText = initText;
+            edits.add(e);
+        }
+
+        // Remove the declaration line.
+        int lineNum   = cu.getLineNumber(loc.found.getStartPosition()) - 1;
+        int declStart = lineStart(source, lineNum);
+        int declEnd   = loc.found.getStartPosition() + loc.found.getLength();
+        if (declEnd < source.length() && source.charAt(declEnd) == ';') declEnd++;
+        if (declEnd < source.length() && source.charAt(declEnd) == '\n') declEnd++;
+        edits.add(removalEditFromOffsets(source, declStart, declEnd));
+
+        edits.sort((a, b) -> {
+            int c = Integer.compare(b.startLine, a.startLine);
+            return c != 0 ? c : Integer.compare(b.startChar, a.startChar);
+        });
+
+        BridgeAction action = new BridgeAction();
+        action.title = "Inline local variable";
+        action.kind  = "refactor.inline";
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = edits;
+        action.edits = List.of(fe);
+        return action;
+    }
+
+    // ── Extract method ───────────────────────────────────────────────────────
+
+    private static BridgeAction makeExtractMethodAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        if (range.startLine == range.endLine && range.startChar == range.endChar) return null;
+        int startOff = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+        int endOff   = CompilationService.lineColToOffset(source, range.endLine,   range.endChar);
+        if (startOff >= endOff) return null;
+
+        List<org.eclipse.jdt.core.dom.Statement> stmts = findStatementsInRange(cu, startOff, endOff);
+        if (stmts.isEmpty()) return null;
+
+        MethodLocator mLoc = new MethodLocator(startOff); cu.accept(mLoc);
+        if (mLoc.found == null || mLoc.found.getBody() == null) return null;
+        boolean isStatic = (mLoc.found.getModifiers() & org.eclipse.jdt.core.dom.Modifier.STATIC) != 0;
+
+        // Variables referenced inside selection but declared outside = parameters.
+        Set<String> declaredIn   = new LinkedHashSet<>();
+        Set<String> referencedIn = new LinkedHashSet<>();
+        for (org.eclipse.jdt.core.dom.Statement s : stmts) {
+            collectDeclaredNames(s, declaredIn);
+            collectReferencedNames(s, referencedIn);
+        }
+        Set<String> params = new LinkedHashSet<>();
+        for (String n : referencedIn) if (!declaredIn.contains(n)) params.add(n);
+
+        int firstStart = stmts.get(0).getStartPosition();
+        int lastEnd    = stmts.get(stmts.size() - 1).getStartPosition()
+                       + stmts.get(stmts.size() - 1).getLength();
+        String stmtBody = source.substring(firstStart, lastEnd);
+
+        String methodIndent = indentOf(source, cu.getLineNumber(mLoc.found.getStartPosition()) - 1);
+        String bodyIndent   = methodIndent + "    ";
+        String extraIndent  = "    "; // indent relative to extracted method body
+
+        StringBuilder paramList = new StringBuilder();
+        for (String p : params) { if (paramList.length() > 0) paramList.append(", "); paramList.append("Object ").append(p); }
+
+        String bodyText = stmtBody.lines()
+                .map(l -> extraIndent + l)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        String newMethod = "\n\n" + methodIndent + (isStatic ? "static " : "") + "private void extracted("
+                + paramList + ") {\n" + bodyText + "\n" + methodIndent + "}";
+
+        StringBuilder callArgs = new StringBuilder();
+        for (String p : params) { if (callArgs.length() > 0) callArgs.append(", "); callArgs.append(p); }
+        String callLine = indentOf(source, cu.getLineNumber(firstStart) - 1)
+                + "extracted(" + callArgs + ");\n";
+
+        int methodEnd = mLoc.found.getStartPosition() + mLoc.found.getLength();
+
+        int stmtLineStart = lineStart(source, cu.getLineNumber(firstStart) - 1);
+        int stmtEnd       = lastEnd;
+        if (stmtEnd < source.length() && source.charAt(stmtEnd) == '\n') stmtEnd++;
+
+        int[] callSL = CompilationService.offsetToLineCol(source, stmtLineStart);
+        int[] callEL = CompilationService.offsetToLineCol(source, stmtEnd);
+        BridgeTextEdit callEdit = new BridgeTextEdit();
+        callEdit.startLine = callSL[0]; callEdit.startChar = callSL[1];
+        callEdit.endLine   = callEL[0]; callEdit.endChar   = callEL[1];
+        callEdit.newText   = callLine;
+
+        BridgeTextEdit insertEdit = insertionEdit(source, methodEnd, newMethod);
+
+        // Ascending order (callEdit first, insertEdit after) so VS Code's
+        // WorkspaceEdit validator doesn't flag the same-line boundary as overlap.
+        List<BridgeTextEdit> edits = new ArrayList<>(List.of(callEdit, insertEdit));
+        edits.sort((a, b) -> {
+            int c = Integer.compare(a.startLine, b.startLine);
+            return c != 0 ? c : Integer.compare(a.startChar, b.startChar);
+        });
+
+        BridgeAction a = new BridgeAction();
+        a.title = "Extract method";
+        a.kind  = "refactor.extract.function";
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = edits;
+        a.edits = List.of(fe);
+        return a;
+    }
+
+    private static List<org.eclipse.jdt.core.dom.Statement> findStatementsInRange(
+            org.eclipse.jdt.core.dom.CompilationUnit cu, int start, int end) {
+        List<org.eclipse.jdt.core.dom.Statement> result = new ArrayList<>();
+        cu.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
+            public boolean visit(org.eclipse.jdt.core.dom.Block b) {
+                @SuppressWarnings("unchecked")
+                List<org.eclipse.jdt.core.dom.Statement> stmts = b.statements();
+                for (org.eclipse.jdt.core.dom.Statement s : stmts) {
+                    int ss = s.getStartPosition(), se = ss + s.getLength();
+                    if (ss >= start && se <= end) result.add(s);
+                }
+                return true;
+            }
+        });
+        return result;
+    }
+
+    private static void collectDeclaredNames(org.eclipse.jdt.core.dom.ASTNode node, Set<String> out) {
+        node.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
+            public boolean visit(org.eclipse.jdt.core.dom.VariableDeclarationFragment n) { out.add(n.getName().getIdentifier()); return true; }
+            public boolean visit(org.eclipse.jdt.core.dom.SingleVariableDeclaration n)  { out.add(n.getName().getIdentifier()); return true; }
+        });
+    }
+
+    private static void collectReferencedNames(org.eclipse.jdt.core.dom.ASTNode node, Set<String> out) {
+        node.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
+            public boolean visit(org.eclipse.jdt.core.dom.SimpleName n) {
+                // Exclude declaration positions
+                if (!(n.getParent() instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf && vdf.getName() == n)
+                        && !(n.getParent() instanceof org.eclipse.jdt.core.dom.SingleVariableDeclaration svd && svd.getName() == n))
+                    out.add(n.getIdentifier());
+                return true;
+            }
+        });
     }
 
     private static BridgeAction makeRemoveUnusedThrownExceptionAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d) {

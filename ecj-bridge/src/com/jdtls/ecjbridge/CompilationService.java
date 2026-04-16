@@ -79,10 +79,20 @@ public class CompilationService {
                 }
 
                 // Deprecation tag
-                if (problem.getID() == org.eclipse.jdt.core.compiler.IProblem.UsingDeprecatedType
-                        || problem.getID() == org.eclipse.jdt.core.compiler.IProblem.UsingDeprecatedMethod
-                        || problem.getID() == org.eclipse.jdt.core.compiler.IProblem.UsingDeprecatedField) {
+                int pid = problem.getID();
+                if (pid == org.eclipse.jdt.core.compiler.IProblem.UsingDeprecatedType
+                        || pid == org.eclipse.jdt.core.compiler.IProblem.UsingDeprecatedMethod
+                        || pid == org.eclipse.jdt.core.compiler.IProblem.UsingDeprecatedField
+                        || pid == org.eclipse.jdt.core.compiler.IProblem.UsingDeprecatedConstructor
+                        || pid == org.eclipse.jdt.core.compiler.IProblem.UsingDeprecatedModule) {
                     d.tags = List.of(2); // DiagnosticTag.Deprecated
+                }
+                // Unnecessary tag (faded-out display in editors)
+                if (pid == org.eclipse.jdt.core.compiler.IProblem.UnusedImport
+                        || pid == org.eclipse.jdt.core.compiler.IProblem.LocalVariableIsNeverUsed
+                        || pid == org.eclipse.jdt.core.compiler.IProblem.ArgumentIsNeverUsed
+                        || pid == org.eclipse.jdt.core.compiler.IProblem.DeadCode) {
+                    d.tags = List.of(1); // DiagnosticTag.Unnecessary
                 }
 
                 diagnostics.add(d);

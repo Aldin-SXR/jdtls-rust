@@ -62,17 +62,16 @@ async fn publish_diagnostics(store: &DocumentStore, dispatcher: &Dispatcher, cli
     let snapshots = store.snapshots();
     let mut by_uri: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
 
-    for state in &snapshots {
-        let diags = state.tree.as_ref()
-            .map(|t| syntax_diagnostics::collect(t))
-            .unwrap_or_default();
-        by_uri.insert(state.uri.clone(), diags);
-    }
-
+    // Run ECJ first — it is the authoritative source for Java diagnostics.
+    // Track which URIs ECJ produced diagnostics for; tree-sitter diagnostics
+    // are suppressed for those files to avoid inaccurate large-range squiggles
+    // from tree-sitter's error-recovery nodes conflicting with ECJ's precise ones.
+    let mut ecj_covered: std::collections::HashSet<Url> = std::collections::HashSet::new();
     match dispatcher.compile_all().await {
         Ok(BridgeResponse::Diagnostics { items, .. }) => {
             for item in &items {
                 if let Some((uri, diag)) = diag_conv::to_lsp(item) {
+                    ecj_covered.insert(uri.clone());
                     by_uri.entry(uri).or_default().push(diag);
                 }
             }
@@ -80,6 +79,16 @@ async fn publish_diagnostics(store: &DocumentStore, dispatcher: &Dispatcher, cli
         Ok(BridgeResponse::Error { message, .. }) => warn!("ECJ compile error: {message}"),
         Err(e) => error!("compile_all error: {e}"),
         _ => {}
+    }
+
+    // Fall back to tree-sitter only for files ECJ has no diagnostics for.
+    for state in &snapshots {
+        if !ecj_covered.contains(&state.uri) {
+            let diags = state.tree.as_ref()
+                .map(|t| syntax_diagnostics::collect(t))
+                .unwrap_or_default();
+            by_uri.entry(state.uri.clone()).or_default().extend(diags);
+        }
     }
 
     // Ensure every open document gets an entry (clears stale diagnostics).

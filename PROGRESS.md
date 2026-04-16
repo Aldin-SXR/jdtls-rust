@@ -64,6 +64,13 @@
 - [x] Code actions: "Change to 'X' (pkg)" — similarity-based type rename suggestions (public packages only, max 5)
 - [x] Code actions: "Generate Getter/Setter/both" — field detection via line-based AST visitor (NodeFinder fails on leading whitespace)
 - [x] Hover suppressed when ECJ reports an error overlapping the hovered symbol
+- [x] Code actions: "Add serialVersionUID field" — triggers on `MissingSerialVersion` diagnostic
+- [x] Code actions: "Remove unused declared exception" — triggers on `UnusedMethodDeclaredThrownException` / `UnusedConstructorDeclaredThrownException`
+- [x] Code actions: "Add missing Javadoc tag" / "Add all missing Javadoc tags" / "Remove invalid Javadoc tag" — wired up (implementations already existed, dispatch conditions were missing)
+- [x] Code actions: "Change visibility of 'X' to public/protected" — triggers on `NotVisibleMethod` / `NotVisibleField` / `NotVisibleConstructor` / `NotVisibleType`
+- [x] Code actions: "Extract to local variable" quickassist — range-based, offered when a non-trivial expression is selected
+- [x] Code actions: "Inline local variable" quickassist — range-based, replaces all reads with initializer and removes declaration; suppressed when variable has no usages
+- [x] Code actions: "Extract method" quickassist — range-based, extracts selected statements into a new private method; sort order fixed to ascending so VS Code's WorkspaceEdit validator doesn't reject same-line boundary edits
 
 ### Bug fixes
 - [x] **UTF-16 panic** — `detect_import_prefix` sliced `&str` using a UTF-16 column as a byte index; fixed with `utf16_col_to_byte()` helper (was: `panicked at … byte index 9 is not a char boundary; it is inside 'ž'`)
@@ -72,6 +79,10 @@
 - [x] **Rename local-var scope bug** — `declarationFromName` used the `VariableDeclarationStatement` / `SingleVariableDeclaration` node itself as the scope, so `referenceLocations` only walked inside the declaration and missed all usages; fixed to use `localScope(owner)` / `localScope(parent)` (enclosing block/method)
 - [x] **Inlay hints char/null literals skipped** — `CharacterLiteral` and `NullLiteral` were in the skip-list alongside `SimpleName`; removed them so parameter-name hints are shown for those argument types
 - [x] **Inlay hints hang on Java 25** — `setEnvironment(cp, null, null, true)` (includeRunningVMBootclasspath) in the inlay-hints binding parser and in `parseWithBindings` was causing hangs on Java 25.0.2; changed to `false`
+- [x] **Diagnostic spreading** — tree-sitter ERROR nodes at multiple scope levels each produced a diagnostic, spreading underlines past the offending token; fixed by suppressing tree-sitter diagnostics for any file where ECJ has already provided diagnostics
+- [x] **Remove unreachable code indentation** — deletion started at the AST node start (after leading whitespace) leaving orphaned indentation; fixed to start at `lineStart()` so the entire line is removed
+- [x] **Extract method "Overlapping ranges"** — edits sorted descending caused VS Code's ascending-order validator to flag the same-line boundary between `callEdit` and `insertEdit` as overlap; fixed by sorting ascending
+- [x] **Inline local variable deletes declaration with no usages** — action was offered even when the variable had zero reads, resulting in a silent deletion; fixed by returning `null` when `reads.isEmpty()`
 
 ---
 

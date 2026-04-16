@@ -24,7 +24,11 @@ pub fn collect(tree: &Tree) -> Vec<Diagnostic> {
 
 fn collect_node(node: Node, out: &mut Vec<Diagnostic>) {
     if node.is_error() || node.kind() == "ERROR" {
-        out.push(diagnostic(node_range(node), "Syntax error"));
+        // Narrow the range to the first leaf token inside the ERROR node so
+        // that tree-sitter's error-recovery region (which can span many lines)
+        // does not cause the underline to spread past the offending token.
+        let range = first_leaf_range(node).unwrap_or_else(|| node_range(node));
+        out.push(diagnostic(range, "Syntax error"));
     }
 
     if node.is_missing() {
@@ -38,6 +42,26 @@ fn collect_node(node: Node, out: &mut Vec<Diagnostic>) {
     for child in node.children(&mut cursor) {
         collect_node(child, out);
     }
+}
+
+/// Walk down to the first leaf (childless) node and return its range.
+/// This pinpoints the offending token rather than the full error-recovery span.
+fn first_leaf_range(node: Node) -> Option<Range> {
+    if node.child_count() == 0 {
+        let r = node_range(node);
+        // Ignore zero-width leaves (MISSING nodes produce these).
+        if r.start == r.end {
+            return None;
+        }
+        return Some(r);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(r) = first_leaf_range(child) {
+            return Some(r);
+        }
+    }
+    None
 }
 
 fn diagnostic(range: Range, message: impl Into<String>) -> Diagnostic {
