@@ -1385,22 +1385,29 @@ public class Main {
         Set<String> params = new LinkedHashSet<>();
         for (String n : referencedIn) if (!declaredIn.contains(n)) params.add(n);
 
-        int firstStart = stmts.get(0).getStartPosition();
-        int lastEnd    = stmts.get(stmts.size() - 1).getStartPosition()
-                       + stmts.get(stmts.size() - 1).getLength();
-        String stmtBody = source.substring(firstStart, lastEnd);
+        int firstStart    = stmts.get(0).getStartPosition();
+        int lastEnd       = stmts.get(stmts.size() - 1).getStartPosition()
+                          + stmts.get(stmts.size() - 1).getLength();
+        // Use the line start (including leading whitespace) so all lines in
+        // stmtBody share a consistent baseline indentation that can be stripped.
+        int stmtLineStart = lineStart(source, cu.getLineNumber(firstStart) - 1);
+        String stmtBody   = source.substring(stmtLineStart, lastEnd);
 
         String methodIndent = indentOf(source, cu.getLineNumber(mLoc.found.getStartPosition()) - 1);
         String bodyIndent   = methodIndent + "    ";
-        String extraIndent  = "    "; // indent relative to extracted method body
 
         StringBuilder paramList = new StringBuilder();
         for (String p : params) { if (paramList.length() > 0) paramList.append(", "); paramList.append("Object ").append(p); }
 
+        // Strip the original indentation from the body text, then re-indent at bodyIndent.
+        int minIndent = stmtBody.lines()
+                .filter(l -> !l.isBlank())
+                .mapToInt(l -> { int i = 0; while (i < l.length() && (l.charAt(i) == ' ' || l.charAt(i) == '\t')) i++; return i; })
+                .min().orElse(0);
         String bodyText = stmtBody.lines()
-                .map(l -> extraIndent + l)
+                .map(l -> l.length() >= minIndent ? bodyIndent + l.substring(minIndent) : l)
                 .collect(java.util.stream.Collectors.joining("\n"));
-        String newMethod = "\n\n" + methodIndent + (isStatic ? "static " : "") + "private void extracted("
+        String newMethod = "\n\n" + methodIndent + "private " + (isStatic ? "static " : "") + "void extracted("
                 + paramList + ") {\n" + bodyText + "\n" + methodIndent + "}";
 
         StringBuilder callArgs = new StringBuilder();
@@ -1410,8 +1417,7 @@ public class Main {
 
         int methodEnd = mLoc.found.getStartPosition() + mLoc.found.getLength();
 
-        int stmtLineStart = lineStart(source, cu.getLineNumber(firstStart) - 1);
-        int stmtEnd       = lastEnd;
+        int stmtEnd = lastEnd;
         if (stmtEnd < source.length() && source.charAt(stmtEnd) == '\n') stmtEnd++;
 
         int[] callSL = CompilationService.offsetToLineCol(source, stmtLineStart);
@@ -1441,18 +1447,29 @@ public class Main {
 
     private static List<org.eclipse.jdt.core.dom.Statement> findStatementsInRange(
             org.eclipse.jdt.core.dom.CompilationUnit cu, int start, int end) {
-        List<org.eclipse.jdt.core.dom.Statement> result = new ArrayList<>();
+        // Find the innermost Block that fully contains [start, end], then return
+        // only its direct-child statements within the range.  This prevents
+        // descending into nested blocks and collecting statements from multiple
+        // scope levels (e.g. the for-statement AND the statement inside it).
+        final org.eclipse.jdt.core.dom.Block[] innermost = {null};
         cu.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
             public boolean visit(org.eclipse.jdt.core.dom.Block b) {
-                @SuppressWarnings("unchecked")
-                List<org.eclipse.jdt.core.dom.Statement> stmts = b.statements();
-                for (org.eclipse.jdt.core.dom.Statement s : stmts) {
-                    int ss = s.getStartPosition(), se = ss + s.getLength();
-                    if (ss >= start && se <= end) result.add(s);
+                int bs = b.getStartPosition(), be = bs + b.getLength();
+                if (bs <= start && be >= end) {
+                    if (innermost[0] == null || b.getLength() < innermost[0].getLength())
+                        innermost[0] = b;
                 }
                 return true;
             }
         });
+        if (innermost[0] == null) return List.of();
+        @SuppressWarnings("unchecked")
+        List<org.eclipse.jdt.core.dom.Statement> stmts = innermost[0].statements();
+        List<org.eclipse.jdt.core.dom.Statement> result = new ArrayList<>();
+        for (org.eclipse.jdt.core.dom.Statement s : stmts) {
+            int ss = s.getStartPosition(), se = ss + s.getLength();
+            if (ss >= start && se <= end) result.add(s);
+        }
         return result;
     }
 
@@ -1466,10 +1483,22 @@ public class Main {
     private static void collectReferencedNames(org.eclipse.jdt.core.dom.ASTNode node, Set<String> out) {
         node.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
             public boolean visit(org.eclipse.jdt.core.dom.SimpleName n) {
-                // Exclude declaration positions
-                if (!(n.getParent() instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf && vdf.getName() == n)
-                        && !(n.getParent() instanceof org.eclipse.jdt.core.dom.SingleVariableDeclaration svd && svd.getName() == n))
-                    out.add(n.getIdentifier());
+                org.eclipse.jdt.core.dom.ASTNode p = n.getParent();
+                // Skip variable declaration positions.
+                if (p instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf && vdf.getName() == n) return true;
+                if (p instanceof org.eclipse.jdt.core.dom.SingleVariableDeclaration svd && svd.getName() == n) return true;
+                // Skip method names in invocations (println in System.out.println(...)).
+                if (p instanceof org.eclipse.jdt.core.dom.MethodInvocation mi && mi.getName() == n) return true;
+                // Skip type references (String in "for (String item : ...)").
+                if (p instanceof org.eclipse.jdt.core.dom.SimpleType) return true;
+                // Skip qualified name components (System.out, java.util.List etc.).
+                if (p instanceof org.eclipse.jdt.core.dom.QualifiedName) return true;
+                // Skip field access names (fa.name, not the expression side).
+                if (p instanceof org.eclipse.jdt.core.dom.FieldAccess fa && fa.getName() == n) return true;
+                // Skip method/type declaration names.
+                if (p instanceof org.eclipse.jdt.core.dom.MethodDeclaration md && md.getName() == n) return true;
+                if (p instanceof org.eclipse.jdt.core.dom.AbstractTypeDeclaration atd && atd.getName() == n) return true;
+                out.add(n.getIdentifier());
                 return true;
             }
         });
