@@ -950,6 +950,7 @@ public class CompletionService {
         ensureJrtIndex();
         List<String> results = new ArrayList<>();
         JRT_PKG_INDEX.forEach((pkg, children) -> {
+            if (isImplicitlyImportedPackage(pkg) || isInternalPackage(pkg)) return;
             if (children.contains(simpleName)) {
                 results.add(pkg + "." + simpleName);
             }
@@ -1328,7 +1329,7 @@ public class CompletionService {
                     c.label = name;
                 }
 
-                if (!alreadyImported.contains(fqn)) {
+                if (!isImplicitlyImportedPackage(pkg) && !alreadyImported.contains(fqn)) {
                     BridgeTextEdit edit = new BridgeTextEdit();
                     edit.startLine = insertLine;
                     edit.startChar = 0;
@@ -1341,6 +1342,10 @@ public class CompletionService {
                 results.add(c);
             }
         });
+    }
+
+    private static boolean isImplicitlyImportedPackage(String pkg) {
+        return "java.lang".equals(pkg);
     }
 
     /**
