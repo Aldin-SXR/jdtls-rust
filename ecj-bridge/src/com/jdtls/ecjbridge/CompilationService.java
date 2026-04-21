@@ -2,13 +2,21 @@ package com.jdtls.ecjbridge;
 
 import org.eclipse.jdt.internal.compiler.*;
 import org.eclipse.jdt.internal.compiler.Compiler;
+import org.eclipse.jdt.internal.compiler.apt.dispatch.BatchAnnotationProcessorManager;
 import org.eclipse.jdt.internal.compiler.ast.CompilationUnitDeclaration;
+import org.eclipse.jdt.internal.compiler.batch.Main;
 import org.eclipse.jdt.internal.compiler.env.ICompilationUnit;
 import org.eclipse.jdt.internal.compiler.impl.CompilerOptions;
 import org.eclipse.jdt.internal.compiler.problem.DefaultProblemFactory;
 
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 import com.jdtls.ecjbridge.BridgeProtocol.*;
 
@@ -107,17 +115,23 @@ public class CompilationService {
                 options,
                 requestor,
                 new DefaultProblemFactory(Locale.ENGLISH));
+        AnnotationProcessingSession aptSession = configureAnnotationProcessing(compiler, classpath, sourceLevel);
 
         ICompilationUnit[] units = sourceFiles.entrySet().stream()
                 .filter(e -> e.getKey().endsWith(".java"))
                 .map(e -> (ICompilationUnit) new InMemoryCompilationUnit(e.getKey(), e.getValue()))
                 .toArray(ICompilationUnit[]::new);
 
-        if (units.length > 0) {
-            compiler.compile(units);
+        try {
+            if (units.length > 0) {
+                compiler.compile(units);
+            }
+        } finally {
+            nameEnv.cleanup();
+            if (aptSession != null) {
+                aptSession.cleanup();
+            }
         }
-
-        nameEnv.cleanup();
         return diagnostics;
     }
 
@@ -153,8 +167,48 @@ public class CompilationService {
         opts.put(CompilerOptions.OPTION_ReportInvalidJavadocTags, CompilerOptions.ENABLED);
         opts.put(CompilerOptions.OPTION_ReportInvalidJavadocTagsVisibility, CompilerOptions.PRIVATE);
         opts.put(CompilerOptions.OPTION_SuppressWarnings, CompilerOptions.ENABLED);
-        opts.put(CompilerOptions.OPTION_Process_Annotations, CompilerOptions.DISABLED);
+        opts.put(CompilerOptions.OPTION_Process_Annotations, CompilerOptions.ENABLED);
         return new CompilerOptions(opts);
+    }
+
+    private AnnotationProcessingSession configureAnnotationProcessing(
+            Compiler compiler, List<String> classpath, String sourceLevel) {
+        if (!compiler.options.processAnnotations || classpath.isEmpty()) {
+            return null;
+        }
+
+        String joinedClasspath = String.join(java.io.File.pathSeparator, classpath);
+        String version = resolveVersion(sourceLevel);
+
+        try {
+            Path generatedSources = Files.createTempDirectory("jdtls-rust-apt-src");
+            Path generatedClasses = Files.createTempDirectory("jdtls-rust-apt-bin");
+            String[] args = {
+                    "-classpath", joinedClasspath,
+                    "-processorpath", joinedClasspath,
+                    "-source", version,
+                    "-target", version,
+                    "-s", generatedSources.toString(),
+                    "-d", generatedClasses.toString(),
+            };
+
+            PrintWriter out = new PrintWriter(new StringWriter());
+            PrintWriter err = new PrintWriter(new StringWriter());
+            Main batchMain = new Main(out, err, false, new HashMap<>());
+            batchMain.configure(args);
+            batchMain.batchCompiler = compiler;
+
+            BatchAnnotationProcessorManager aptManager = new BatchAnnotationProcessorManager();
+            aptManager.configure(batchMain, args);
+            aptManager.setOut(out);
+            aptManager.setErr(err);
+            compiler.annotationProcessorManager = aptManager;
+
+            return new AnnotationProcessingSession(generatedSources, generatedClasses);
+        } catch (Exception e) {
+            LOG.warning("Annotation processing disabled: " + e.getMessage());
+            return null;
+        }
     }
 
     private String resolveVersion(String level) {
@@ -212,5 +266,37 @@ public class CompilationService {
             else { col++; }
         }
         return new int[]{line, col};
+    }
+
+    private static final class AnnotationProcessingSession {
+        private final Path generatedSources;
+        private final Path generatedClasses;
+
+        private AnnotationProcessingSession(Path generatedSources, Path generatedClasses) {
+            this.generatedSources = generatedSources;
+            this.generatedClasses = generatedClasses;
+        }
+
+        private void cleanup() {
+            deleteRecursively(generatedSources);
+            deleteRecursively(generatedClasses);
+        }
+
+        private static void deleteRecursively(Path root) {
+            if (root == null || !Files.exists(root)) {
+                return;
+            }
+            try (Stream<Path> paths = Files.walk(root)) {
+                paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (IOException e) {
+                        LOG.fine("Failed to delete temp path " + path + ": " + e.getMessage());
+                    }
+                });
+            } catch (IOException e) {
+                LOG.fine("Failed to walk temp path " + root + ": " + e.getMessage());
+            }
+        }
     }
 }

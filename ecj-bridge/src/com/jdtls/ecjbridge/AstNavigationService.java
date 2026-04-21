@@ -559,7 +559,8 @@ public class AstNavigationService {
         }
 
         int activeParameter = activeParameter(invocation, offset);
-        return new SignatureResult(signatures, 0, activeParameter);
+        int activeSignature = activeSignature(parsed, invocation, signatures, activeParameter);
+        return new SignatureResult(signatures, activeSignature, activeParameter);
     }
 
     public List<BridgeInlayHint> inlayHints(
@@ -1628,6 +1629,85 @@ public class AstNavigationService {
             signatures.add(signature);
         }
         return signatures;
+    }
+
+    private int activeSignature(
+            ParsedUnit parsed,
+            ASTNode invocation,
+            List<BridgeSignature> signatures,
+            int activeParameter) {
+
+        Integer bindingIndex = activeSignatureFromBindings(parsed, invocation, signatures);
+        if (bindingIndex != null) {
+            return bindingIndex;
+        }
+
+        int requiredParams = activeParameter + 1;
+        int bestIndex = -1;
+        int bestParamCount = Integer.MAX_VALUE;
+        for (int i = 0; i < signatures.size(); i++) {
+            int paramCount = signatures.get(i).parameters != null ? signatures.get(i).parameters.size() : 0;
+            if (paramCount >= requiredParams && paramCount < bestParamCount) {
+                bestIndex = i;
+                bestParamCount = paramCount;
+            }
+        }
+        if (bestIndex >= 0) {
+            return bestIndex;
+        }
+
+        return 0;
+    }
+
+    private Integer activeSignatureFromBindings(
+            ParsedUnit parsed,
+            ASTNode invocation,
+            List<BridgeSignature> signatures) {
+
+        if (parsed.bindingCu == null) {
+            return null;
+        }
+
+        ASTNode bindingNode = nodeAt(parsed.bindingCu, invocation.getStartPosition());
+        ASTNode bindingInvocation = enclosingInvocation(bindingNode);
+        if (bindingInvocation == null
+                || bindingInvocation.getStartPosition() != invocation.getStartPosition()) {
+            return null;
+        }
+
+        IMethodBinding binding = resolveInvocationBinding(bindingInvocation);
+        if (binding == null) {
+            return null;
+        }
+
+        BindingResolution resolved = resolveMethodBinding(parsed.bindingCu, binding);
+        if (resolved.decl == null || !(resolved.decl.declarationNode instanceof MethodDeclaration method)) {
+            return null;
+        }
+
+        String targetLabel = renderMethodSignature(method, method.isConstructor());
+        for (int i = 0; i < signatures.size(); i++) {
+            if (targetLabel.equals(signatures.get(i).label)) {
+                return i;
+            }
+        }
+        return null;
+    }
+
+    private IMethodBinding resolveInvocationBinding(ASTNode invocation) {
+        if (invocation instanceof MethodInvocation methodInvocation) {
+            return methodInvocation.resolveMethodBinding();
+        }
+        if (invocation instanceof SuperMethodInvocation superMethodInvocation) {
+            return superMethodInvocation.resolveMethodBinding();
+        }
+        if (invocation instanceof ClassInstanceCreation classInstanceCreation) {
+            return classInstanceCreation.resolveConstructorBinding();
+        }
+        if (invocation instanceof ConstructorInvocation constructorInvocation) {
+            return constructorInvocation.resolveConstructorBinding();
+        }
+        return null;
     }
 
     private ASTNode referenceScope(Decl decl) {

@@ -75,7 +75,7 @@ pub fn is_awaiting_declaration_name(source: &str, offset: usize) -> bool {
 
     match type_and_name.len() {
         // `int |` — cursor is right after the type+space, name not started yet.
-        1 => true,
+        1 => line.chars().last().is_some_and(char::is_whitespace),
         // `int myV|` — one more token: the partial variable name.
         2 => {
             let name = type_and_name[1];
@@ -116,6 +116,109 @@ pub fn is_inside_method_body(tree: &Tree, offset: usize) -> bool {
             "method_declaration" | "constructor_declaration" => return true,
             "class_declaration" | "interface_declaration" | "enum_declaration"
             | "record_declaration" | "compilation_unit" => return false,
+            _ => {}
+        }
+        let Some(parent) = node.parent() else { return false; };
+        node = parent;
+    }
+}
+
+/// Returns true when the cursor is inside the *formal parameter list* of a method
+/// or constructor declaration — i.e. between the `(` and `)` of the signature,
+/// not inside the body block.
+pub fn is_in_parameter_declaration(tree: &Tree, offset: usize) -> bool {
+    let root = tree.root_node();
+    let Some(mut node) = node_at_offset(root, offset) else {
+        return false;
+    };
+    loop {
+        match node.kind() {
+            "formal_parameters" => return true,
+            // Entering a block means we've left the parameter list.
+            "block" | "constructor_body" => return false,
+            "class_body" | "interface_body" | "enum_body" | "compilation_unit" => return false,
+            _ => {}
+        }
+        let Some(parent) = node.parent() else { return false; };
+        node = parent;
+    }
+}
+
+/// Returns true when the cursor is in the *parameter-name slot* — i.e. the current
+/// parameter segment (text after the last `,` or `(` before the cursor) already
+/// contains a type token before the current prefix, so the cursor is where the name
+/// should go.
+///
+/// Examples:
+/// - `String |` → true  (cursor in name slot, prefix is "")
+/// - `String fo|` → true  (partial name being typed)
+/// - `Str|` → false  (cursor still in type token)
+/// - `final Str|` → false  (only modifier before prefix)
+/// - `|` → false  (beginning of parameter, type slot)
+pub fn is_in_param_name_slot(source: &str, offset: usize) -> bool {
+    let bytes = source.as_bytes();
+    let end = offset.min(bytes.len());
+
+    // Compute current prefix length (skip back over identifier chars).
+    let mut prefix_start = end;
+    while prefix_start > 0 && {
+        let b = bytes[prefix_start - 1];
+        b.is_ascii_alphanumeric() || b == b'_'
+    } {
+        prefix_start -= 1;
+    }
+    let prefix_end = prefix_start; // everything before this is "before the prefix"
+
+    // Walk backward (before the prefix) to find the start of the current parameter segment.
+    let mut i = if prefix_end > 0 { prefix_end - 1 } else { return false; };
+    let mut angle_depth: i32 = 0;
+    let mut seg_start = 0usize;
+    loop {
+        let c = bytes[i];
+        match c {
+            b'>' => { angle_depth += 1; }
+            b'<' => { angle_depth = (angle_depth - 1).max(0); }
+            b',' | b'(' if angle_depth == 0 => { seg_start = i + 1; break; }
+            _ => {}
+        }
+        if i == 0 { break; }
+        i -= 1;
+    }
+
+    // Extract segment text before the prefix.
+    let before_prefix = source[seg_start..prefix_end].trim();
+    if before_prefix.is_empty() {
+        return false;
+    }
+
+    // Tokenize: count non-modifier, non-annotation identifier tokens.
+    let mut type_token_count = 0u32;
+    let mut prev_was_at = false;
+    for tok in before_prefix.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '[' | ']')) {
+        if tok.is_empty() { continue; }
+        if tok == "@" { prev_was_at = true; continue; }
+        if prev_was_at { prev_was_at = false; continue; } // skip annotation name
+        prev_was_at = false;
+        if tok.starts_with('@') { continue; } // fused @Annotation
+        if tok == "final" { continue; }
+        if tok.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+            type_token_count += 1;
+        }
+    }
+    type_token_count >= 1
+}
+
+/// Returns true when the cursor is inside a class/interface/enum body (at any depth),
+/// including inside method bodies.  Returns false at the top level of the file.
+pub fn is_inside_class_body(tree: &Tree, offset: usize) -> bool {
+    let root = tree.root_node();
+    let Some(mut node) = node_at_offset(root, offset) else {
+        return false;
+    };
+    loop {
+        match node.kind() {
+            "class_body" | "interface_body" | "enum_body" | "record_declaration" => return true,
+            "compilation_unit" => return false,
             _ => {}
         }
         let Some(parent) = node.parent() else { return false; };

@@ -1,4 +1,5 @@
 use crate::analysis::syntax::parser::JavaParser;
+use crate::handlers::text_document::pos_to_char;
 use dashmap::DashMap;
 use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
 use ropey::Rope;
@@ -70,8 +71,10 @@ impl DocumentStore {
                         state.content = Rope::from_str(&change.text);
                     }
                     Some(range) => {
-                        let start = lsp_pos_to_char(&state.content, range.start);
-                        let end = lsp_pos_to_char(&state.content, range.end);
+                        let start = pos_to_char(&state.content, range.start)
+                            .unwrap_or_else(|| state.content.len_chars());
+                        let end = pos_to_char(&state.content, range.end)
+                            .unwrap_or_else(|| state.content.len_chars());
                         state.content.remove(start..end);
                         state.content.insert(start, &change.text);
                     }
@@ -114,11 +117,4 @@ impl Default for DocumentStore {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn lsp_pos_to_char(rope: &Rope, pos: tower_lsp::lsp_types::Position) -> usize {
-    let line = pos.line as usize;
-    let col = pos.character as usize;
-    let line_start = rope.line_to_char(line.min(rope.len_lines().saturating_sub(1)));
-    line_start + col
 }

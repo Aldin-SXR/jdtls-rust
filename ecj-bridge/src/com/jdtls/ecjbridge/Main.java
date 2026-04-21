@@ -203,11 +203,7 @@ public class Main {
 
             if (!uriMatch) continue;
 
-            if (req.range != null) {
-                // Diagnostic line matching (0-based)
-                boolean overlaps = d.startLine <= req.range.endLine && d.endLine >= req.range.startLine;
-                if (!overlaps) continue;
-            }
+            if (req.range != null && !diagnosticOverlapsRange(d, req.range, cu, source)) continue;
             hasOverlappingDiagnostic = true;
 
             String msg = d.message != null ? d.message : "";
@@ -590,6 +586,22 @@ public class Main {
             if (javadocAction != null) actions.add(javadocAction);
         }
 
+        // Generate hashCode() and equals().
+        actions.addAll(makeHashCodeEqualsActions(req.uri, source, cu, req.range));
+
+        // Generate constructors from fields.
+        actions.addAll(makeGenerateConstructorsActions(req.uri, source, cu, req.range));
+
+        // Sort members (fields → constructors → methods → inner types).
+        BridgeAction sortMembers = makeSortMembersAction(req.uri, source, cu, req.range);
+        if (sortMembers != null) actions.add(sortMembers);
+
+        // Override/implement abstract and interface methods.
+        actions.addAll(makeOverrideMethodsActions(req.uri, source, cu, req.range));
+
+        // Generate delegate methods for fields.
+        actions.addAll(makeDelegateMethodsActions(req.uri, source, cu, req.range));
+
         // Quickassists — position-based, no diagnostic required.
         if (req.range != null) {
             BridgeAction extractVar = makeExtractLocalVariableAction(req.uri, source, cu, req.range);
@@ -600,6 +612,30 @@ public class Main {
 
             BridgeAction extractMethod = makeExtractMethodAction(req.uri, source, cu, req.range);
             if (extractMethod != null) actions.add(extractMethod);
+
+            BridgeAction extractConst = makeExtractConstantAction(req.uri, source, cu, req.range);
+            if (extractConst != null) actions.add(extractConst);
+
+            BridgeAction extractField = makeExtractFieldAction(req.uri, source, cu, req.range);
+            if (extractField != null) actions.add(extractField);
+
+            BridgeAction assignVar = makeAssignToVariableAction(req.uri, source, cu, req.range);
+            if (assignVar != null) actions.add(assignVar);
+
+            BridgeAction assignField = makeAssignToFieldAction(req.uri, source, cu, req.range);
+            if (assignField != null) actions.add(assignField);
+
+            BridgeAction invertBool = makeInvertBooleanAction(req.uri, source, cu, req.range);
+            if (invertBool != null) actions.add(invertBool);
+
+            BridgeAction convertVar = makeConvertVarTypeAction(req.uri, source, cu, req.range);
+            if (convertVar != null) actions.add(convertVar);
+
+            BridgeAction anonToLambda = makeConvertAnonymousToLambdaAction(req.uri, source, cu, req.range);
+            if (anonToLambda != null) actions.add(anonToLambda);
+
+            BridgeAction lambdaToAnon = makeConvertLambdaToAnonymousAction(req.uri, source, cu, req.range);
+            if (lambdaToAnon != null) actions.add(lambdaToAnon);
         }
 
         return dedupeActions(actions);
@@ -1238,9 +1274,6 @@ public class Main {
                 || expr instanceof org.eclipse.jdt.core.dom.NumberLiteral
                 || expr instanceof org.eclipse.jdt.core.dom.BooleanLiteral
                 || expr instanceof org.eclipse.jdt.core.dom.NullLiteral) return null;
-        // Skip if already the RHS of a declaration
-        if (expr.getParent() instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment) return null;
-
         org.eclipse.jdt.core.dom.ASTNode stmt = expr;
         while (stmt != null && !(stmt instanceof org.eclipse.jdt.core.dom.Statement)) stmt = stmt.getParent();
         if (stmt == null) return null;
@@ -1539,30 +1572,86 @@ public class Main {
 
     private static BridgeAction makeAddMissingJavadocTagAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, int problemId) {
         int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        MethodLocator loc = new MethodLocator(offset); cu.accept(loc);
-        if (loc.found == null || loc.found.getJavadoc() == null) return null;
+        org.eclipse.jdt.core.dom.MethodDeclaration method = findMethodForOffset(cu, offset);
+        if (method == null || method.getJavadoc() == null) return null;
         String tag = switch (problemId) {
-            case org.eclipse.jdt.core.compiler.IProblem.JavadocMissingParamTag -> "@param " + firstMissingParamTag(loc.found);
+            case org.eclipse.jdt.core.compiler.IProblem.JavadocMissingParamTag -> "@param " + firstMissingParamTag(method);
             case org.eclipse.jdt.core.compiler.IProblem.JavadocMissingReturnTag -> "@return";
-            case org.eclipse.jdt.core.compiler.IProblem.JavadocMissingThrowsTag -> "@throws " + firstMissingThrowsTag(loc.found);
+            case org.eclipse.jdt.core.compiler.IProblem.JavadocMissingThrowsTag -> "@throws " + firstMissingThrowsTag(method);
             default -> null;
         };
         if (tag == null) return null;
-        return singleInsertionAction("Add Javadoc " + tag, uri, source, javadocClosingOffset(loc.found.getJavadoc()), " * " + tag + "\n" + indentOf(source, cu.getLineNumber(loc.found.getStartPosition()) - 1));
+        return singleInsertionAction("Add Javadoc " + tag, uri, source, javadocClosingOffset(method.getJavadoc()), " * " + tag + "\n" + indentOf(source, cu.getLineNumber(method.getStartPosition()) - 1));
     }
 
     private static BridgeAction makeRemoveInvalidJavadocTagAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d) {
         int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        MethodLocator loc = new MethodLocator(offset); cu.accept(loc);
-        if (loc.found == null || loc.found.getJavadoc() == null) return null;
+        org.eclipse.jdt.core.dom.MethodDeclaration method = findMethodForOffset(cu, offset);
+        if (method == null || method.getJavadoc() == null) return null;
         org.eclipse.jdt.core.dom.TagElement tag = null;
-        for (Object t : loc.found.getJavadoc().tags()) {
+        for (Object t : method.getJavadoc().tags()) {
             org.eclipse.jdt.core.dom.TagElement te = (org.eclipse.jdt.core.dom.TagElement)t;
             if (offset >= te.getStartPosition() && offset <= te.getStartPosition() + te.getLength()) { tag = te; break; }
         }
         if (tag == null) return null;
         int s = lineStart(source, cu.getLineNumber(tag.getStartPosition()) - 1), e = lineStart(source, cu.getLineNumber(tag.getStartPosition() + tag.getLength()));
         return makeRemoveTextAction("Remove invalid Javadoc tag", uri, source, s, e);
+    }
+
+    private static boolean diagnosticOverlapsRange(
+            BridgeDiagnostic d,
+            BridgeRange range,
+            org.eclipse.jdt.core.dom.CompilationUnit cu,
+            String source) {
+        boolean overlaps = d.startLine <= range.endLine && d.endLine >= range.startLine;
+        if (overlaps) return true;
+
+        int problemId = problemId(d);
+        boolean isJavadocDiagnostic =
+                problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocMissingParamTag
+                        || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocMissingReturnTag
+                        || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocMissingThrowsTag
+                        || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocInvalidThrowsClassName
+                        || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocUnexpectedTag
+                        || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocInvalidParamName;
+        if (!isJavadocDiagnostic) return false;
+
+        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
+        org.eclipse.jdt.core.dom.MethodDeclaration method = findMethodForOffset(cu, offset);
+        if (method == null) return false;
+
+        int methodStartLine = cu.getLineNumber(method.getStartPosition()) - 1;
+        int methodEndLine =
+                cu.getLineNumber(method.getStartPosition() + method.getLength()) - 1;
+        return methodStartLine <= range.endLine && methodEndLine >= range.startLine;
+    }
+
+    private static org.eclipse.jdt.core.dom.MethodDeclaration findMethodForOffset(
+            org.eclipse.jdt.core.dom.CompilationUnit cu, int offset) {
+        final org.eclipse.jdt.core.dom.MethodDeclaration[] found = {null};
+        cu.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
+            @Override
+            public boolean visit(org.eclipse.jdt.core.dom.MethodDeclaration node) {
+                org.eclipse.jdt.core.dom.Javadoc javadoc = node.getJavadoc();
+                if (javadoc != null) {
+                    int js = javadoc.getStartPosition();
+                    int je = js + javadoc.getLength();
+                    if (js <= offset && offset <= je) {
+                        found[0] = node;
+                        return false;
+                    }
+                }
+
+                int start = node.getStartPosition();
+                int end = start + node.getLength();
+                if (start <= offset && offset <= end) {
+                    found[0] = node;
+                    return false;
+                }
+                return true;
+            }
+        });
+        return found[0];
     }
 
     private static BridgeAction makeRenameToExistingTypeAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String missing) {
@@ -1639,8 +1728,105 @@ public class Main {
         int off = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
         StatementLocator loc = new StatementLocator(off); cu.accept(loc);
         if (loc.found == null) return null;
+
+        // Find the SimpleName node at the diagnostic position and infer its type.
+        CompletionService.NodeLocator nl = new CompletionService.NodeLocator(off);
+        cu.accept(nl);
+        String typeName = inferVariableType(nl.found);
+
         String indent = indentOf(source, cu.getLineNumber(loc.found.getStartPosition()) - 1);
-        return singleInsertionAction("Create local variable '" + name + "'", uri, source, lineStart(source, cu.getLineNumber(loc.found.getStartPosition()) - 1), indent + "Object " + name + " = null;\n");
+        String init   = defaultValueFor(typeName);
+        return singleInsertionAction("Create local variable '" + name + "'", uri, source,
+                lineStart(source, cu.getLineNumber(loc.found.getStartPosition()) - 1),
+                indent + typeName + " " + name + " = " + init + ";\n");
+    }
+
+    /**
+     * Walks the parent chain from {@code node} (a SimpleName for the undefined
+     * variable) and tries to determine the expected type from the usage context:
+     * <ul>
+     *   <li>Argument of a method/constructor call → parameter type from binding</li>
+     *   <li>Right-hand side of an assignment → type of left-hand side</li>
+     *   <li>Expression returned from a method → declared return type</li>
+     * </ul>
+     * Falls back to {@code "Object"} when binding information is unavailable.
+     */
+    private static String inferVariableType(org.eclipse.jdt.core.dom.ASTNode node) {
+        if (node == null) return "Object";
+        org.eclipse.jdt.core.dom.ASTNode child  = node;
+        org.eclipse.jdt.core.dom.ASTNode parent = node.getParent();
+        while (parent != null) {
+            // ── Method / constructor call argument ────────────────────────────
+            if (parent instanceof org.eclipse.jdt.core.dom.MethodInvocation mi) {
+                int idx = mi.arguments().indexOf(child);
+                if (idx >= 0) {
+                    org.eclipse.jdt.core.dom.IMethodBinding mb = mi.resolveMethodBinding();
+                    if (mb != null && idx < mb.getParameterTypes().length) {
+                        return typeBindingName(mb.getParameterTypes()[idx]);
+                    }
+                }
+            }
+            if (parent instanceof org.eclipse.jdt.core.dom.ClassInstanceCreation cic) {
+                int idx = cic.arguments().indexOf(child);
+                if (idx >= 0) {
+                    org.eclipse.jdt.core.dom.IMethodBinding mb = cic.resolveConstructorBinding();
+                    if (mb != null && idx < mb.getParameterTypes().length) {
+                        return typeBindingName(mb.getParameterTypes()[idx]);
+                    }
+                }
+            }
+            // ── Assignment right-hand side ────────────────────────────────────
+            if (parent instanceof org.eclipse.jdt.core.dom.Assignment a
+                    && a.getRightHandSide() == child) {
+                org.eclipse.jdt.core.dom.ITypeBinding tb =
+                        a.getLeftHandSide().resolveTypeBinding();
+                if (tb != null) return typeBindingName(tb);
+            }
+            // ── Variable declaration initializer (`Type x = <node>`) ─────────
+            if (parent instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf
+                    && vdf.getInitializer() == child) {
+                if (vdf.getParent() instanceof org.eclipse.jdt.core.dom.VariableDeclarationStatement vds) {
+                    return vds.getType().toString();
+                }
+            }
+            // ── Return statement ──────────────────────────────────────────────
+            if (parent instanceof org.eclipse.jdt.core.dom.ReturnStatement rs
+                    && rs.getExpression() == child) {
+                org.eclipse.jdt.core.dom.ASTNode m = parent;
+                while (m != null && !(m instanceof org.eclipse.jdt.core.dom.MethodDeclaration))
+                    m = m.getParent();
+                if (m instanceof org.eclipse.jdt.core.dom.MethodDeclaration md
+                        && md.getReturnType2() != null) {
+                    return md.getReturnType2().toString();
+                }
+            }
+            child  = parent;
+            parent = parent.getParent();
+        }
+        return "Object";
+    }
+
+    /** Returns the simple type name for a binding (strips generic parameters). */
+    private static String typeBindingName(org.eclipse.jdt.core.dom.ITypeBinding tb) {
+        if (tb == null) return "Object";
+        // For arrays, preserve the [] suffix.
+        if (tb.isArray()) return typeBindingName(tb.getElementType()) + "[]".repeat(tb.getDimensions());
+        String name = tb.getName();
+        // Strip any generic parameters that getName() might include.
+        int lt = name.indexOf('<');
+        return lt >= 0 ? name.substring(0, lt) : name;
+    }
+
+    /** Returns a sensible default initializer for the given type name. */
+    private static String defaultValueFor(String type) {
+        return switch (type) {
+            case "int", "long", "short", "byte" -> "0";
+            case "double", "float"               -> "0.0";
+            case "boolean"                       -> "false";
+            case "char"                          -> "'\\0'";
+            case "String"                        -> "\"\"";
+            default                              -> "null";
+        };
     }
 
     private static BridgeAction makeCreateFieldAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String name, boolean isStatic) {
@@ -1656,9 +1842,16 @@ public class Main {
         }
         int insert = bodyInsertOffset(td, source);
         if (insert < 0) return null;
+
+        CompletionService.NodeLocator nl = new CompletionService.NodeLocator(off);
+        cu.accept(nl);
+        String typeName = inferVariableType(nl.found);
+
         String memberIndent = indentOf(source, cu.getLineNumber(td.getStartPosition()) - 1) + "    ";
         String title = isStatic ? "Create constant '" + name + "'" : "Create field '" + name + "'";
-        String decl = isStatic ? "private static final Object " + name + " = null;\n" : "private Object " + name + ";\n";
+        String decl = isStatic
+                ? "private static final " + typeName + " " + name + " = " + defaultValueFor(typeName) + ";\n"
+                : "private " + typeName + " " + name + ";\n";
         return singleInsertionAction(title, uri, source, insert, memberIndent + decl);
     }
 
@@ -1666,9 +1859,15 @@ public class Main {
         int off = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
         MethodLocator loc = new MethodLocator(off); cu.accept(loc);
         if (loc.found == null) return null;
+
+        CompletionService.NodeLocator nl = new CompletionService.NodeLocator(off);
+        cu.accept(nl);
+        String typeName = inferVariableType(nl.found);
+
         int insert = loc.found.getName().getStartPosition() + loc.found.getName().getLength();
         while (source.charAt(insert) != '(') insert++; insert++;
-        return singleInsertionAction("Create parameter '" + name + "'", uri, source, insert, "Object " + name + (loc.found.parameters().isEmpty() ? "" : ", "));
+        return singleInsertionAction("Create parameter '" + name + "'", uri, source, insert,
+                typeName + " " + name + (loc.found.parameters().isEmpty() ? "" : ", "));
     }
 
     private static BridgeAction makeAddFinalAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String name) {
@@ -1790,14 +1989,14 @@ public class Main {
 
     private static BridgeAction makeAddAllMissingJavadocTagsAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d) {
         int off = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        MethodLocator loc = new MethodLocator(off); cu.accept(loc);
-        if (loc.found == null || loc.found.getJavadoc() == null) return null;
+        org.eclipse.jdt.core.dom.MethodDeclaration method = findMethodForOffset(cu, off);
+        if (method == null || method.getJavadoc() == null) return null;
         StringBuilder sb = new StringBuilder();
-        String p = firstMissingParamTag(loc.found); if (p != null) sb.append(" * @param ").append(p).append("\n");
-        if (!hasReturnTag(loc.found.getJavadoc()) && loc.found.getReturnType2() != null && !"void".equals(loc.found.getReturnType2().toString())) sb.append(" * @return\n");
-        String t = firstMissingThrowsTag(loc.found); if (t != null) sb.append(" * @throws ").append(t).append("\n");
+        String p = firstMissingParamTag(method); if (p != null) sb.append(" * @param ").append(p).append("\n");
+        if (!hasReturnTag(method.getJavadoc()) && method.getReturnType2() != null && !"void".equals(method.getReturnType2().toString())) sb.append(" * @return\n");
+        String t = firstMissingThrowsTag(method); if (t != null) sb.append(" * @throws ").append(t).append("\n");
         if (sb.length() == 0) return null;
-        return singleInsertionAction("Add all missing Javadoc tags", uri, source, javadocClosingOffset(loc.found.getJavadoc()), sb.toString() + indentOf(source, cu.getLineNumber(loc.found.getStartPosition()) - 1));
+        return singleInsertionAction("Add all missing Javadoc tags", uri, source, javadocClosingOffset(method.getJavadoc()), sb.toString() + indentOf(source, cu.getLineNumber(method.getStartPosition()) - 1));
     }
 
     private static BridgeAction makeCreateMethodAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String methodName) {
@@ -1868,7 +2067,9 @@ public class Main {
 
     private static boolean hasReturnTag(org.eclipse.jdt.core.dom.Javadoc j) {
         if (j == null) return false;
-        for (Object o : j.tags()) if (((org.eclipse.jdt.core.dom.TagElement)o).getTagName().equals("@return")) return true;
+        for (Object o : j.tags()) {
+            if ("@return".equals(((org.eclipse.jdt.core.dom.TagElement)o).getTagName())) return true;
+        }
         return false;
     }
 
@@ -2251,7 +2452,9 @@ public class Main {
             else {
                 start = n.get(i-1).getStartPosition() + n.get(i-1).getLength();
                 while (start < n.get(i).getStartPosition() && s.charAt(start) != ',') start++;
-                if (start < n.get(i).getStartPosition()) start++;
+                // For middle params: skip past the comma so it becomes the new separator.
+                // For the last param: keep the comma in the deletion range to avoid a trailing comma.
+                if (i < n.size() - 1 && start < n.get(i).getStartPosition()) start++;
             }
         }
         return removalEditFromOffsets(s, start, end);
@@ -2391,5 +2594,1053 @@ public class Main {
     static class TypeDeclLocator extends org.eclipse.jdt.core.dom.ASTVisitor {
         int o; org.eclipse.jdt.core.dom.TypeDeclaration found; TypeDeclLocator(int o) { this.o = o; }
         public boolean visit(org.eclipse.jdt.core.dom.TypeDeclaration n) { int s = n.getStartPosition(), e = s + n.getLength(); if (s <= o && o <= e) found = n; return true; }
+    }
+
+    // ── Helpers shared by generation actions ─────────────────────────────────
+
+    /** Find the innermost TypeDeclaration (non-interface) containing the cursor line. */
+    private static org.eclipse.jdt.core.dom.TypeDeclaration findEnclosingClass(
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        if (range == null) return null;
+        final int cursorLine = range.startLine;
+        final org.eclipse.jdt.core.dom.TypeDeclaration[] holder = {null};
+        cu.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
+            @Override public boolean visit(org.eclipse.jdt.core.dom.TypeDeclaration n) {
+                int s = cu.getLineNumber(n.getStartPosition()) - 1;
+                int e = cu.getLineNumber(n.getStartPosition() + n.getLength() - 1) - 1;
+                if (!n.isInterface() && cursorLine >= s && cursorLine <= e) holder[0] = n;
+                return true;
+            }
+        });
+        return holder[0];
+    }
+
+    /** Collect all non-static instance fields of a TypeDeclaration. */
+    private static List<org.eclipse.jdt.core.dom.FieldDeclaration> instanceFields(
+            org.eclipse.jdt.core.dom.TypeDeclaration td) {
+        List<org.eclipse.jdt.core.dom.FieldDeclaration> result = new ArrayList<>();
+        for (Object bd : td.bodyDeclarations()) {
+            if (bd instanceof org.eclipse.jdt.core.dom.FieldDeclaration fd) {
+                if ((fd.getModifiers() & org.eclipse.jdt.core.dom.Modifier.STATIC) == 0) result.add(fd);
+            }
+        }
+        return result;
+    }
+
+    /** Return true when the type has a method with the given name and parameter count. */
+    private static boolean hasMethod(org.eclipse.jdt.core.dom.TypeDeclaration td, String name, int paramCount) {
+        for (org.eclipse.jdt.core.dom.MethodDeclaration md : td.getMethods()) {
+            if (md.getName().getIdentifier().equals(name) && md.parameters().size() == paramCount) return true;
+        }
+        return false;
+    }
+
+    /** The offset of the closing '}' of the type body — insertion point for new members. */
+    private static int classClosingBrace(org.eclipse.jdt.core.dom.AbstractTypeDeclaration atd, String source) {
+        int off = atd.getStartPosition() + atd.getLength() - 1;
+        while (off > 0 && source.charAt(off) != '}') off--;
+        return off;
+    }
+
+    // ── Generate hashCode() and equals() ────────────────────────────────────
+
+    private static List<BridgeAction> makeHashCodeEqualsActions(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        org.eclipse.jdt.core.dom.TypeDeclaration td = findEnclosingClass(cu, range);
+        if (td == null) return List.of();
+
+        boolean hasHash   = hasMethod(td, "hashCode", 0);
+        boolean hasEquals = hasMethod(td, "equals", 1);
+        if (hasHash && hasEquals) return List.of();
+
+        List<org.eclipse.jdt.core.dom.FieldDeclaration> fields = instanceFields(td);
+        String className  = td.getName().getIdentifier();
+        String indent     = indentOf(source, cu.getLineNumber(td.getStartPosition()) - 1) + "    ";
+        int    insertOff  = classClosingBrace(td, source);
+        int[]  insLC      = CompilationService.offsetToLineCol(source, insertOff);
+
+        // Build field name list
+        List<String[]> fieldInfo = new ArrayList<>(); // [typeName, fieldName]
+        for (org.eclipse.jdt.core.dom.FieldDeclaration fd : fields) {
+            String typeName = fd.getType().toString();
+            for (Object frag : fd.fragments()) {
+                if (frag instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf) {
+                    fieldInfo.add(new String[]{typeName, vdf.getName().getIdentifier()});
+                }
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+
+        if (!hasHash) {
+            sb.append("\n").append(indent).append("@Override\n");
+            sb.append(indent).append("public int hashCode() {\n");
+            if (fieldInfo.isEmpty()) {
+                sb.append(indent).append("    return 0;\n");
+            } else {
+                sb.append(indent).append("    return java.util.Objects.hash(");
+                for (int i = 0; i < fieldInfo.size(); i++) {
+                    if (i > 0) sb.append(", ");
+                    sb.append(fieldInfo.get(i)[1]);
+                }
+                sb.append(");\n");
+            }
+            sb.append(indent).append("}\n");
+        }
+
+        if (!hasEquals) {
+            sb.append("\n").append(indent).append("@Override\n");
+            sb.append(indent).append("public boolean equals(Object obj) {\n");
+            sb.append(indent).append("    if (this == obj) return true;\n");
+            sb.append(indent).append("    if (!(obj instanceof ").append(className).append(" other)) return false;\n");
+            if (fieldInfo.isEmpty()) {
+                sb.append(indent).append("    return true;\n");
+            } else {
+                sb.append(indent).append("    return ");
+                for (int i = 0; i < fieldInfo.size(); i++) {
+                    if (i > 0) sb.append("\n").append(indent).append("        && ");
+                    String type = fieldInfo.get(i)[0];
+                    String name = fieldInfo.get(i)[1];
+                    boolean primitive = isPrimitive(type);
+                    if (primitive) sb.append(name).append(" == other.").append(name);
+                    else sb.append("java.util.Objects.equals(").append(name).append(", other.").append(name).append(")");
+                }
+                sb.append(";\n");
+            }
+            sb.append(indent).append("}\n");
+        }
+
+        BridgeTextEdit edit = new BridgeTextEdit();
+        edit.startLine = insLC[0]; edit.startChar = insLC[1];
+        edit.endLine   = insLC[0]; edit.endChar   = insLC[1];
+        edit.newText   = sb.toString();
+
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
+
+        BridgeAction quickassist = new BridgeAction();
+        quickassist.title = "Generate hashCode() and equals()";
+        quickassist.kind  = "quickassist";
+        quickassist.edits = List.of(fe);
+
+        BridgeAction source2 = new BridgeAction();
+        source2.title = "Generate hashCode() and equals()";
+        source2.kind  = "source.generate.hashCodeEquals";
+        source2.edits = List.of(fe);
+
+        return List.of(quickassist, source2);
+    }
+
+    private static boolean isPrimitive(String typeName) {
+        return switch (typeName) {
+            case "int","long","short","byte","char","float","double","boolean" -> true;
+            default -> false;
+        };
+    }
+
+    // ── Generate constructors ────────────────────────────────────────────────
+
+    private static List<BridgeAction> makeGenerateConstructorsActions(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        org.eclipse.jdt.core.dom.TypeDeclaration td = findEnclosingClass(cu, range);
+        if (td == null) return List.of();
+
+        String className = td.getName().getIdentifier();
+        String indent    = indentOf(source, cu.getLineNumber(td.getStartPosition()) - 1) + "    ";
+        int insertOff    = classClosingBrace(td, source);
+        int[] insLC      = CompilationService.offsetToLineCol(source, insertOff);
+
+        List<org.eclipse.jdt.core.dom.FieldDeclaration> fields = instanceFields(td);
+
+        // Build field list: [typeName, fieldName]
+        List<String[]> fieldInfo = new ArrayList<>();
+        for (org.eclipse.jdt.core.dom.FieldDeclaration fd : fields) {
+            String typeName = fd.getType().toString();
+            for (Object frag : fd.fragments()) {
+                if (frag instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf) {
+                    fieldInfo.add(new String[]{typeName, vdf.getName().getIdentifier()});
+                }
+            }
+        }
+
+        // Check if an all-fields constructor already exists.
+        for (org.eclipse.jdt.core.dom.MethodDeclaration md : td.getMethods()) {
+            if (md.isConstructor() && md.getName().getIdentifier().equals(className)
+                    && md.parameters().size() == fieldInfo.size()) return List.of();
+        }
+
+        // Build the constructor text.
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n").append(indent).append("public ").append(className).append("(");
+        for (int i = 0; i < fieldInfo.size(); i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(fieldInfo.get(i)[0]).append(" ").append(fieldInfo.get(i)[1]);
+        }
+        sb.append(") {\n");
+        for (String[] f : fieldInfo) {
+            sb.append(indent).append("    this.").append(f[1]).append(" = ").append(f[1]).append(";\n");
+        }
+        sb.append(indent).append("}\n");
+
+        BridgeTextEdit edit = new BridgeTextEdit();
+        edit.startLine = insLC[0]; edit.startChar = insLC[1];
+        edit.endLine   = insLC[0]; edit.endChar   = insLC[1];
+        edit.newText   = sb.toString();
+
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
+
+        BridgeAction quickassist = new BridgeAction();
+        quickassist.title = "Generate constructor from fields";
+        quickassist.kind  = "quickassist";
+        quickassist.edits = List.of(fe);
+
+        BridgeAction sourceAction = new BridgeAction();
+        sourceAction.title = "Generate Constructors";
+        sourceAction.kind  = "source.generate.constructors";
+        sourceAction.edits = List.of(fe);
+
+        return List.of(quickassist, sourceAction);
+    }
+
+    // ── Sort members ─────────────────────────────────────────────────────────
+
+    private static BridgeAction makeSortMembersAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        org.eclipse.jdt.core.dom.TypeDeclaration td = findEnclosingClass(cu, range);
+        if (td == null) return null;
+
+        @SuppressWarnings("unchecked")
+        List<org.eclipse.jdt.core.dom.BodyDeclaration> decls =
+            (List<org.eclipse.jdt.core.dom.BodyDeclaration>) td.bodyDeclarations();
+        if (decls.size() < 2) return null;
+
+        // Category order: static fields (0), instance fields (1), static initializers (2),
+        // instance initializers (3), constructors (4), methods (5), inner types (6).
+        java.util.function.ToIntFunction<org.eclipse.jdt.core.dom.BodyDeclaration> category = bd -> {
+            if (bd instanceof org.eclipse.jdt.core.dom.FieldDeclaration fd) {
+                return (fd.getModifiers() & org.eclipse.jdt.core.dom.Modifier.STATIC) != 0 ? 0 : 1;
+            }
+            if (bd instanceof org.eclipse.jdt.core.dom.Initializer ini) {
+                return (ini.getModifiers() & org.eclipse.jdt.core.dom.Modifier.STATIC) != 0 ? 2 : 3;
+            }
+            if (bd instanceof org.eclipse.jdt.core.dom.MethodDeclaration md) {
+                return md.isConstructor() ? 4 : 5;
+            }
+            return 6; // inner types, annotations, enums
+        };
+
+        // Check if already sorted.
+        List<org.eclipse.jdt.core.dom.BodyDeclaration> sorted = new ArrayList<>(decls);
+        sorted.sort(Comparator.comparingInt(category::applyAsInt));
+        boolean alreadySorted = true;
+        for (int i = 0; i < decls.size(); i++) {
+            if (decls.get(i) != sorted.get(i)) { alreadySorted = false; break; }
+        }
+        if (alreadySorted) return null;
+
+        // Extract source text for each declaration (including preceding blank lines).
+        int typeStart = td.getStartPosition();
+        int openBrace = source.indexOf('{', typeStart);
+        if (openBrace < 0) return null;
+        int bodyStart = openBrace + 1;
+        int closeBrace = classClosingBrace(td, source);
+
+        // Split body into chunks between declarations.
+        // Each chunk = [preceding whitespace/comments] + [declaration text].
+        // We'll rebuild by extracting the raw text of each declaration node.
+        List<String> chunks = new ArrayList<>();
+        for (org.eclipse.jdt.core.dom.BodyDeclaration bd : decls) {
+            int s = bd.getStartPosition();
+            int e = s + bd.getLength();
+            // Include trailing newline
+            while (e < source.length() && (source.charAt(e) == '\n' || source.charAt(e) == '\r')) e++;
+            chunks.add(source.substring(s, e));
+        }
+
+        List<String> sortedChunks = new ArrayList<>();
+        for (org.eclipse.jdt.core.dom.BodyDeclaration bd : sorted) {
+            int idx = decls.indexOf(bd);
+            sortedChunks.add(chunks.get(idx));
+        }
+
+        // Build new body content.
+        // Get the whitespace between openBrace and first declaration.
+        int firstDeclStart = decls.get(0).getStartPosition();
+        String leadingWS = source.substring(bodyStart, firstDeclStart);
+        // Get text after last declaration to closeBrace.
+        int lastDeclEnd = decls.get(decls.size()-1).getStartPosition()
+                        + decls.get(decls.size()-1).getLength();
+        while (lastDeclEnd < source.length() && source.charAt(lastDeclEnd) != '\n'
+               && source.charAt(lastDeclEnd) != '}') lastDeclEnd++;
+        if (lastDeclEnd < source.length() && source.charAt(lastDeclEnd) == '\n') lastDeclEnd++;
+        String trailingWS = source.substring(lastDeclEnd, closeBrace);
+
+        StringBuilder newBody = new StringBuilder();
+        newBody.append(leadingWS);
+        String memberIndent = indentOf(source, cu.getLineNumber(decls.get(0).getStartPosition()) - 1);
+        for (int i = 0; i < sortedChunks.size(); i++) {
+            if (i > 0) newBody.append("\n");
+            newBody.append(sortedChunks.get(i));
+        }
+        newBody.append(trailingWS);
+
+        // Replace from firstDeclStart to closeBrace.
+        int[] startLC = CompilationService.offsetToLineCol(source, firstDeclStart);
+        int[] endLC   = CompilationService.offsetToLineCol(source, closeBrace);
+
+        BridgeTextEdit edit = new BridgeTextEdit();
+        edit.startLine = startLC[0]; edit.startChar = startLC[1];
+        edit.endLine   = endLC[0];   edit.endChar   = endLC[1];
+        edit.newText   = newBody.toString();
+
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
+        BridgeAction a = new BridgeAction();
+        a.title = "Sort Members";
+        a.kind  = "source.sortMembers";
+        a.edits = List.of(fe);
+        return a;
+    }
+
+    // ── Override/implement methods ───────────────────────────────────────────
+
+    private static List<BridgeAction> makeOverrideMethodsActions(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        org.eclipse.jdt.core.dom.TypeDeclaration td = findEnclosingClass(cu, range);
+        if (td == null) return List.of();
+
+        // Collect already-implemented method signatures.
+        Set<String> implemented = new HashSet<>();
+        for (org.eclipse.jdt.core.dom.MethodDeclaration md : td.getMethods()) {
+            if (!md.isConstructor()) implemented.add(methodSignatureKey(md));
+        }
+
+        // Collect abstract/interface methods from supertype bindings.
+        List<String[]> toOverride = new ArrayList<>(); // [returnType, name, params, throws]
+        org.eclipse.jdt.core.dom.ITypeBinding binding = td.resolveBinding();
+        if (binding == null) return List.of();
+
+        collectAbstractMethods(binding, implemented, toOverride, new HashSet<>());
+        if (toOverride.isEmpty()) return List.of();
+
+        String indent   = indentOf(source, cu.getLineNumber(td.getStartPosition()) - 1) + "    ";
+        int insertOff   = classClosingBrace(td, source);
+        int[] insLC     = CompilationService.offsetToLineCol(source, insertOff);
+
+        StringBuilder sb = new StringBuilder();
+        for (String[] m : toOverride) {
+            // [0]=returnType [1]=name [2]=paramList [3]=throws
+            sb.append("\n").append(indent).append("@Override\n");
+            sb.append(indent).append("public ").append(m[0]).append(" ").append(m[1])
+              .append("(").append(m[2]).append(")");
+            if (!m[3].isEmpty()) sb.append(" throws ").append(m[3]);
+            sb.append(" {\n");
+            if (!"void".equals(m[0])) {
+                sb.append(indent).append("    return ").append(defaultReturnFor(m[0])).append(";\n");
+            }
+            sb.append(indent).append("}\n");
+        }
+
+        BridgeTextEdit edit = new BridgeTextEdit();
+        edit.startLine = insLC[0]; edit.startChar = insLC[1];
+        edit.endLine   = insLC[0]; edit.endChar   = insLC[1];
+        edit.newText   = sb.toString();
+
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
+
+        BridgeAction quickassist = new BridgeAction();
+        quickassist.title = "Override/Implement Methods";
+        quickassist.kind  = "quickassist";
+        quickassist.edits = List.of(fe);
+
+        BridgeAction sourceAction = new BridgeAction();
+        sourceAction.title = "Override/Implement Methods";
+        sourceAction.kind  = "source.overrideMethods";
+        sourceAction.edits = List.of(fe);
+
+        return List.of(quickassist, sourceAction);
+    }
+
+    private static void collectAbstractMethods(
+            org.eclipse.jdt.core.dom.ITypeBinding binding,
+            Set<String> implemented,
+            List<String[]> toOverride,
+            Set<String> visited) {
+        if (binding == null) return;
+        String key = binding.getQualifiedName();
+        if (visited.contains(key)) return;
+        visited.add(key);
+
+        for (org.eclipse.jdt.core.dom.IMethodBinding mb : binding.getDeclaredMethods()) {
+            if (!java.lang.reflect.Modifier.isAbstract(mb.getModifiers())) continue;
+            if (java.lang.reflect.Modifier.isStatic(mb.getModifiers())) continue;
+            String sig = bindingSignatureKey(mb);
+            if (!implemented.contains(sig) && toOverride.stream().noneMatch(m -> m[1].equals(mb.getName()) && m[2].equals(buildParamList(mb)))) {
+                toOverride.add(new String[]{
+                    mb.getReturnType().getName(),
+                    mb.getName(),
+                    buildParamList(mb),
+                    buildThrowsList(mb)
+                });
+                implemented.add(sig);
+            }
+        }
+
+        // Walk superclass and interfaces.
+        collectAbstractMethods(binding.getSuperclass(), implemented, toOverride, visited);
+        for (org.eclipse.jdt.core.dom.ITypeBinding iface : binding.getInterfaces()) {
+            collectInterfaceMethods(iface, implemented, toOverride, visited);
+        }
+    }
+
+    private static void collectInterfaceMethods(
+            org.eclipse.jdt.core.dom.ITypeBinding iface,
+            Set<String> implemented,
+            List<String[]> toOverride,
+            Set<String> visited) {
+        if (iface == null) return;
+        String key = iface.getQualifiedName();
+        if (visited.contains(key)) return;
+        visited.add(key);
+
+        for (org.eclipse.jdt.core.dom.IMethodBinding mb : iface.getDeclaredMethods()) {
+            if (java.lang.reflect.Modifier.isStatic(mb.getModifiers())) continue;
+            // Skip default interface methods (not abstract).
+            if (!java.lang.reflect.Modifier.isAbstract(mb.getModifiers())) continue;
+            String sig = bindingSignatureKey(mb);
+            if (!implemented.contains(sig) && toOverride.stream().noneMatch(m -> m[1].equals(mb.getName()) && m[2].equals(buildParamList(mb)))) {
+                toOverride.add(new String[]{
+                    mb.getReturnType().getName(),
+                    mb.getName(),
+                    buildParamList(mb),
+                    buildThrowsList(mb)
+                });
+                implemented.add(sig);
+            }
+        }
+        for (org.eclipse.jdt.core.dom.ITypeBinding parent : iface.getInterfaces()) {
+            collectInterfaceMethods(parent, implemented, toOverride, visited);
+        }
+    }
+
+    private static String buildParamList(org.eclipse.jdt.core.dom.IMethodBinding mb) {
+        StringBuilder sb = new StringBuilder();
+        org.eclipse.jdt.core.dom.ITypeBinding[] params = mb.getParameterTypes();
+        for (int i = 0; i < params.length; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(params[i].getName()).append(" param").append(i);
+        }
+        return sb.toString();
+    }
+
+    private static String buildThrowsList(org.eclipse.jdt.core.dom.IMethodBinding mb) {
+        StringBuilder sb = new StringBuilder();
+        org.eclipse.jdt.core.dom.ITypeBinding[] ex = mb.getExceptionTypes();
+        for (int i = 0; i < ex.length; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(ex[i].getName());
+        }
+        return sb.toString();
+    }
+
+    private static String bindingSignatureKey(org.eclipse.jdt.core.dom.IMethodBinding mb) {
+        StringBuilder sb = new StringBuilder(mb.getName()).append("(");
+        for (org.eclipse.jdt.core.dom.ITypeBinding p : mb.getParameterTypes()) sb.append(p.getQualifiedName()).append(",");
+        return sb.append(")").toString();
+    }
+
+    private static String methodSignatureKey(org.eclipse.jdt.core.dom.MethodDeclaration md) {
+        StringBuilder sb = new StringBuilder(md.getName().getIdentifier()).append("(");
+        for (Object p : md.parameters()) {
+            if (p instanceof org.eclipse.jdt.core.dom.SingleVariableDeclaration svd) {
+                sb.append(svd.getType().toString()).append(",");
+            }
+        }
+        return sb.append(")").toString();
+    }
+
+    private static String defaultReturnFor(String type) {
+        return switch (type) {
+            case "boolean" -> "false";
+            case "int","short","byte","char" -> "0";
+            case "long" -> "0L";
+            case "float" -> "0.0f";
+            case "double" -> "0.0";
+            default -> "null";
+        };
+    }
+
+    // ── Generate delegate methods ────────────────────────────────────────────
+
+    private static List<BridgeAction> makeDelegateMethodsActions(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        org.eclipse.jdt.core.dom.TypeDeclaration td = findEnclosingClass(cu, range);
+        if (td == null) return List.of();
+
+        org.eclipse.jdt.core.dom.ITypeBinding classBinding = td.resolveBinding();
+        if (classBinding == null) return List.of();
+
+        // Collect existing method names to avoid duplicates.
+        Set<String> existing = new HashSet<>();
+        for (org.eclipse.jdt.core.dom.MethodDeclaration md : td.getMethods()) existing.add(methodSignatureKey(md));
+
+        String indent  = indentOf(source, cu.getLineNumber(td.getStartPosition()) - 1) + "    ";
+        int insertOff  = classClosingBrace(td, source);
+        int[] insLC    = CompilationService.offsetToLineCol(source, insertOff);
+
+        List<BridgeAction> result = new ArrayList<>();
+
+        for (org.eclipse.jdt.core.dom.FieldDeclaration fd : instanceFields(td)) {
+            org.eclipse.jdt.core.dom.ITypeBinding fieldType = fd.getType().resolveBinding();
+            if (fieldType == null) continue;
+
+            // Skip primitive-typed fields.
+            if (fieldType.isPrimitive()) continue;
+
+            // Collect public non-static methods of the field type.
+            List<org.eclipse.jdt.core.dom.IMethodBinding> delegatable = new ArrayList<>();
+            for (org.eclipse.jdt.core.dom.IMethodBinding mb : fieldType.getDeclaredMethods()) {
+                if (java.lang.reflect.Modifier.isPublic(mb.getModifiers())
+                        && !java.lang.reflect.Modifier.isStatic(mb.getModifiers())
+                        && !mb.isConstructor()
+                        && !mb.getName().equals("equals")
+                        && !mb.getName().equals("hashCode")
+                        && !mb.getName().equals("toString")
+                        && !existing.contains(bindingSignatureKey(mb))) {
+                    delegatable.add(mb);
+                }
+            }
+            if (delegatable.isEmpty()) continue;
+
+            for (Object fragObj : fd.fragments()) {
+                if (!(fragObj instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf)) continue;
+                String fieldName = vdf.getName().getIdentifier();
+
+                StringBuilder sb = new StringBuilder();
+                for (org.eclipse.jdt.core.dom.IMethodBinding mb : delegatable) {
+                    String params   = buildParamList(mb);
+                    String args     = buildArgList(mb);
+                    String retType  = mb.getReturnType().getName();
+                    sb.append("\n").append(indent).append("public ").append(retType)
+                      .append(" ").append(mb.getName()).append("(").append(params).append(") {\n");
+                    sb.append(indent).append("    ");
+                    if (!"void".equals(retType)) sb.append("return ");
+                    sb.append(fieldName).append(".").append(mb.getName()).append("(").append(args).append(");\n");
+                    sb.append(indent).append("}\n");
+                }
+
+                BridgeTextEdit edit = new BridgeTextEdit();
+                edit.startLine = insLC[0]; edit.startChar = insLC[1];
+                edit.endLine   = insLC[0]; edit.endChar   = insLC[1];
+                edit.newText   = sb.toString();
+                BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
+
+                BridgeAction a = new BridgeAction();
+                a.title = "Generate Delegate Methods for '" + fieldName + "'";
+                a.kind  = "source.generate.delegateMethods";
+                a.edits = List.of(fe);
+                result.add(a);
+            }
+        }
+        return result;
+    }
+
+    private static String buildArgList(org.eclipse.jdt.core.dom.IMethodBinding mb) {
+        StringBuilder sb = new StringBuilder();
+        int n = mb.getParameterTypes().length;
+        for (int i = 0; i < n; i++) { if (i > 0) sb.append(", "); sb.append("param").append(i); }
+        return sb.toString();
+    }
+
+    // ── Extract constant ─────────────────────────────────────────────────────
+
+    private static BridgeAction makeExtractConstantAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        if (range == null) return null;
+        int startOff = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+        int endOff   = CompilationService.lineColToOffset(source, range.endLine,   range.endChar);
+        if (startOff >= endOff) return null;
+
+        String exprText = source.substring(startOff, endOff).trim();
+        if (exprText.isEmpty()) return null;
+
+        // Only offer for literals or simple expressions (not already a name).
+        boolean looksLikeLiteral = exprText.matches("\".*\"|'.'|-?\\d[\\d_L.fFdD]*|true|false|null");
+        if (!looksLikeLiteral) return null;
+
+        // Find the enclosing type.
+        TypeDeclLocator loc = new TypeDeclLocator(startOff);
+        cu.accept(loc);
+        if (loc.found == null) return null;
+
+        // Infer type from the literal.
+        String constType = inferLiteralType(exprText);
+        String constName = suggestConstantName(exprText);
+
+        // Insert point: start of type body (after opening brace, before first member).
+        int typeStart = loc.found.getStartPosition();
+        int openBrace = source.indexOf('{', typeStart);
+        if (openBrace < 0) return null;
+        int insertOff = openBrace + 1;
+        // Skip blank line after brace
+        while (insertOff < source.length() && source.charAt(insertOff) == '\n') { insertOff++; break; }
+        int[] fieldInsLC = CompilationService.offsetToLineCol(source, openBrace + 1);
+
+        String typeIndent = indentOf(source, cu.getLineNumber(typeStart) - 1);
+        String fieldDecl = "\n" + typeIndent + "    private static final " + constType + " " + constName + " = " + exprText + ";\n";
+
+        // Replace the selected expression with the constant name.
+        int[] selStart = CompilationService.offsetToLineCol(source, startOff);
+        int[] selEnd   = CompilationService.offsetToLineCol(source, endOff);
+        BridgeTextEdit replaceEdit = new BridgeTextEdit();
+        replaceEdit.startLine = selStart[0]; replaceEdit.startChar = selStart[1];
+        replaceEdit.endLine   = selEnd[0];   replaceEdit.endChar   = selEnd[1];
+        replaceEdit.newText   = constName;
+
+        BridgeTextEdit fieldEdit = new BridgeTextEdit();
+        fieldEdit.startLine = fieldInsLC[0]; fieldEdit.startChar = fieldInsLC[1];
+        fieldEdit.endLine   = fieldInsLC[0]; fieldEdit.endChar   = fieldInsLC[1];
+        fieldEdit.newText   = fieldDecl;
+
+        // Field insert must come first (earlier in file) if selection is after it; apply in order.
+        List<BridgeTextEdit> edits = new ArrayList<>();
+        if (fieldInsLC[0] < selStart[0] || (fieldInsLC[0] == selStart[0] && fieldInsLC[1] <= selStart[1])) {
+            edits.add(fieldEdit); edits.add(replaceEdit);
+        } else {
+            edits.add(replaceEdit); edits.add(fieldEdit);
+        }
+
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = edits;
+        BridgeAction a = new BridgeAction();
+        a.title = "Extract to constant '" + constName + "'";
+        a.kind  = "refactor.extract.constant";
+        a.edits = List.of(fe);
+        return a;
+    }
+
+    private static String inferLiteralType(String expr) {
+        if (expr.startsWith("\"")) return "String";
+        if (expr.startsWith("'")) return "char";
+        if (expr.equalsIgnoreCase("true") || expr.equalsIgnoreCase("false")) return "boolean";
+        if (expr.endsWith("L") || expr.endsWith("l")) return "long";
+        if (expr.endsWith("f") || expr.endsWith("F")) return "float";
+        if (expr.endsWith("d") || expr.endsWith("D") || expr.contains(".")) return "double";
+        return "int";
+    }
+
+    private static String suggestConstantName(String expr) {
+        if (expr.startsWith("\"") && expr.endsWith("\"")) {
+            String inner = expr.substring(1, expr.length() - 1);
+            String name = inner.toUpperCase().replaceAll("[^A-Z0-9]+", "_").replaceAll("^_|_$", "");
+            return name.isEmpty() ? "CONSTANT" : name;
+        }
+        return "CONSTANT";
+    }
+
+    // ── Extract field ────────────────────────────────────────────────────────
+
+    /** Convert `LocalType name = expr;` declaration into a field + assignment. */
+    private static BridgeAction makeExtractFieldAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        if (range == null) return null;
+        int offset = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+        VarDeclLocator vdl = new VarDeclLocator(offset);
+        cu.accept(vdl);
+        if (vdl.found == null) return null;
+
+        org.eclipse.jdt.core.dom.VariableDeclarationStatement vds = vdl.found;
+        // Only one fragment for simplicity.
+        if (vds.fragments().size() != 1) return null;
+        org.eclipse.jdt.core.dom.VariableDeclarationFragment frag =
+            (org.eclipse.jdt.core.dom.VariableDeclarationFragment) vds.fragments().get(0);
+
+        String typeName  = vds.getType().toString();
+        String fieldName = frag.getName().getIdentifier();
+
+        // Find enclosing type.
+        TypeDeclLocator tdl = new TypeDeclLocator(offset);
+        cu.accept(tdl);
+        if (tdl.found == null) return null;
+
+        String typeIndent = indentOf(source, cu.getLineNumber(tdl.found.getStartPosition()) - 1);
+        int openBrace = source.indexOf('{', tdl.found.getStartPosition());
+        if (openBrace < 0) return null;
+
+        // Field declaration to insert after opening brace.
+        int[] fieldInsLC = CompilationService.offsetToLineCol(source, openBrace + 1);
+        String fieldDecl = "\n" + typeIndent + "    private " + typeName + " " + fieldName + ";";
+
+        // Replace the local declaration with just the assignment.
+        int stmtStart = vds.getStartPosition();
+        int stmtEnd   = stmtStart + vds.getLength();
+        int[] stmtStartLC = CompilationService.offsetToLineCol(source, stmtStart);
+        int[] stmtEndLC   = CompilationService.offsetToLineCol(source, stmtEnd);
+
+        String assignText;
+        if (frag.getInitializer() != null) {
+            int initStart = frag.getInitializer().getStartPosition();
+            int initEnd   = initStart + frag.getInitializer().getLength();
+            assignText = fieldName + " = " + source.substring(initStart, initEnd) + ";";
+        } else {
+            assignText = "// " + fieldName + " extracted to field";
+        }
+
+        BridgeTextEdit replaceEdit = new BridgeTextEdit();
+        replaceEdit.startLine = stmtStartLC[0]; replaceEdit.startChar = stmtStartLC[1];
+        replaceEdit.endLine   = stmtEndLC[0];   replaceEdit.endChar   = stmtEndLC[1];
+        replaceEdit.newText   = assignText;
+
+        BridgeTextEdit fieldEdit = new BridgeTextEdit();
+        fieldEdit.startLine = fieldInsLC[0]; fieldEdit.startChar = fieldInsLC[1];
+        fieldEdit.endLine   = fieldInsLC[0]; fieldEdit.endChar   = fieldInsLC[1];
+        fieldEdit.newText   = fieldDecl;
+
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(fieldEdit, replaceEdit);
+        BridgeAction a = new BridgeAction();
+        a.title = "Extract '" + fieldName + "' to field";
+        a.kind  = "refactor.extract.field";
+        a.edits = List.of(fe);
+        return a;
+    }
+
+    // ── Assign to variable / field ───────────────────────────────────────────
+
+    /** Wrap a standalone expression statement `expr;` → `var name = expr;`. */
+    private static BridgeAction makeAssignToVariableAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        if (range == null) return null;
+        int offset = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+        StatementLocator sl = new StatementLocator(offset);
+        cu.accept(sl);
+        if (!(sl.found instanceof org.eclipse.jdt.core.dom.ExpressionStatement es)) return null;
+        if (!(es.getExpression() instanceof org.eclipse.jdt.core.dom.MethodInvocation
+              || es.getExpression() instanceof org.eclipse.jdt.core.dom.ClassInstanceCreation)) return null;
+
+        int exprStart = es.getExpression().getStartPosition();
+        int exprEnd   = exprStart + es.getExpression().getLength();
+        String exprText = source.substring(exprStart, exprEnd);
+
+        int[] startLC = CompilationService.offsetToLineCol(source, es.getStartPosition());
+        int[] endLC   = CompilationService.offsetToLineCol(source, es.getStartPosition() + es.getLength());
+
+        BridgeTextEdit edit = new BridgeTextEdit();
+        edit.startLine = startLC[0]; edit.startChar = startLC[1];
+        edit.endLine   = endLC[0];   edit.endChar   = endLC[1];
+        edit.newText   = "var result = " + exprText + ";";
+
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
+        BridgeAction a = new BridgeAction();
+        a.title = "Assign to new local variable";
+        a.kind  = "refactor.assign.variable";
+        a.edits = List.of(fe);
+        return a;
+    }
+
+    /** Assign expression to a new field: add `private TYPE name;` and replace with `this.name = expr;`. */
+    private static BridgeAction makeAssignToFieldAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        if (range == null) return null;
+        int offset = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+        StatementLocator sl = new StatementLocator(offset);
+        cu.accept(sl);
+        if (!(sl.found instanceof org.eclipse.jdt.core.dom.ExpressionStatement es)) return null;
+        if (!(es.getExpression() instanceof org.eclipse.jdt.core.dom.MethodInvocation
+              || es.getExpression() instanceof org.eclipse.jdt.core.dom.ClassInstanceCreation)) return null;
+
+        TypeDeclLocator tdl = new TypeDeclLocator(offset);
+        cu.accept(tdl);
+        if (tdl.found == null) return null;
+
+        int exprStart = es.getExpression().getStartPosition();
+        int exprEnd   = exprStart + es.getExpression().getLength();
+        String exprText = source.substring(exprStart, exprEnd);
+        String fieldName = "value";
+
+        // Try to get a better name from method invocation.
+        if (es.getExpression() instanceof org.eclipse.jdt.core.dom.MethodInvocation mi) {
+            fieldName = mi.getName().getIdentifier();
+            if (fieldName.startsWith("get") && fieldName.length() > 3) {
+                fieldName = Character.toLowerCase(fieldName.charAt(3)) + fieldName.substring(4);
+            }
+        }
+        fieldName = chooseFieldName(tdl.found, fieldName);
+
+        String typeIndent = indentOf(source, cu.getLineNumber(tdl.found.getStartPosition()) - 1);
+        int openBrace = source.indexOf('{', tdl.found.getStartPosition());
+        if (openBrace < 0) return null;
+
+        int[] fieldInsLC = CompilationService.offsetToLineCol(source, openBrace + 1);
+        String fieldDecl = "\n" + typeIndent + "    private Object " + fieldName + ";";
+
+        int[] stmtStartLC = CompilationService.offsetToLineCol(source, es.getStartPosition());
+        int[] stmtEndLC   = CompilationService.offsetToLineCol(source, es.getStartPosition() + es.getLength());
+
+        BridgeTextEdit replaceEdit = new BridgeTextEdit();
+        replaceEdit.startLine = stmtStartLC[0]; replaceEdit.startChar = stmtStartLC[1];
+        replaceEdit.endLine   = stmtEndLC[0];   replaceEdit.endChar   = stmtEndLC[1];
+        replaceEdit.newText   = "this." + fieldName + " = " + exprText + ";";
+
+        BridgeTextEdit fieldEdit = new BridgeTextEdit();
+        fieldEdit.startLine = fieldInsLC[0]; fieldEdit.startChar = fieldInsLC[1];
+        fieldEdit.endLine   = fieldInsLC[0]; fieldEdit.endChar   = fieldInsLC[1];
+        fieldEdit.newText   = fieldDecl;
+
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(fieldEdit, replaceEdit);
+        BridgeAction a = new BridgeAction();
+        a.title = "Assign to new field '" + fieldName + "'";
+        a.kind  = "refactor.assign.field";
+        a.edits = List.of(fe);
+        return a;
+    }
+
+    // ── Invert boolean ───────────────────────────────────────────────────────
+
+    private static BridgeAction makeInvertBooleanAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        if (range == null) return null;
+        int offset = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+
+        // Case 1: cursor on an if-statement — invert its condition.
+        final org.eclipse.jdt.core.dom.IfStatement[] ifHolder = {null};
+        cu.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
+            @Override public boolean visit(org.eclipse.jdt.core.dom.IfStatement n) {
+                int s = n.getStartPosition(), e = s + n.getLength();
+                if (s <= offset && offset <= e) ifHolder[0] = n;
+                return true;
+            }
+        });
+        if (ifHolder[0] != null) {
+            org.eclipse.jdt.core.dom.Expression cond = ifHolder[0].getExpression();
+            int cs = cond.getStartPosition(), ce = cs + cond.getLength();
+            String condText = source.substring(cs, ce);
+            String inverted = invertConditionText(condText);
+            return makeReplaceRangeAction("Invert condition", uri, source, cs, ce, inverted, "quickassist");
+        }
+
+        // Case 2: cursor on a return statement with a boolean expression.
+        final org.eclipse.jdt.core.dom.ReturnStatement[] retHolder = {null};
+        cu.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
+            @Override public boolean visit(org.eclipse.jdt.core.dom.ReturnStatement n) {
+                int s = n.getStartPosition(), e = s + n.getLength();
+                if (s <= offset && offset <= e) retHolder[0] = n;
+                return true;
+            }
+        });
+        if (retHolder[0] != null && retHolder[0].getExpression() != null) {
+            org.eclipse.jdt.core.dom.Expression expr = retHolder[0].getExpression();
+            org.eclipse.jdt.core.dom.ITypeBinding tb = expr.resolveTypeBinding();
+            if (tb != null && "boolean".equals(tb.getName())) {
+                int es = expr.getStartPosition(), ee = es + expr.getLength();
+                String exprText = source.substring(es, ee);
+                return makeReplaceRangeAction("Invert boolean expression", uri, source, es, ee,
+                    invertConditionText(exprText), "quickassist");
+            }
+        }
+
+        return null;
+    }
+
+    private static String invertConditionText(String cond) {
+        // Simple cases: true/false literals, already negated.
+        if ("true".equals(cond))  return "false";
+        if ("false".equals(cond)) return "true";
+        if (cond.startsWith("!") && !cond.startsWith("!=")) return cond.substring(1);
+        // Flip == / != / < / > / <= / >=
+        if (cond.contains(" == ")) return cond.replace(" == ", " != ");
+        if (cond.contains(" != ")) return cond.replace(" != ", " == ");
+        if (cond.contains(" <= ")) return cond.replace(" <= ", " > ");
+        if (cond.contains(" >= ")) return cond.replace(" >= ", " < ");
+        if (cond.contains(" < "))  return cond.replace(" < ", " >= ");
+        if (cond.contains(" > "))  return cond.replace(" > ", " <= ");
+        return "!(" + cond + ")";
+    }
+
+    private static BridgeAction makeReplaceRangeAction(String title, String uri, String source,
+            int start, int end, String newText, String kind) {
+        int[] slc = CompilationService.offsetToLineCol(source, start);
+        int[] elc = CompilationService.offsetToLineCol(source, end);
+        BridgeTextEdit edit = new BridgeTextEdit();
+        edit.startLine = slc[0]; edit.startChar = slc[1];
+        edit.endLine   = elc[0]; edit.endChar   = elc[1];
+        edit.newText   = newText;
+        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
+        BridgeAction a = new BridgeAction();
+        a.title = title; a.kind = kind; a.edits = List.of(fe);
+        return a;
+    }
+
+    // ── Convert var ↔ explicit type ──────────────────────────────────────────
+
+    private static BridgeAction makeConvertVarTypeAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        if (range == null) return null;
+        int offset = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+        VarDeclLocator vdl = new VarDeclLocator(offset);
+        cu.accept(vdl);
+        if (vdl.found == null || vdl.found.fragments().size() != 1) return null;
+
+        org.eclipse.jdt.core.dom.VariableDeclarationStatement vds = vdl.found;
+        org.eclipse.jdt.core.dom.VariableDeclarationFragment frag =
+            (org.eclipse.jdt.core.dom.VariableDeclarationFragment) vds.fragments().get(0);
+        if (frag.getInitializer() == null) return null;
+
+        String typeName = vds.getType().toString();
+        int typeStart = vds.getType().getStartPosition();
+        int typeEnd   = typeStart + vds.getType().getLength();
+
+        if ("var".equals(typeName)) {
+            // Convert var → explicit type using binding.
+            org.eclipse.jdt.core.dom.ITypeBinding tb = frag.getInitializer().resolveTypeBinding();
+            if (tb == null) return null;
+            String explicitType = tb.getName();
+            return makeReplaceRangeAction("Change 'var' to '" + explicitType + "'",
+                uri, source, typeStart, typeEnd, explicitType, "quickassist");
+        } else {
+            // Convert explicit type → var.
+            return makeReplaceRangeAction("Change type to 'var'",
+                uri, source, typeStart, typeEnd, "var", "quickassist");
+        }
+    }
+
+    // ── Convert anonymous class ↔ lambda ─────────────────────────────────────
+
+    private static BridgeAction makeConvertAnonymousToLambdaAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        if (range == null) return null;
+        int offset = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+
+        // Find a ClassInstanceCreation with an anonymous class body at the cursor.
+        final org.eclipse.jdt.core.dom.ClassInstanceCreation[] holder = {null};
+        cu.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
+            @Override public boolean visit(org.eclipse.jdt.core.dom.ClassInstanceCreation n) {
+                if (n.getAnonymousClassDeclaration() == null) return true;
+                int s = n.getStartPosition(), e = s + n.getLength();
+                if (s <= offset && offset <= e) holder[0] = n;
+                return true;
+            }
+        });
+        if (holder[0] == null) return null;
+
+        org.eclipse.jdt.core.dom.AnonymousClassDeclaration acd = holder[0].getAnonymousClassDeclaration();
+        @SuppressWarnings("unchecked")
+        List<org.eclipse.jdt.core.dom.BodyDeclaration> bodyDecls =
+            (List<org.eclipse.jdt.core.dom.BodyDeclaration>) acd.bodyDeclarations();
+
+        // Only convert single-abstract-method anonymous classes.
+        if (bodyDecls.size() != 1 || !(bodyDecls.get(0) instanceof org.eclipse.jdt.core.dom.MethodDeclaration)) return null;
+        org.eclipse.jdt.core.dom.MethodDeclaration method = (org.eclipse.jdt.core.dom.MethodDeclaration) bodyDecls.get(0);
+
+        // Build lambda: (params) -> body
+        StringBuilder params = new StringBuilder();
+        @SuppressWarnings("unchecked")
+        List<org.eclipse.jdt.core.dom.SingleVariableDeclaration> methodParams =
+            (List<org.eclipse.jdt.core.dom.SingleVariableDeclaration>) method.parameters();
+        if (methodParams.size() == 1) {
+            params.append(methodParams.get(0).getName().getIdentifier());
+        } else {
+            params.append("(");
+            for (int i = 0; i < methodParams.size(); i++) {
+                if (i > 0) params.append(", ");
+                params.append(methodParams.get(i).getName().getIdentifier());
+            }
+            params.append(")");
+        }
+
+        // Extract body — if single return statement, use expression form.
+        org.eclipse.jdt.core.dom.Block body = method.getBody();
+        if (body == null) return null;
+        @SuppressWarnings("unchecked")
+        List<org.eclipse.jdt.core.dom.Statement> stmts =
+            (List<org.eclipse.jdt.core.dom.Statement>) body.statements();
+
+        String lambdaBody;
+        if (stmts.size() == 1 && stmts.get(0) instanceof org.eclipse.jdt.core.dom.ReturnStatement rs
+                && rs.getExpression() != null) {
+            int es = rs.getExpression().getStartPosition();
+            lambdaBody = source.substring(es, es + rs.getExpression().getLength());
+        } else {
+            int bs = body.getStartPosition(), be = bs + body.getLength();
+            lambdaBody = source.substring(bs, be).trim();
+        }
+
+        String typeName = holder[0].getType().toString();
+        String lambdaText = typeName.isEmpty() ? params + " -> " + lambdaBody
+                          : params + " -> " + lambdaBody;
+        // Replace the entire new Type() { ... } expression.
+        int exprStart = holder[0].getStartPosition();
+        int exprEnd   = exprStart + holder[0].getLength();
+        String prefix = "new " + holder[0].getType().toString() + "(";
+        // Determine what args were passed to the constructor (usually none for functional).
+        String newExpr = params + " -> " + lambdaBody;
+
+        return makeReplaceRangeAction("Convert to lambda expression",
+            uri, source, exprStart, exprEnd, newExpr, "quickassist");
+    }
+
+    private static BridgeAction makeConvertLambdaToAnonymousAction(String uri, String source,
+            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
+        if (range == null) return null;
+        int offset = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
+
+        final org.eclipse.jdt.core.dom.LambdaExpression[] holder = {null};
+        cu.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
+            @Override public boolean visit(org.eclipse.jdt.core.dom.LambdaExpression n) {
+                int s = n.getStartPosition(), e = s + n.getLength();
+                if (s <= offset && offset <= e) holder[0] = n;
+                return true;
+            }
+        });
+        if (holder[0] == null) return null;
+
+        org.eclipse.jdt.core.dom.LambdaExpression lambda = holder[0];
+        org.eclipse.jdt.core.dom.ITypeBinding targetType = lambda.resolveTypeBinding();
+        if (targetType == null) return null;
+
+        // Find the single abstract method name.
+        String methodName = "apply";
+        for (org.eclipse.jdt.core.dom.IMethodBinding mb : targetType.getDeclaredMethods()) {
+            if (java.lang.reflect.Modifier.isAbstract(mb.getModifiers())) { methodName = mb.getName(); break; }
+        }
+
+        // Build parameter list with types.
+        StringBuilder paramsWithTypes = new StringBuilder();
+        @SuppressWarnings("unchecked")
+        List<?> lambdaParams = lambda.parameters();
+        org.eclipse.jdt.core.dom.IMethodBinding[] methods = targetType.getDeclaredMethods();
+        org.eclipse.jdt.core.dom.ITypeBinding[] paramTypes = methods.length > 0 ? methods[0].getParameterTypes() : new org.eclipse.jdt.core.dom.ITypeBinding[0];
+        for (int i = 0; i < lambdaParams.size(); i++) {
+            if (i > 0) paramsWithTypes.append(", ");
+            String pname;
+            Object p = lambdaParams.get(i);
+            if (p instanceof org.eclipse.jdt.core.dom.SingleVariableDeclaration svd) {
+                pname = svd.getName().getIdentifier();
+            } else if (p instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf) {
+                pname = vdf.getName().getIdentifier();
+            } else {
+                pname = "p" + i;
+            }
+            String ptype = (i < paramTypes.length) ? paramTypes[i].getName() : "Object";
+            paramsWithTypes.append(ptype).append(" ").append(pname);
+        }
+
+        // Build body.
+        String bodyText;
+        org.eclipse.jdt.core.dom.ASTNode lambdaBody = lambda.getBody();
+        if (lambdaBody instanceof org.eclipse.jdt.core.dom.Block blk) {
+            bodyText = source.substring(blk.getStartPosition(), blk.getStartPosition() + blk.getLength());
+        } else {
+            int bs = lambdaBody.getStartPosition();
+            bodyText = "{ return " + source.substring(bs, bs + lambdaBody.getLength()) + "; }";
+        }
+
+        String retType = methods.length > 0 ? methods[0].getReturnType().getName() : "void";
+        String indent = "    ";
+        String anonText = "new " + targetType.getName() + "() {\n"
+            + indent + "    @Override\n"
+            + indent + "    public " + retType + " " + methodName + "(" + paramsWithTypes + ") " + bodyText + "\n"
+            + indent + "}";
+
+        int lambdaStart = lambda.getStartPosition();
+        int lambdaEnd   = lambdaStart + lambda.getLength();
+        return makeReplaceRangeAction("Convert to anonymous class",
+            uri, source, lambdaStart, lambdaEnd, anonText, "quickassist");
     }
 }

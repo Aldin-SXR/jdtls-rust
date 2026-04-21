@@ -26,6 +26,18 @@ public class CompletionService {
     private static final List<String> JRT_TOP_PACKAGES = new ArrayList<>();
     private static volatile boolean jrtIndexBuilt = false;
 
+    /** Java reserved words that should never be used as completion prefixes. */
+    private static final Set<String> JAVA_KEYWORDS = Set.of(
+        "abstract", "assert", "boolean", "break", "byte", "case", "catch",
+        "char", "class", "const", "continue", "default", "do", "double",
+        "else", "enum", "extends", "final", "finally", "float", "for",
+        "goto", "if", "implements", "import", "instanceof", "int", "interface",
+        "long", "native", "new", "package", "private", "protected", "public",
+        "return", "short", "static", "strictfp", "super", "switch",
+        "synchronized", "this", "throw", "throws", "transient", "try",
+        "void", "volatile", "while", "var", "record", "sealed", "permits"
+    );
+
     public List<BridgeCompletion> complete(
             Map<String, String> sourceFiles,
             List<String> classpath,
@@ -86,75 +98,183 @@ public class CompletionService {
 
             String prefix = typedPrefix(source, offset);
 
-            // ── Collect members from the enclosing class + its superclass chain ─
-            // Only emit items whose name starts with the typed prefix so that
-            // `int x = Arr|` doesn't flood results with unrelated fields/methods.
-            {
-                AbstractTypeDeclaration enclosing = node != null
-                        ? enclosingType(node)
-                        : enclosingTypeAt(cu, offset);
-                if (enclosing != null) {
-                    Set<String> seen = new LinkedHashSet<>();
-                    collectTypeMembersWithHierarchy(enclosing, cu, results, seen, 0, prefix);
+            // ── Classify position context ─────────────────────────────────────
+            PositionContext ctx = classifyPosition(source, cu, clampedOffset, node);
+
+            switch (ctx) {
+
+                case TOP_LEVEL -> {
+                    // After a type-declaration keyword with no name typed yet
+                    // (e.g. `class |`, `public class |`) the user must type a
+                    // name — no completion is meaningful here.
+                    if (isRightAfterTypeKeyword(source, clampedOffset, prefix)) break;
+                    // Otherwise: offer type-declaration keywords and snippets.
+                    addTopLevelKeywordsAndSnippets(prefix, cu, source, clampedOffset, results);
                 }
-            }
 
-            // ── Context-sensitive locals/params from the enclosing method ─────
-            boolean insideMethod = isInsideMethodBody(node);
-            if (insideMethod && node != null) {
-                extractLocals(node, prefix, results);
-            }
-
-            // ── Constructor snippet — only valid in class body, not inside a method ──
-            if (!insideMethod && "ctor".startsWith(prefix)) {
-                AbstractTypeDeclaration enclosingForCtor = node != null
-                        ? enclosingType(node)
-                        : enclosingTypeAt(cu, offset);
-                if (enclosingForCtor instanceof TypeDeclaration td && !td.isInterface()) {
-                    String className = td.getName().getIdentifier();
-                    BridgeCompletion ctor = new BridgeCompletion();
-                    ctor.label = "ctor";
-                    ctor.kind = 15; // Snippet
-                    ctor.detail = "constructor";
-                    ctor.filterText = "ctor";
-                    ctor.sortText = "0ctor";
-                    ctor.insertText = "${1|public,protected,private|} " + className
-                            + "(${2}) {\n\t${3:super();}${0}\n}";
-                    ctor.insertTextFormat = 2;
-                    results.add(ctor);
-                }
-            }
-
-            // ── Super constructor completions ─────────────────────────────────
-            if (node != null && !prefix.isEmpty() && "super".startsWith(prefix)
-                    && isInsideConstructor(node)) {
-                addSuperConstructorCompletions(cu, node, sourceFiles, results);
-            }
-
-            // ── Type completions ──────────────────────────────────────────────
-            boolean afterNew = isAfterNewKeyword(source, clampedOffset);
-            // Same-file types are always offered (prefix or not) with highest priority.
-            addSameFileTypeCompletions(prefix, cu, results, afterNew);
-
-            if (prefix.length() >= 2) {
-                // Require at least 2 characters before searching the full JDK —
-                // a single letter prefix floods results with hundreds of unrelated types.
-                addJrtTypeCompletions(prefix, cu, source, results, afterNew);
-            } else {
-                // Empty prefix: offer already-imported simple names in all contexts
-                // (expression, statement, etc. — the user might want a type or variable).
-                for (Object imp : cu.imports()) {
-                    if (imp instanceof ImportDeclaration id) {
-                        String name = id.getName().getFullyQualifiedName();
-                        int dot = name.lastIndexOf('.');
-                        String simpleName = dot >= 0 ? name.substring(dot + 1) : name;
-                        if (!simpleName.equals("*")) {
+                case TYPE_HEADER -> {
+                    // Cursor is after the class/interface name but before the '{'.
+                    // The only valid next tokens are `extends` and `implements`.
+                    if (JAVA_KEYWORDS.contains(prefix)) break; // user finished typing the keyword
+                    for (String kw : new String[]{"extends", "implements"}) {
+                        if (kw.startsWith(prefix)) {
                             BridgeCompletion c = new BridgeCompletion();
-                            c.label = simpleName;
-                            c.kind = 7; // Class
-                            c.detail = name;
-                            c.sortText = "2" + simpleName;
+                            c.label = kw; c.kind = 14; c.sortText = "0" + kw;
                             results.add(c);
+                        }
+                    }
+                }
+
+                case EXTENDS_TYPE -> {
+                    // After `extends` / `implements`: only type names are valid.
+                    // Do not offer keywords, snippets, or member completions.
+                    addSameFileTypeCompletions(prefix, cu, results, false);
+                    if (prefix.length() >= 2) {
+                        addJrtTypeCompletions(prefix, cu, source, results, false);
+                    }
+                }
+
+                case CLASS_BODY -> {
+                    // Inside a class body but not inside a method.
+                    // Offer: ctor snippet, access/type modifier keywords, type names.
+                    if (JAVA_KEYWORDS.contains(prefix)) break;
+
+                    // ctor snippet
+                    AbstractTypeDeclaration encForCtor = node != null
+                            ? enclosingType(node) : enclosingTypeAt(cu, clampedOffset);
+                    if (encForCtor instanceof TypeDeclaration td && !td.isInterface()
+                            && "ctor".startsWith(prefix)) {
+                        String className = td.getName().getIdentifier();
+                        BridgeCompletion ctor = new BridgeCompletion();
+                        ctor.label = "ctor";
+                        ctor.kind = 15; ctor.detail = "constructor";
+                        ctor.filterText = "ctor"; ctor.sortText = "0ctor";
+                        ctor.insertText = "${1|public,protected,private|} " + className
+                                + "(${2}) {\n\t${3:super();}${0}\n}";
+                        ctor.insertTextFormat = 2;
+                        results.add(ctor);
+                    }
+
+                    // Member modifier and type keywords
+                    if (!prefix.isEmpty()) {
+                        for (String kw : new String[]{
+                            "public", "private", "protected", "static", "final",
+                            "abstract", "synchronized", "transient", "volatile",
+                            "void", "int", "long", "double", "float", "boolean",
+                            "char", "byte", "short", "class", "interface", "enum", "record"
+                        }) {
+                            if (kw.startsWith(prefix)) {
+                                BridgeCompletion c = new BridgeCompletion();
+                                c.label = kw; c.kind = 14; c.sortText = "5" + kw;
+                                results.add(c);
+                            }
+                        }
+                    }
+
+                    // Type completions (for field/method return-type declarations).
+                    addSameFileTypeCompletions(prefix, cu, results, false);
+                    if (prefix.length() >= 2) {
+                        addJrtTypeCompletions(prefix, cu, source, results, false);
+                    }
+
+                    // Own members (for potential overrides / field references).
+                    AbstractTypeDeclaration enclosing = node != null
+                            ? enclosingType(node) : enclosingTypeAt(cu, clampedOffset);
+                    if (enclosing != null) {
+                        Set<String> seen = new LinkedHashSet<>();
+                        collectTypeMembersWithHierarchy(enclosing, cu, results, seen, 0, prefix);
+                    }
+                }
+
+                case PARAM_DECLARATION -> {
+                    // Inside a method/constructor parameter list.
+                    // Valid: 'final' modifier, primitive types, reference types.
+                    // But if the cursor is in the parameter-name slot (type already written),
+                    // suppress completions entirely.
+                    if (isInParamNameSlot(source, clampedOffset, prefix)) break;
+                    if (JAVA_KEYWORDS.contains(prefix)) break;
+                    // 'final' modifier
+                    if (!prefix.isEmpty() && "final".startsWith(prefix)) {
+                        BridgeCompletion c = new BridgeCompletion();
+                        c.label = "final"; c.kind = 14; c.sortText = "0final";
+                        results.add(c);
+                    }
+                    // Primitive types (always relevant in param position)
+                    for (String prim : new String[]{
+                            "int", "long", "double", "float", "boolean",
+                            "char", "byte", "short"}) {
+                        if (prim.startsWith(prefix)) {
+                            BridgeCompletion c = new BridgeCompletion();
+                            c.label = prim; c.kind = 14; c.sortText = "1" + prim;
+                            results.add(c);
+                        }
+                    }
+                    // Types from the same file and JDK (threshold: 1 char)
+                    addSameFileTypeCompletions(prefix, cu, results, false);
+                    if (prefix.length() >= 1) {
+                        addJrtTypeCompletions(prefix, cu, source, results, false);
+                    }
+                }
+
+                case METHOD_BODY -> {
+                    // Full completions inside a method/constructor body.
+                    if (JAVA_KEYWORDS.contains(prefix)) break;
+
+                    boolean afterNew = isAfterNewKeyword(source, clampedOffset);
+
+                    // Local variables and parameters.
+                    if (node != null) extractLocals(node, prefix, results);
+
+                    // Members of enclosing class.
+                    AbstractTypeDeclaration enclosing = node != null
+                            ? enclosingType(node) : enclosingTypeAt(cu, clampedOffset);
+                    if (enclosing != null) {
+                        Set<String> seen = new LinkedHashSet<>();
+                        collectTypeMembersWithHierarchy(enclosing, cu, results, seen, 0, prefix);
+                    }
+
+                    // super() constructor completions.
+                    if (!prefix.isEmpty() && "super".startsWith(prefix)
+                            && isInsideConstructor(node)) {
+                        addSuperConstructorCompletions(cu, node, sourceFiles, results);
+                    }
+
+                    // Type completions.
+                    addSameFileTypeCompletions(prefix, cu, results, afterNew);
+                    if ((afterNew && prefix.length() >= 1) || prefix.length() >= 2) {
+                        addJrtTypeCompletions(prefix, cu, source, results, afterNew);
+                    } else if (prefix.isEmpty()) {
+                        // Empty prefix: imported simple names only.
+                        for (Object imp : cu.imports()) {
+                            if (imp instanceof ImportDeclaration id) {
+                                String name = id.getName().getFullyQualifiedName();
+                                int dot = name.lastIndexOf('.');
+                                String simpleName = dot >= 0 ? name.substring(dot + 1) : name;
+                                if (!simpleName.equals("*")) {
+                                    BridgeCompletion c = new BridgeCompletion();
+                                    c.label = simpleName; c.kind = 7;
+                                    c.detail = name; c.sortText = "2" + simpleName;
+                                    results.add(c);
+                                }
+                            }
+                        }
+                    }
+
+                    // Statement keywords.
+                    if (!prefix.isEmpty()) {
+                        for (String kw : new String[]{
+                            "return", "if", "else", "for", "while", "do", "switch",
+                            "case", "break", "continue", "try", "catch", "finally",
+                            "throw", "new", "instanceof", "null", "true", "false",
+                            "this", "super", "var",
+                            "int", "long", "double", "float", "boolean",
+                            "char", "byte", "short", "void"
+                        }) {
+                            if (kw.startsWith(prefix)) {
+                                BridgeCompletion c = new BridgeCompletion();
+                                c.label = kw; c.kind = 14; c.sortText = "6" + kw;
+                                results.add(c);
+                            }
                         }
                     }
                 }
@@ -550,14 +670,91 @@ public class CompletionService {
     }
 
     /** Returns true only for proper Java identifier strings (no ECJ placeholders). */
+    /**
+     * Returns true only when the cursor is inside the *body block* of a method,
+     * constructor, or initializer — NOT when it is in the parameter list.
+     * The path from {@code node} up to the {@code MethodDeclaration} must pass
+     * through at least one {@link Block} node.
+     */
     private static boolean isInsideMethodBody(ASTNode node) {
+        boolean seenBlock = false;
         ASTNode current = node;
         while (current != null) {
-            if (current instanceof MethodDeclaration) return true;
+            if (current instanceof Block) seenBlock = true;
+            if (current instanceof MethodDeclaration) return seenBlock;
             if (current instanceof Initializer) return true;
             current = current.getParent();
         }
         return false;
+    }
+
+    /**
+     * Returns true when the cursor is in the formal parameter list of a method
+     * or constructor (i.e. inside {@code MethodDeclaration} but before the body
+     * {@code Block}).
+     */
+    private static boolean isInMethodParameterList(ASTNode node) {
+        ASTNode current = node;
+        while (current != null) {
+            if (current instanceof Block) return false;          // entered a body
+            if (current instanceof MethodDeclaration) return true;
+            if (current instanceof AbstractTypeDeclaration) return false; // class level
+            current = current.getParent();
+        }
+        return false;
+    }
+
+    /**
+     * Returns true when the cursor is in the parameter-name slot, i.e. the current
+     * parameter segment (text after the last unmatched {@code ,} or {@code (}) already
+     * contains a type token *before* the current prefix.
+     *
+     * <p>Examples:
+     * <ul>
+     *   <li>{@code String |} → true (type present, cursor at name slot)</li>
+     *   <li>{@code String fo|} → true (type present, partial name being typed)</li>
+     *   <li>{@code Str|} → false (cursor is still in the type token)</li>
+     *   <li>{@code final Str|} → false (only modifier before prefix)</li>
+     *   <li>{@code |} → false (nothing before prefix, this is the type slot)</li>
+     * </ul>
+     * </p>
+     */
+    private static boolean isInParamNameSlot(String source, int offset, String prefix) {
+        // Walk backward to find the start of this parameter segment,
+        // skipping past balanced angle-bracket generics.
+        int i = offset - prefix.length() - 1; // position just before the prefix
+        int angleDepth = 0;
+        int segStart = 0;
+        while (i >= 0) {
+            char c = source.charAt(i);
+            if (c == '>') { angleDepth++; i--; continue; }
+            if (c == '<') { angleDepth = Math.max(0, angleDepth - 1); i--; continue; }
+            if (angleDepth > 0) { i--; continue; }
+            if (c == ',' || c == '(') { segStart = i + 1; break; }
+            i--;
+        }
+
+        // Extract the segment text BEFORE the current prefix.
+        String beforePrefix = source.substring(segStart, offset - prefix.length()).trim();
+        if (beforePrefix.isEmpty()) return false;
+
+        // Tokenize: split on whitespace and angle-bracket/array punctuation.
+        // We want to find non-modifier, non-annotation identifier tokens.
+        String[] tokens = beforePrefix.split("[\\s<>\\[\\]]+");
+        boolean prevWasAt = false;
+        int typeTokenCount = 0;
+        for (String tok : tokens) {
+            if (tok.isEmpty()) continue;
+            if (tok.equals("@")) { prevWasAt = true; continue; }
+            if (prevWasAt) { prevWasAt = false; continue; } // skip annotation name
+            prevWasAt = false;
+            if (tok.startsWith("@")) continue; // "@Annotation" fused
+            if (tok.equals("final")) continue;  // modifier
+            if (Character.isLetter(tok.charAt(0)) || tok.charAt(0) == '_') {
+                typeTokenCount++;
+            }
+        }
+        return typeTokenCount >= 1;
     }
 
     private static boolean isValidJavaIdentifier(String s) {
@@ -901,6 +1098,42 @@ public class CompletionService {
      * at {@code offset} is the {@code new} keyword.
      * e.g. {@code "new Lin|"} → true, {@code "String s = Lin|"} → false.
      */
+    /**
+     * Returns true when the cursor (after the current prefix) is in the supertype
+     * list of a class declaration, i.e. the preceding keyword is {@code extends} or
+     * {@code implements} (possibly separated by comma-delimited type names).
+     * <p>
+     * Handles: {@code class Foo extends Ba|}, {@code class Foo implements A, Ba|}
+     */
+    private static boolean isAfterExtendsOrImplements(String source, int offset, String prefix) {
+        // Start just before the current prefix.
+        int i = offset - prefix.length() - 1;
+        // Skip leading whitespace before the prefix.
+        while (i >= 0 && Character.isWhitespace(source.charAt(i))) i--;
+
+        // Skip comma-separated type names that may appear before our prefix
+        // (e.g. "implements A, B, " — skip ", A, " going backwards).
+        while (i >= 0 && source.charAt(i) == ',') {
+            i--; // skip comma
+            while (i >= 0 && Character.isWhitespace(source.charAt(i))) i--;
+            // Skip one type name (possibly qualified / with generics).
+            while (i >= 0) {
+                char c = source.charAt(i);
+                if (Character.isLetterOrDigit(c) || c == '_' || c == '.' || c == '<' || c == '>') i--;
+                else break;
+            }
+            while (i >= 0 && Character.isWhitespace(source.charAt(i))) i--;
+        }
+
+        // i now points to the last character of the keyword ('s' of "extends"/"implements").
+        if (i < 0) return false;
+        int wordEnd = i + 1;
+        while (i >= 0 && Character.isLetter(source.charAt(i))) i--;
+        if (wordEnd <= i + 1) return false;
+        String word = source.substring(i + 1, wordEnd);
+        return "extends".equals(word) || "implements".equals(word);
+    }
+
     private static boolean isAfterNewKeyword(String source, int offset) {
         // Step back past the current identifier prefix.
         int i = Math.min(offset, source.length()) - 1;
@@ -1114,6 +1347,25 @@ public class CompletionService {
      * Returns true if the cursor offset is in a variable-declaration name slot
      * (e.g. {@code int |name} before the {@code =}). No completions are useful here.
      */
+    /**
+     * Returns true only when the cursor is inside the opening '{' ... '}' of this type body.
+     * Uses brace-depth counting from the end of the type name to the cursor, so it cannot
+     * be fooled by '{' characters belonging to other (sibling or parent) classes.
+     */
+    private static boolean isCursorInsideBody(String source, AbstractTypeDeclaration atd, int offset) {
+        int nameEnd = atd.getName().getStartPosition() + atd.getName().getLength();
+        if (offset <= nameEnd) return false;
+        int depth = 0;
+        boolean seenOpen = false;
+        int limit = Math.min(offset, source.length());
+        for (int i = nameEnd; i < limit; i++) {
+            char c = source.charAt(i);
+            if (c == '{') { depth++; seenOpen = true; }
+            else if (c == '}') { if (--depth < 0) return false; }
+        }
+        return seenOpen && depth > 0;
+    }
+
     private boolean isVariableNamePosition(CompilationUnit cu, int offset) {
         NodeLocator locator = new NodeLocator(offset);
         cu.accept(locator);
@@ -1174,6 +1426,216 @@ public class CompletionService {
             cur = cur.getParent();
         }
         return false;
+    }
+
+    // ── Position context ──────────────────────────────────────────────────────
+
+    enum PositionContext {
+        /** Outside any class body — typing a top-level declaration. */
+        TOP_LEVEL,
+        /** After a type name but before the opening '{' — e.g. `class Foo |`. */
+        TYPE_HEADER,
+        /** After `extends` or `implements` — expecting a type name. */
+        EXTENDS_TYPE,
+        /** Inside a class body but not inside a method/initializer. */
+        CLASS_BODY,
+        /** Inside a method or initializer body. */
+        METHOD_BODY,
+        /** Inside the formal parameter list of a method or constructor. */
+        PARAM_DECLARATION
+    }
+
+    private PositionContext classifyPosition(String source, CompilationUnit cu, int offset, ASTNode node) {
+        // Use raw brace-depth counting as the primary discriminator.
+        // The recovered AST is unreliable for top-level positions because parser
+        // recovery can place a cursor node inside a sibling class's span.
+        int depth = braceDepthAt(source, offset);
+
+        if (depth == 0) {
+            // Cursor is at file top-level (before any open '{' that isn't closed).
+            // The only valid contexts here are TOP_LEVEL, TYPE_HEADER, and EXTENDS_TYPE.
+            String prefix = typedPrefix(source, offset);
+            if (isAfterExtendsOrImplements(source, offset, prefix)) return PositionContext.EXTENDS_TYPE;
+            if (isInTypeHeader(source, offset, prefix)) return PositionContext.TYPE_HEADER;
+            return PositionContext.TOP_LEVEL;
+        }
+
+        // depth >= 1: cursor is inside at least one '{...}' pair.
+        if (isInsideMethodBody(node)) return PositionContext.METHOD_BODY;
+        if (isInMethodParameterList(node)) return PositionContext.PARAM_DECLARATION;
+        return PositionContext.CLASS_BODY;
+    }
+
+    /**
+     * Counts the net brace depth at {@code offset} by scanning raw source,
+     * skipping string literals, character literals, and comments so that
+     * braces inside them do not affect the count.
+     */
+    private static int braceDepthAt(String source, int offset) {
+        int limit = Math.min(offset, source.length());
+        int depth = 0;
+        int i = 0;
+        while (i < limit) {
+            char c = source.charAt(i);
+            // Line comment
+            if (c == '/' && i + 1 < limit && source.charAt(i + 1) == '/') {
+                i += 2;
+                while (i < limit && source.charAt(i) != '\n') i++;
+                continue;
+            }
+            // Block comment
+            if (c == '/' && i + 1 < limit && source.charAt(i + 1) == '*') {
+                i += 2;
+                while (i + 1 < limit && !(source.charAt(i) == '*' && source.charAt(i + 1) == '/')) i++;
+                i += 2; // skip */
+                continue;
+            }
+            // String literal (including text blocks)
+            if (c == '"') {
+                boolean textBlock = i + 2 < limit && source.charAt(i + 1) == '"' && source.charAt(i + 2) == '"';
+                if (textBlock) {
+                    i += 3;
+                    while (i + 2 < limit &&
+                           !(source.charAt(i) == '"' && source.charAt(i+1) == '"' && source.charAt(i+2) == '"')) i++;
+                    i += 3;
+                } else {
+                    i++;
+                    while (i < limit && source.charAt(i) != '"') {
+                        if (source.charAt(i) == '\\') i++;
+                        i++;
+                    }
+                    i++; // skip closing "
+                }
+                continue;
+            }
+            // Char literal
+            if (c == '\'') {
+                i++;
+                while (i < limit && source.charAt(i) != '\'') {
+                    if (source.charAt(i) == '\\') i++;
+                    i++;
+                }
+                i++; // skip closing '
+                continue;
+            }
+            if (c == '{') depth++;
+            else if (c == '}' && depth > 0) depth--;
+            i++;
+        }
+        return depth;
+    }
+
+    /**
+     * Returns true when the cursor is in the "header" of a type declaration —
+     * i.e. the type keyword and name have been written but the opening '{' has not
+     * been emitted yet.  This covers both:
+     * <ul>
+     *   <li>{@code class Foo|} — prefix IS the type name</li>
+     *   <li>{@code class Foo |} / {@code class Foo ex|} — cursor after the name</li>
+     * </ul>
+     */
+    private static boolean isInTypeHeader(String source, int offset, String prefix) {
+        int i = offset - prefix.length() - 1;
+        // Skip whitespace before prefix
+        while (i >= 0 && Character.isWhitespace(source.charAt(i))) i--;
+        if (i < 0) return false;
+        if (!Character.isLetterOrDigit(source.charAt(i)) && source.charAt(i) != '_') return false;
+
+        // Extract the identifier immediately before the prefix
+        int id1End = i + 1;
+        while (i >= 0 && (Character.isLetterOrDigit(source.charAt(i)) || source.charAt(i) == '_')) i--;
+        String id1 = source.substring(i + 1, id1End);
+
+        // Case A: id1 itself is the type-declaration keyword and prefix is a non-empty,
+        // non-keyword identifier — meaning the prefix IS the type name being typed.
+        if (isTypeDeclarationKeyword(id1) && !prefix.isEmpty() && !JAVA_KEYWORDS.contains(prefix)) return true;
+
+        // Case B: id1 is the type name — check that what precedes it is the keyword
+        while (i >= 0 && Character.isWhitespace(source.charAt(i))) i--;
+        if (i < 0) return false;
+        if (!Character.isLetter(source.charAt(i))) return false;
+        int kwEnd = i + 1;
+        while (i >= 0 && Character.isLetter(source.charAt(i))) i--;
+        String kw = source.substring(i + 1, kwEnd);
+        return isTypeDeclarationKeyword(kw);
+    }
+
+    private static boolean isTypeDeclarationKeyword(String s) {
+        return "class".equals(s) || "interface".equals(s) || "enum".equals(s) || "record".equals(s);
+    }
+
+    /**
+     * Returns true when the cursor (with empty prefix) is positioned immediately
+     * after a type-declaration keyword such as {@code class}, {@code interface},
+     * {@code enum}, or {@code record} — including when modifiers precede it
+     * (e.g. {@code public class |}).  In this slot the user must type a name;
+     * no meaningful completion exists yet.
+     */
+    private static boolean isRightAfterTypeKeyword(String source, int offset, String prefix) {
+        if (!prefix.isEmpty()) return false;
+        int i = offset - 1;
+        while (i >= 0 && Character.isWhitespace(source.charAt(i))) i--;
+        if (i < 0 || !Character.isLetter(source.charAt(i))) return false;
+        int kwEnd = i + 1;
+        while (i >= 0 && Character.isLetter(source.charAt(i))) i--;
+        String kw = source.substring(i + 1, kwEnd);
+        return isTypeDeclarationKeyword(kw);
+    }
+
+    /** Top-level declaration keywords + class/interface/enum/record snippets. */
+    private static void addTopLevelKeywordsAndSnippets(String prefix, CompilationUnit cu,
+            String source, int offset, List<BridgeCompletion> results) {
+        // Access/modifier keywords valid at file level.
+        for (String kw : new String[]{
+            "public", "protected", "abstract", "final", "import", "package",
+            "class", "interface", "enum", "record"
+        }) {
+            if (kw.startsWith(prefix) && !prefix.isEmpty()) {
+                BridgeCompletion c = new BridgeCompletion();
+                c.label = kw; c.kind = 14;
+                c.sortText = "1" + kw; // snippets ("0") sort before keywords ("1")
+                results.add(c);
+            }
+        }
+
+        // Type-declaration snippets (class, interface, enum, record).
+        // Mirror eclipse.jdt.ls SnippetCompletionProposal behaviour.
+        record Snip(String keyword, String template, String detail) {}
+        List<Snip> snips = List.of(
+            new Snip("class",
+                "class ${1:ClassName} {\n\t${0}\n}",
+                "class declaration"),
+            new Snip("interface",
+                "interface ${1:InterfaceName} {\n\t${0}\n}",
+                "interface declaration"),
+            new Snip("enum",
+                "enum ${1:EnumName} {\n\t${0}\n}",
+                "enum declaration"),
+            new Snip("record",
+                "record ${1:RecordName}(${2}) {\n\t${0}\n}",
+                "record declaration"),
+            new Snip("abstract class",
+                "abstract class ${1:ClassName} {\n\t${0}\n}",
+                "abstract class declaration")
+        );
+        for (Snip s : snips) {
+            // Match on the first word of the label ("abstract" for "abstract class").
+            String firstWord = s.keyword().split(" ")[0];
+            boolean matches = prefix.isEmpty()
+                    || firstWord.startsWith(prefix);
+            if (!matches) continue;
+            BridgeCompletion c = new BridgeCompletion();
+            c.label      = s.keyword();
+            c.kind       = 15; // Snippet
+            c.detail     = s.detail();
+            // filterText uses only the first word so VS Code's client-side fuzzy
+            // match doesn't surface "abstract class" when the user types "class".
+            c.filterText = firstWord;
+            c.sortText   = "0" + firstWord; // snippets ("0") sort before keywords ("1")
+            c.insertText = s.template();
+            c.insertTextFormat = 2;
+            results.add(c);
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

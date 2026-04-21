@@ -422,20 +422,45 @@ impl LanguageServer for JavaLanguageServer {
 
         if !in_import && !in_member_access {
             let prefix = syntax_completion::current_prefix(&content, offset);
-            if let Some(tree) = tree.as_ref() {
-                items.extend(syntax_completion::local_completions(tree, &content, offset));
-                items.extend(syntax_completion::import_type_completions(tree, &content, &prefix));
-            }
-            if is_expression_context(&content, offset) {
-                items.extend(snippets::expression_keywords());
+            let in_params = tree.as_ref()
+                .map(|t| syntax_completion::is_in_parameter_declaration(t, offset))
+                .unwrap_or(false);
+            let (in_method, in_class) = tree.as_ref()
+                .map(|t| {
+                    let m = syntax_completion::is_inside_method_body(t, offset);
+                    let c = m || syntax_completion::is_inside_class_body(t, offset);
+                    (m, c)
+                })
+                .unwrap_or((false, false));
+
+            if in_params {
+                // Parameter declaration: only type names are valid.
+                // But if the cursor is in the parameter-name slot (type already written),
+                // suppress all Rust-side completions — the ECJ bridge handles it too.
+                let in_param_name_slot = syntax_completion::is_in_param_name_slot(&content, offset);
+                if !in_param_name_slot {
+                    if let Some(tree) = tree.as_ref() {
+                        items.extend(syntax_completion::import_type_completions(tree, &content, &prefix));
+                    }
+                }
             } else {
-                let in_method = tree.as_ref()
-                    .map(|t| syntax_completion::is_inside_method_body(t, offset))
-                    .unwrap_or(false);
-                items.extend(snippets::method_body_snippets());
-                if !in_method {
+                // Local variables, parameters, and imported types are only valid
+                // inside a class body — never at the file top level.
+                if in_class {
+                    if let Some(tree) = tree.as_ref() {
+                        items.extend(syntax_completion::local_completions(tree, &content, offset));
+                        items.extend(syntax_completion::import_type_completions(tree, &content, &prefix));
+                    }
+                }
+
+                if is_expression_context(&content, offset) {
+                    items.extend(snippets::expression_keywords());
+                } else if in_method {
+                    items.extend(snippets::method_body_snippets());
+                } else if in_class {
                     items.extend(snippets::class_body_snippets());
                 }
+                // Top level: nothing added from Rust side; ECJ bridge handles it.
             }
         } else if in_member_access {
             // Syntax-level this. completion (ECJ will override with full semantic results)
