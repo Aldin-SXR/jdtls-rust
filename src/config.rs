@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::path::PathBuf;
 
 /// Parsed from LSP `initializationOptions`.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -37,10 +38,31 @@ impl Config {
 
     /// Resolve the `java` binary to use when spawning ecj-bridge.
     pub fn java_binary(&self) -> String {
-        if let Some(home) = &self.java_home {
-            format!("{home}/bin/java")
-        } else {
-            "java".to_owned()
+        if let Some(bin) = self
+            .java_home
+            .as_deref()
+            .and_then(java_binary_from_home)
+        {
+            return bin;
         }
+
+        if let Ok(home) = std::env::var("JAVA_HOME") {
+            if let Some(bin) = java_binary_from_home(&home) {
+                return bin;
+            }
+        }
+
+        "java".to_owned()
     }
+}
+
+fn java_binary_from_home(home: &str) -> Option<String> {
+    if home.is_empty() {
+        return None;
+    }
+
+    let candidate = PathBuf::from(home).join("bin").join("java");
+    candidate
+        .is_file()
+        .then(|| candidate.to_string_lossy().into_owned())
 }

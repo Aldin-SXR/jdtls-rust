@@ -56,7 +56,10 @@ impl EcjProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit()) // bridge logs go to stderr → our stderr
             .spawn()
-            .context("failed to spawn ecj-bridge; is java in PATH?")?;
+            .with_context(|| format!(
+                "failed to spawn ecj-bridge with java binary '{}'",
+                java_binary
+            ))?;
 
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
