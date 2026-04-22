@@ -1278,9 +1278,19 @@ public class AstNavigationService {
             return withScope(self);
         }
 
-        Decl local = resolveLocalDeclaration(parsed, name);
-        if (local != null) {
-            return local;
+        // Do not attempt local-variable resolution when the name is the method
+        // name part of a method invocation (e.g. the second "b" in "b.b()").
+        // A same-named local variable would otherwise shadow the method, causing
+        // the call site to be missed in reference search and navigation to jump
+        // to the variable declaration instead of the method.
+        boolean isMethodInvocationName = name.getParent() instanceof MethodInvocation mi
+                && mi.getName() == name;
+
+        if (!isMethodInvocationName) {
+            Decl local = resolveLocalDeclaration(parsed, name);
+            if (local != null) {
+                return local;
+            }
         }
 
         AbstractTypeDeclaration enclosingType = enclosingType(name);
@@ -1394,7 +1404,9 @@ public class AstNavigationService {
     private Decl withScope(Decl decl) {
         ASTNode scope = switch (decl.kind) {
             case LOCAL, PARAMETER -> decl.scopeNode;
-            case FIELD, METHOD, CONSTRUCTOR, ENUM_CONSTANT -> enclosingType(decl.nameNode);
+            // Use the compilation-unit root so that cross-class references within
+            // the same file are found (e.g. b.ba() in class A for a method ba() in class B).
+            case FIELD, METHOD, CONSTRUCTOR, ENUM_CONSTANT -> decl.declarationNode.getRoot();
             case TYPE -> decl.declarationNode.getRoot();
         };
         return new Decl(decl.kind, decl.declarationNode, decl.nameNode, scope != null ? scope : decl.scopeNode);

@@ -383,6 +383,10 @@ pub struct BridgeCodeLens {
     pub end_char: u32,
     /// Command ID to invoke when clicked, or `None` for an informational-only lens.
     pub command: Option<String>,
+    /// Human-readable label computed by the bridge (e.g. "2 references").
+    pub title: Option<String>,
+    /// Pre-computed command arguments from the bridge (avoids a second find_references round-trip).
+    pub args: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]

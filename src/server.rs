@@ -1286,8 +1286,16 @@ impl LanguageServer for JavaLanguageServer {
                         start: Position { line: l.start_line, character: l.start_char },
                         end: Position { line: l.end_line, character: l.end_char },
                     };
+                    // Store bridge-computed title + args so code_lens_resolve can
+                    // use them directly without a second find_references round-trip.
                     let data = if matches!(l.command.as_deref(), Some("editor.action.showReferences")) {
-                        Some(json!([uri.to_string(), range.start, "references"]))
+                        Some(json!({
+                            "uri":   uri.to_string(),
+                            "pos":   range.start,
+                            "title": l.title,
+                            "args":  l.args,
+                            "tag":   "references"
+                        }))
                     } else {
                         None
                     };
@@ -1312,44 +1320,35 @@ impl LanguageServer for JavaLanguageServer {
         let Some(data) = lens.data.clone() else {
             return Ok(lens);
         };
-        let Some(values) = data.as_array() else {
-            return Ok(lens);
-        };
-        if values.len() < 3 || values.get(2).and_then(Value::as_str) != Some("references") {
+        if data.get("tag").and_then(Value::as_str) != Some("references") {
             return Ok(lens);
         }
-        let Some(uri) = values.first().and_then(Value::as_str).and_then(|s| Url::parse(s).ok()) else {
+        let Some(uri_str) = data.get("uri").and_then(Value::as_str) else {
             return Ok(lens);
         };
-        let Some(position) = values.get(1).cloned().and_then(|v| serde_json::from_value::<Position>(v).ok()) else {
+        let Ok(uri) = Url::parse(uri_str) else {
             return Ok(lens);
         };
 
-        let offset = match self.store.get(&uri) {
-            None => return Ok(lens),
-            Some(s) => pos_to_offset(&s.content, position).unwrap_or(0),
-        };
+        // Use the bridge's pre-computed title and args so we don't need a
+        // separate find_references round-trip (which used a different code path
+        // and could produce different — often zero — results).
+        let title = data.get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("0 references")
+            .to_owned();
 
-        let locations = if self.dispatcher.is_ecj_ready().await {
-            match self.dispatcher.find_references(&uri, offset).await {
-                Ok(BridgeResponse::Locations { locations, .. }) => def_conv::to_lsp(&locations),
-                _ => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        };
+        // bridge_args is already [uri, position, locations] — just unwrap the array.
+        let args: Vec<Value> = data.get("args")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_else(|| {
+                let pos = data.get("pos").cloned().unwrap_or_else(|| {
+                    json!({ "line": lens.range.start.line, "character": lens.range.start.character })
+                });
+                vec![Value::String(uri.to_string()), pos, Value::Array(vec![])]
+            });
 
-        let usage_refs: Vec<Location> = locations
-            .into_iter()
-            .filter(|loc| !(loc.uri == uri && loc.range.start == position))
-            .collect();
-        let usage_count = usage_refs.len();
-        let title = format!("{usage_count} reference{}", if usage_count == 1 { "" } else { "s" });
-        let args = vec![
-            Value::String(uri.to_string()),
-            serde_json::to_value(position).unwrap_or_else(|_| json!({ "line": lens.range.start.line, "character": lens.range.start.character })),
-            serde_json::to_value(&usage_refs).unwrap_or_else(|_| Value::Array(Vec::new())),
-        ];
         lens.command = Some(code_lens_command(
             client_flavor,
             "editor.action.showReferences",
