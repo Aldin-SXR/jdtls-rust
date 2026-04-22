@@ -35,6 +35,17 @@ impl Dispatcher {
         Ok(())
     }
 
+    pub async fn restart_ecj(&self) -> Result<()> {
+        let old = {
+            let mut guard = self.ecj.write().await;
+            guard.take()
+        };
+        if let Some(ecj) = old {
+            ecj.shutdown().await;
+        }
+        self.start_ecj().await
+    }
+
     pub async fn is_ecj_ready(&self) -> bool {
         self.ecj.read().await.is_some()
     }

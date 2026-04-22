@@ -16,6 +16,7 @@ use crate::analysis::syntax::parser::JavaParser;
 use crate::config::Config;
 use crate::document_store::DocumentStore;
 use crate::handlers::text_document::pos_to_offset;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{watch, Mutex, RwLock};
@@ -106,8 +107,17 @@ pub struct JavaLanguageServer {
     dispatcher: Arc<Dispatcher>,
     config: Arc<RwLock<Config>>,
     parser: Arc<Mutex<JavaParser>>,
+    client_flavor: Arc<RwLock<ClientFlavor>>,
+    workspace_folders: Arc<RwLock<Vec<WorkspaceFolder>>>,
     /// Sends a signal that source changed; background task debounces and compiles.
     compile_tx: watch::Sender<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ClientFlavor {
+    #[default]
+    Default,
+    LmsMonaco,
 }
 
 impl JavaLanguageServer {
@@ -124,6 +134,8 @@ impl JavaLanguageServer {
             dispatcher,
             config,
             parser: Arc::new(Mutex::new(JavaParser::new())),
+            client_flavor: Arc::new(RwLock::new(ClientFlavor::Default)),
+            workspace_folders: Arc::new(RwLock::new(Vec::new())),
             compile_tx,
         }
     }
@@ -185,6 +197,9 @@ impl JavaLanguageServer {
 #[tower_lsp::async_trait]
 impl LanguageServer for JavaLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
+        *self.client_flavor.write().await = detect_client_flavor(params.client_info.as_ref());
+        *self.workspace_folders.write().await = params.workspace_folders.clone().unwrap_or_default();
+
         // Parse initializationOptions
         if let Some(opts) = params.initialization_options {
             let cfg: Config = serde_json::from_value::<Config>(opts)
@@ -264,10 +279,18 @@ impl LanguageServer for JavaLanguageServer {
                 )),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
+                document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
+                    first_trigger_character: ";".to_owned(),
+                    more_trigger_character: Some(vec!["}".to_owned(), "\n".to_owned()]),
+                }),
                 rename_provider: Some(OneOf::Right(RenameOptions {
-                    prepare_provider: Some(false),
+                    prepare_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 })),
+                document_link_provider: Some(DocumentLinkOptions {
+                    resolve_provider: Some(false),
+                    work_done_progress_options: Default::default(),
+                }),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
@@ -285,6 +308,27 @@ impl LanguageServer for JavaLanguageServer {
                     resolve_provider: Some(false),
                 }),
                 call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec![
+                        "jdtls-rust.refreshDiagnostics".to_owned(),
+                        "java.project.refreshDiagnostics".to_owned(),
+                        "java.project.rebuild".to_owned(),
+                    ],
+                    work_done_progress_options: Default::default(),
+                }),
+                workspace: Some(WorkspaceServerCapabilities {
+                    workspace_folders: Some(WorkspaceFoldersServerCapabilities {
+                        supported: Some(true),
+                        change_notifications: Some(OneOf::Left(true)),
+                    }),
+                    file_operations: Some(WorkspaceFileOperationsServerCapabilities {
+                        did_create: Some(java_file_operation_registration_options()),
+                        did_rename: Some(java_file_operation_registration_options()),
+                        did_delete: Some(java_file_operation_registration_options()),
+                        ..Default::default()
+                    }),
+                }),
+                linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(true)),
                 // type_hierarchy is not in ServerCapabilities for lsp-types 0.94
                 ..Default::default()
             },
@@ -348,6 +392,87 @@ impl LanguageServer for JavaLanguageServer {
             self.publish_diagnostics_for_all().await;
         } else {
             // ECJ not ready yet; fall back to the debounce loop.
+            let next = (*self.compile_tx.borrow()).wrapping_add(1);
+            let _ = self.compile_tx.send(next);
+        }
+    }
+
+    async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
+        let restart_ecj = {
+            let mut config = self.config.write().await;
+            merge_config_settings(&mut config, &params.settings)
+        };
+
+        if restart_ecj {
+            if let Err(e) = self.dispatcher.restart_ecj().await {
+                error!("Failed to restart ecj-bridge after config change: {e}");
+            }
+        }
+
+        let next = (*self.compile_tx.borrow()).wrapping_add(1);
+        let _ = self.compile_tx.send(next);
+    }
+
+    async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
+        let mut folders = self.workspace_folders.write().await;
+        folders.retain(|folder| !params.event.removed.iter().any(|removed| removed.uri == folder.uri));
+        for added in params.event.added {
+            if !folders.iter().any(|folder| folder.uri == added.uri) {
+                folders.push(added);
+            }
+        }
+
+        let next = (*self.compile_tx.borrow()).wrapping_add(1);
+        let _ = self.compile_tx.send(next);
+    }
+
+    async fn did_create_files(&self, _params: CreateFilesParams) {
+        let next = (*self.compile_tx.borrow()).wrapping_add(1);
+        let _ = self.compile_tx.send(next);
+    }
+
+    async fn did_rename_files(&self, params: RenameFilesParams) {
+        for rename in params.files {
+            let Ok(old_uri) = Url::parse(&rename.old_uri) else {
+                continue;
+            };
+            let Ok(new_uri) = Url::parse(&rename.new_uri) else {
+                continue;
+            };
+            self.store.rename(&old_uri, new_uri.clone());
+            self.client.publish_diagnostics(old_uri, vec![], None).await;
+        }
+
+        let next = (*self.compile_tx.borrow()).wrapping_add(1);
+        let _ = self.compile_tx.send(next);
+    }
+
+    async fn did_delete_files(&self, params: DeleteFilesParams) {
+        for deleted in params.files {
+            let Ok(uri) = Url::parse(&deleted.uri) else {
+                continue;
+            };
+            self.store.close(&uri);
+            self.client.publish_diagnostics(uri, vec![], None).await;
+        }
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let mut should_recompile = false;
+        for change in params.changes {
+            match change.typ {
+                FileChangeType::DELETED => {
+                    self.store.close(&change.uri);
+                    self.client.publish_diagnostics(change.uri, vec![], None).await;
+                }
+                FileChangeType::CREATED | FileChangeType::CHANGED => {
+                    should_recompile = true;
+                }
+                _ => {}
+            }
+        }
+
+        if should_recompile {
             let next = (*self.compile_tx.borrow()).wrapping_add(1);
             let _ = self.compile_tx.send(next);
         }
@@ -469,9 +594,10 @@ impl LanguageServer for JavaLanguageServer {
             }
         }
 
-        // Compute the word range at the cursor — needed so that completion items
-        // with additionalTextEdits (auto-import) also carry an explicit textEdit.
-        // Monaco only applies additionalTextEdits when the item has a textEdit.
+        // Compute the word range at the cursor. The CodeRunner Monaco adapter in
+        // `ui/` relies on the server to provide explicit replacement ranges for
+        // import-path completions and other items, while the simpler `web/`
+        // demo synthesizes its own range client-side.
         let word_range = word_range_at(&content, pos);
 
         // Semantic completions from ECJ
@@ -489,19 +615,7 @@ impl LanguageServer for JavaLanguageServer {
                             return None;
                         }
                         let mut item = comp_conv::to_lsp(c);
-                        // For items that carry auto-import edits, attach an explicit
-                        // textEdit so Monaco applies the additionalTextEdits.
-                        if item.additional_text_edits.as_ref().map_or(false, |e| !e.is_empty()) {
-                            if let Some(range) = word_range {
-                                let new_text = item.insert_text.clone().unwrap_or_else(|| item.label.clone());
-                                item.text_edit = Some(tower_lsp::lsp_types::CompletionTextEdit::Edit(
-                                    tower_lsp::lsp_types::TextEdit {
-                                        range,
-                                        new_text,
-                                    }
-                                ));
-                            }
-                        }
+                        attach_completion_text_edit(&mut item, word_range.clone());
                         Some(item)
                     }).collect();
                     if in_import {
@@ -519,7 +633,29 @@ impl LanguageServer for JavaLanguageServer {
             }
         }
 
+        if word_range.is_some() {
+            for item in &mut items {
+                attach_completion_text_edit(item, word_range.clone());
+            }
+        }
+
         Ok(Some(CompletionResponse::Array(Self::dedupe_completion_items(items))))
+    }
+
+    async fn document_link(&self, params: DocumentLinkParams) -> LspResult<Option<Vec<DocumentLink>>> {
+        let uri = &params.text_document.uri;
+        let state = match self.store.get(uri) {
+            None => return Ok(None),
+            Some(state) => state,
+        };
+        let content = state.content_string();
+        drop(state);
+
+        let type_targets = open_java_type_targets(&self.store);
+        let mut links = import_document_links(&content, &type_targets);
+        links.extend(external_url_links(&content));
+
+        Ok(Some(links))
     }
 
     // ── Hover ─────────────────────────────────────────────────────────────────
@@ -906,6 +1042,29 @@ impl LanguageServer for JavaLanguageServer {
         }).await
     }
 
+    async fn on_type_formatting(&self, params: DocumentOnTypeFormattingParams) -> LspResult<Option<Vec<TextEdit>>> {
+        let text_document = params.text_document_position.text_document.clone();
+        let uri = text_document.uri.clone();
+        let formatted = self.formatting(DocumentFormattingParams {
+            text_document,
+            options: params.options,
+            work_done_progress_params: Default::default(),
+        }).await?;
+        if formatted.as_ref().is_some_and(|edits| !edits.is_empty()) {
+            return Ok(formatted);
+        }
+
+        let state = match self.store.get(&uri) {
+            None => return Ok(formatted),
+            Some(state) => state,
+        };
+        let fallback = simple_on_type_formatting_fallback(
+            &state.content_string(),
+            params.text_document_position.position,
+        );
+        Ok(fallback.or(formatted))
+    }
+
     // ── Rename ────────────────────────────────────────────────────────────────
 
     async fn rename(&self, params: RenameParams) -> LspResult<Option<WorkspaceEdit>> {
@@ -936,6 +1095,59 @@ impl LanguageServer for JavaLanguageServer {
             }
             _ => Ok(None),
         }
+    }
+
+    async fn prepare_rename(&self, params: TextDocumentPositionParams) -> LspResult<Option<PrepareRenameResponse>> {
+        let uri = &params.text_document.uri;
+        let state = match self.store.get(uri) {
+            None => return Ok(None),
+            Some(state) => state,
+        };
+        let content = state.content_string();
+        drop(state);
+
+        let Some((range, placeholder)) = identifier_range_and_text_at(&content, params.position) else {
+            return Ok(None);
+        };
+        if is_java_keyword(&placeholder) {
+            return Ok(None);
+        }
+
+        Ok(Some(PrepareRenameResponse::RangeWithPlaceholder { range, placeholder }))
+    }
+
+    async fn linked_editing_range(&self, params: LinkedEditingRangeParams) -> LspResult<Option<LinkedEditingRanges>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+        let state = match self.store.get(uri) {
+            None => return Ok(None),
+            Some(state) => state,
+        };
+        let content = state.content_string();
+        let tree = state.tree.clone();
+        drop(state);
+
+        let Some((current_range, placeholder)) = identifier_range_and_text_at(&content, pos) else {
+            return Ok(None);
+        };
+        if is_java_keyword(&placeholder) {
+            return Ok(None);
+        }
+
+        let mut ranges = if let (Some(tree), Some(offset)) = (tree.as_ref(), pos_to_offset_from_text(&content, pos)) {
+            let refs = syntax_navigation::references(tree, &content, offset);
+            if refs.is_empty() { vec![current_range] } else { refs }
+        } else {
+            vec![current_range]
+        };
+
+        ranges.sort_by_key(|r| (r.start.line, r.start.character, r.end.line, r.end.character));
+        ranges.dedup_by_key(|r| (r.start.line, r.start.character, r.end.line, r.end.character));
+
+        Ok(Some(LinkedEditingRanges {
+            ranges,
+            word_pattern: Some("[A-Za-z_$][A-Za-z0-9_$]*".to_owned()),
+        }))
     }
 
     // ── Folding Ranges ────────────────────────────────────────────────────────
@@ -1050,6 +1262,7 @@ impl LanguageServer for JavaLanguageServer {
         if !self.dispatcher.is_ecj_ready().await {
             return Ok(None);
         }
+        let client_flavor = *self.client_flavor.read().await;
         match self.dispatcher.code_lens(uri).await {
             Ok(BridgeResponse::CodeLenses { lenses, .. }) => {
                 let items = lenses.iter().map(|l| {
@@ -1057,10 +1270,8 @@ impl LanguageServer for JavaLanguageServer {
                         start: Position { line: l.start_line, character: l.start_char },
                         end: Position { line: l.end_line, character: l.end_char },
                     };
-                    let command = l.command.as_ref().map(|cmd| Command {
-                        title: l.title.clone(),
-                        command: cmd.clone(),
-                        arguments: l.args.clone(),
+                    let command = l.command.as_ref().map(|cmd| {
+                        code_lens_command(client_flavor, cmd, &l.title, l.args.clone(), range)
                     });
                     // Informational lenses (no command) still need a title in the command field.
                     let command = command.unwrap_or_else(|| Command {
@@ -1201,6 +1412,24 @@ impl LanguageServer for JavaLanguageServer {
             _ => Ok(None),
         }
     }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<Value>> {
+        match params.command.as_str() {
+            "jdtls-rust.refreshDiagnostics" | "java.project.refreshDiagnostics" | "java.project.rebuild" => {
+                if self.dispatcher.is_ecj_ready().await {
+                    self.publish_diagnostics_for_all().await;
+                } else {
+                    let next = (*self.compile_tx.borrow()).wrapping_add(1);
+                    let _ = self.compile_tx.send(next);
+                }
+                Ok(None)
+            }
+            other => {
+                warn!("Ignoring unsupported workspace/executeCommand request: {other}");
+                Ok(None)
+            }
+        }
+    }
 }
 
 fn bridge_type_hierarchy_item_to_lsp(item: &BridgeTypeHierarchyItem) -> TypeHierarchyItem {
@@ -1280,6 +1509,317 @@ fn flatten_workspace_symbols(
     }
 }
 
+fn java_file_operation_registration_options() -> FileOperationRegistrationOptions {
+    FileOperationRegistrationOptions {
+        filters: vec![FileOperationFilter {
+            scheme: Some("file".to_owned()),
+            pattern: FileOperationPattern {
+                glob: "**/*.java".to_owned(),
+                matches: Some(FileOperationPatternKind::File),
+                options: None,
+            },
+        }],
+    }
+}
+
+fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
+    let mut restart_ecj = false;
+
+    let updated_java_home = setting_string(settings, &["javaHome"])
+        .or_else(|| setting_string(settings, &["java", "javaHome"]))
+        .or_else(|| setting_string(settings, &["java", "home"]))
+        .or_else(|| setting_string(settings, &["java", "jdt", "ls", "java", "home"]));
+    if let Some(java_home) = updated_java_home {
+        if config.java_home.as_deref() != Some(java_home.as_str()) {
+            config.java_home = Some(java_home);
+            restart_ecj = true;
+        }
+    }
+
+    if let Some(source_compatibility) = setting_string(settings, &["sourceCompatibility"])
+        .or_else(|| setting_string(settings, &["java", "sourceCompatibility"]))
+    {
+        config.source_compatibility = source_compatibility;
+    }
+
+    if let Some(classpath) = setting_string_array(settings, &["classpath"])
+        .or_else(|| setting_string_array(settings, &["java", "classpath"]))
+    {
+        config.classpath = classpath;
+    }
+
+    if let Some(formatter_profile) = setting_string(settings, &["formatterProfile"])
+        .or_else(|| setting_string(settings, &["java", "formatterProfile"]))
+    {
+        config.formatter_profile = formatter_profile;
+    }
+
+    if let Some(max_completions) = setting_usize(settings, &["maxCompletions"])
+        .or_else(|| setting_usize(settings, &["java", "maxCompletions"]))
+    {
+        config.max_completions = max_completions;
+    }
+
+    *config = config.clone().with_defaults();
+    restart_ecj
+}
+
+fn setting_value<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
+}
+
+fn setting_string(value: &Value, path: &[&str]) -> Option<String> {
+    setting_value(value, path)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .filter(|s| !s.is_empty())
+}
+
+fn setting_string_array(value: &Value, path: &[&str]) -> Option<Vec<String>> {
+    let arr = setting_value(value, path)?.as_array()?;
+    Some(
+        arr.iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+    )
+}
+
+fn setting_usize(value: &Value, path: &[&str]) -> Option<usize> {
+    setting_value(value, path)?.as_u64().map(|n| n as usize)
+}
+
+fn open_java_type_targets(store: &DocumentStore) -> HashMap<String, Url> {
+    let mut targets = HashMap::new();
+    for state in store.snapshots() {
+        let package = parse_package_name(&state.content_string());
+        let Some(tree) = state.tree.as_ref() else {
+            continue;
+        };
+        let content = state.content_string();
+        let symbols = outline::document_symbols(tree, &content);
+        let Some(symbol) = symbols.iter().find(|symbol| {
+            matches!(
+                symbol.kind,
+                SymbolKind::CLASS | SymbolKind::INTERFACE | SymbolKind::ENUM | SymbolKind::STRUCT
+            )
+        }) else {
+            continue;
+        };
+
+        let fqn = if package.is_empty() {
+            symbol.name.clone()
+        } else {
+            format!("{package}.{}", symbol.name)
+        };
+        targets.insert(fqn, state.uri);
+    }
+    targets
+}
+
+fn parse_package_name(content: &str) -> String {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("package ") {
+            return rest.trim_end_matches(';').trim().to_owned();
+        }
+        if !trimmed.is_empty() && !trimmed.starts_with("//") {
+            break;
+        }
+    }
+    String::new()
+}
+
+fn import_document_links(content: &str, type_targets: &HashMap<String, Url>) -> Vec<DocumentLink> {
+    let mut links = Vec::new();
+
+    for (line_index, line) in content.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("import ") else {
+            continue;
+        };
+        if rest.starts_with("static ") {
+            continue;
+        }
+        let imported = rest.trim_end_matches(';').trim();
+        if imported.is_empty() || imported.ends_with(".*") {
+            continue;
+        }
+        let Some(target) = type_targets.get(imported) else {
+            continue;
+        };
+        let Some(start_byte) = line.find(imported) else {
+            continue;
+        };
+        let end_byte = start_byte + imported.len();
+        let start_char = utf16_len(&line[..start_byte]) as u32;
+        let end_char = utf16_len(&line[..end_byte]) as u32;
+        links.push(DocumentLink {
+            range: Range {
+                start: Position { line: line_index as u32, character: start_char },
+                end: Position { line: line_index as u32, character: end_char },
+            },
+            target: Some(target.clone()),
+            tooltip: Some("Open imported type".to_owned()),
+            data: None,
+        });
+    }
+
+    links
+}
+
+fn external_url_links(content: &str) -> Vec<DocumentLink> {
+    let mut links = Vec::new();
+
+    for (line_index, line) in content.lines().enumerate() {
+        let mut search_from = 0usize;
+        while let Some(relative_start) = line[search_from..]
+            .find("https://")
+            .or_else(|| line[search_from..].find("http://"))
+        {
+            let start = search_from + relative_start;
+            let end = line[start..]
+                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ']' | '}'))
+                .map(|offset| start + offset)
+                .unwrap_or(line.len());
+            let candidate = &line[start..end];
+            if let Ok(target) = Url::parse(candidate) {
+                let start_char = utf16_len(&line[..start]) as u32;
+                let end_char = utf16_len(&line[..end]) as u32;
+                links.push(DocumentLink {
+                    range: Range {
+                        start: Position { line: line_index as u32, character: start_char },
+                        end: Position { line: line_index as u32, character: end_char },
+                    },
+                    target: Some(target),
+                    tooltip: None,
+                    data: None,
+                });
+            }
+            search_from = end.max(start + 1);
+        }
+    }
+
+    links
+}
+
+fn identifier_range_and_text_at(content: &str, pos: Position) -> Option<(Range, String)> {
+    let line_index = pos.line as usize;
+    let line = content.lines().nth(line_index)?;
+    let mut start = utf16_col_to_byte(line, pos.character as usize).min(line.len());
+
+    while start > 0 {
+        let ch = line[..start].chars().next_back()?;
+        if is_java_ident_part(ch) {
+            start -= ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    let mut end = utf16_col_to_byte(line, pos.character as usize).min(line.len());
+    if end == start {
+        let ch = line[end..].chars().next()?;
+        if !is_java_ident_part(ch) {
+            return None;
+        }
+        end += ch.len_utf8();
+    }
+    while end < line.len() {
+        let Some(ch) = line[end..].chars().next() else {
+            break;
+        };
+        if !is_java_ident_part(ch) {
+            break;
+        }
+        end += ch.len_utf8();
+    }
+
+    if start >= end {
+        return None;
+    }
+
+    let text = line[start..end].to_owned();
+    let start_char = utf16_len(&line[..start]) as u32;
+    let end_char = utf16_len(&line[..end]) as u32;
+    Some((
+        Range {
+            start: Position { line: pos.line, character: start_char },
+            end: Position { line: pos.line, character: end_char },
+        },
+        text,
+    ))
+}
+
+fn pos_to_offset_from_text(content: &str, pos: Position) -> Option<usize> {
+    let mut offset = 0usize;
+    for (index, line) in content.lines().enumerate() {
+        if index == pos.line as usize {
+            return Some(offset + utf16_col_to_byte(line, pos.character as usize).min(line.len()));
+        }
+        offset += line.len() + 1;
+    }
+    None
+}
+
+fn is_java_keyword(text: &str) -> bool {
+    matches!(
+        text,
+        "abstract" | "assert" | "boolean" | "break" | "byte" | "case" | "catch"
+            | "char" | "class" | "const" | "continue" | "default" | "do"
+            | "double" | "else" | "enum" | "extends" | "final" | "finally"
+            | "float" | "for" | "goto" | "if" | "implements" | "import"
+            | "instanceof" | "int" | "interface" | "long" | "native" | "new"
+            | "package" | "private" | "protected" | "public" | "return" | "short"
+            | "static" | "strictfp" | "super" | "switch" | "synchronized"
+            | "this" | "throw" | "throws" | "transient" | "try" | "void"
+            | "volatile" | "while" | "record" | "sealed" | "permits" | "var"
+    )
+}
+
+fn simple_on_type_formatting_fallback(content: &str, pos: Position) -> Option<Vec<TextEdit>> {
+    let line_index = pos.line as usize;
+    let lines: Vec<&str> = content.lines().collect();
+    let line = *lines.get(line_index)?;
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    for prior_line in &lines[..line_index] {
+        for ch in prior_line.chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    let desired_depth = if trimmed.starts_with('}') {
+        depth.saturating_sub(1)
+    } else {
+        depth
+    };
+    let desired_indent = "    ".repeat(desired_depth);
+    let current_indent_len = line.len() - trimmed.len();
+    let current_indent = &line[..current_indent_len];
+    if current_indent == desired_indent {
+        return None;
+    }
+
+    Some(vec![TextEdit {
+        range: Range {
+            start: Position { line: pos.line, character: 0 },
+            end: Position { line: pos.line, character: utf16_len(line) as u32 },
+        },
+        new_text: format!("{desired_indent}{trimmed}"),
+    }])
+}
+
 /// Convert a UTF-16 column offset (as used in LSP positions) to a UTF-8 byte offset.
 fn utf16_col_to_byte(s: &str, utf16_col: usize) -> usize {
     let mut units = 0usize;
@@ -1332,10 +1872,127 @@ fn completion_store_is_fresh(
     )
 }
 
+fn attach_completion_text_edit(
+    item: &mut CompletionItem,
+    replacement_range: Option<tower_lsp::lsp_types::Range>,
+) {
+    if item.text_edit.is_some() {
+        return;
+    }
+
+    let Some(range) = replacement_range else {
+        return;
+    };
+
+    let new_text = item
+        .insert_text
+        .clone()
+        .unwrap_or_else(|| item.label.clone());
+    item.text_edit = Some(tower_lsp::lsp_types::CompletionTextEdit::Edit(
+        tower_lsp::lsp_types::TextEdit { range, new_text },
+    ));
+}
+
+fn detect_client_flavor(client_info: Option<&ClientInfo>) -> ClientFlavor {
+    match client_info.map(|info| info.name.as_str()) {
+        Some("lms-monaco") => ClientFlavor::LmsMonaco,
+        _ => ClientFlavor::Default,
+    }
+}
+
+fn code_lens_command(
+    client_flavor: ClientFlavor,
+    command: &str,
+    title: &str,
+    args: Option<Vec<Value>>,
+    range: Range,
+) -> Command {
+    let (command, arguments) = match client_flavor {
+        ClientFlavor::LmsMonaco if command == "editor.action.showReferences" => (
+            "java.show.references".to_owned(),
+            Some(show_references_args_for_lms_monaco(args, range)),
+        ),
+        _ => (command.to_owned(), args),
+    };
+
+    Command {
+        title: title.to_owned(),
+        command,
+        arguments,
+    }
+}
+
+fn show_references_args_for_lms_monaco(args: Option<Vec<Value>>, range: Range) -> Vec<Value> {
+    let Some(args) = args else {
+        return vec![
+            Value::String(String::new()),
+            json!({ "line": range.start.line, "character": range.start.character }),
+            Value::Array(Vec::new()),
+        ];
+    };
+
+    let uri = args
+        .first()
+        .and_then(uri_string_from_monaco_arg)
+        .map(Value::String)
+        .unwrap_or_else(|| Value::String(String::new()));
+    let position = json!({ "line": range.start.line, "character": range.start.character });
+    let references = args
+        .get(2)
+        .and_then(|v| v.as_array())
+        .map(|refs| refs.iter().filter_map(location_from_monaco_arg).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    vec![uri, position, Value::Array(references)]
+}
+
+fn uri_string_from_monaco_arg(value: &Value) -> Option<String> {
+    if let Some(uri) = value.as_str() {
+        return Some(uri.to_owned());
+    }
+
+    let obj = value.as_object()?;
+    let scheme = obj.get("scheme")?.as_str()?;
+    let authority = obj.get("authority").and_then(Value::as_str).unwrap_or("");
+    let path = obj.get("path").and_then(Value::as_str).unwrap_or("");
+    let query = obj.get("query").and_then(Value::as_str).unwrap_or("");
+    let fragment = obj.get("fragment").and_then(Value::as_str).unwrap_or("");
+
+    let mut uri = format!("{scheme}://{authority}{path}");
+    if !query.is_empty() {
+        uri.push('?');
+        uri.push_str(query);
+    }
+    if !fragment.is_empty() {
+        uri.push('#');
+        uri.push_str(fragment);
+    }
+    Some(uri)
+}
+
+fn location_from_monaco_arg(value: &Value) -> Option<Value> {
+    let obj = value.as_object()?;
+    let uri = uri_string_from_monaco_arg(obj.get("uri")?)?;
+    let range = obj.get("range")?.as_object()?;
+
+    Some(json!({
+        "uri": uri,
+        "range": {
+            "start": {
+                "line": range.get("startLineNumber")?.as_u64()? as u32 - 1,
+                "character": range.get("startColumn")?.as_u64()? as u32 - 1,
+            },
+            "end": {
+                "line": range.get("endLineNumber")?.as_u64()? as u32 - 1,
+                "character": range.get("endColumn")?.as_u64()? as u32 - 1,
+            }
+        }
+    }))
+}
+
 /// Returns the LSP Range covering the Java identifier immediately before the cursor.
-/// This is attached as `textEdit` on completion items that also carry
-/// `additionalTextEdits` (auto-import), because Monaco only applies
-/// `additionalTextEdits` when the item has an explicit `textEdit`.
+/// This is attached as `textEdit` on completion items so Monaco-based clients
+/// can reliably replace the current token and apply any `additionalTextEdits`.
 fn word_range_at(content: &str, pos: tower_lsp::lsp_types::Position) -> Option<tower_lsp::lsp_types::Range> {
     let line = pos.line as usize;
     let line_text = content.lines().nth(line)?;

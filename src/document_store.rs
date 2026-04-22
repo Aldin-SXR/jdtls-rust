@@ -55,6 +55,13 @@ impl DocumentStore {
         self.files.remove(uri);
     }
 
+    pub fn rename(&self, old_uri: &Url, new_uri: Url) {
+        if let Some((_, mut state)) = self.files.remove(old_uri) {
+            state.uri = new_uri.clone();
+            self.files.insert(new_uri, state);
+        }
+    }
+
     /// Apply incremental changes from `textDocument/didChange`, re-parse.
     pub fn apply_changes(
         &self,

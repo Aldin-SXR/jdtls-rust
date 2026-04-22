@@ -2,4 +2,5 @@ eclipse.jdt.ls/
 target/
 tests/
 web/
+ui/
 .DS_Store
