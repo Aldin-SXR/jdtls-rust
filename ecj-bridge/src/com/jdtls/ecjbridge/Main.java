@@ -1881,7 +1881,7 @@ public class Main {
     /**
      * Scans the entire compilation unit for local variable declarations and method parameters
      * that are not already {@code final} and could be made so (i.e. not reassigned).
-     * Returns a single {@code source.generate.finalModifiers} workspace-edit action that
+     * Returns a single workspace-edit action that
      * inserts {@code final } before each qualifying declaration, or {@code null} if there
      * is nothing to do.
      */

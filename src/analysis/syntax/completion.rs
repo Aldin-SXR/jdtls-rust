@@ -66,7 +66,7 @@ pub fn is_awaiting_declaration_name(source: &str, offset: usize) -> bool {
     let base = type_tok.trim_end_matches("[]");
     let base = base.split('<').next().unwrap_or(base).trim();
     const PRIMS: &[&str] = &[
-        "int", "long", "double", "float", "boolean", "char", "byte", "short",
+        "int", "long", "double", "float", "boolean", "char", "byte", "short", "void",
     ];
     let is_type = PRIMS.contains(&base)
         || (base.starts_with(|c: char| c.is_uppercase())
@@ -102,6 +102,32 @@ pub fn is_after_assignment_operator(source: &str, offset: usize) -> bool {
     if bytes[i - 1] != b'=' { return false; }
     if i >= 2 && matches!(bytes[i - 2], b'=' | b'!' | b'<' | b'>') { return false; }
     true
+}
+
+/// Returns true when the cursor is immediately after one or more class-member
+/// modifiers and before any type/name token has started, e.g. `public |` or
+/// `private static |`. Auto-popup completions here are noisy in the UI client.
+pub fn is_after_member_modifiers(source: &str, offset: usize) -> bool {
+    let line_start = source[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line = &source[line_start..offset];
+    if !line.chars().last().is_some_and(char::is_whitespace) {
+        return false;
+    }
+    if line.bytes().any(|b| matches!(b, b'=' | b';' | b'(' | b')' | b'{' | b'}' | b',')) {
+        return false;
+    }
+
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+
+    const MODS: &[&str] = &[
+        "public", "private", "protected", "static", "final", "abstract",
+        "synchronized", "transient", "volatile", "native", "strictfp",
+        "default", "sealed", "non-sealed",
+    ];
+    tokens.into_iter().all(|token| MODS.contains(&token))
 }
 
 /// Returns true when the cursor is inside a method or constructor body.
@@ -206,6 +232,71 @@ pub fn is_in_param_name_slot(source: &str, offset: usize) -> bool {
         }
     }
     type_token_count >= 1
+}
+
+/// Returns true when the cursor is in a member-signature parameter-name slot
+/// on the current line, e.g. `void test(int |)` or `void test(String na|)`.
+/// Unlike `is_in_param_name_slot`, this stays line-local so it won't suppress
+/// unrelated class-body declarations like `public i|`.
+pub fn is_in_member_param_name_slot(source: &str, offset: usize) -> bool {
+    let line_start = source[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line = &source[line_start..offset];
+    let Some(lp) = line.rfind('(') else {
+        return false;
+    };
+    let seg = line[lp + 1..]
+        .rsplit_once(',')
+        .map(|(_, tail)| tail)
+        .unwrap_or(&line[lp + 1..]);
+    let before_prefix = seg.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '$').trim();
+    if before_prefix.is_empty() {
+        return false;
+    }
+
+    let mut type_token_count = 0u32;
+    let mut prev_was_at = false;
+    for tok in before_prefix.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '[' | ']')) {
+        if tok.is_empty() { continue; }
+        if tok == "@" { prev_was_at = true; continue; }
+        if prev_was_at { prev_was_at = false; continue; }
+        prev_was_at = false;
+        if tok.starts_with('@') { continue; }
+        if tok == "final" { continue; }
+        if tok.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+            type_token_count += 1;
+        }
+    }
+    type_token_count >= 1
+}
+
+/// Returns true when the cursor is immediately after a member declaration's
+/// parameter list, e.g. `void test(int a) |`, before `{` or `;` has been typed.
+pub fn is_after_member_parameter_list(source: &str, offset: usize) -> bool {
+    let line_start = source[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line = &source[line_start..offset];
+    let trimmed = line.trim_end();
+    if !trimmed.ends_with(')') {
+        return false;
+    }
+    if trimmed.bytes().any(|b| matches!(b, b'=' | b'{' | b';')) {
+        return false;
+    }
+
+    let Some(lp) = trimmed.rfind('(') else {
+        return false;
+    };
+    let before_paren = trimmed[..lp].trim_end();
+    let Some(name) = before_paren.split_whitespace().next_back() else {
+        return false;
+    };
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$') {
+        return false;
+    }
+
+    const NON_MEMBER_HEADS: &[&str] = &[
+        "if", "for", "while", "switch", "catch", "return", "throw", "new",
+    ];
+    !NON_MEMBER_HEADS.contains(&name)
 }
 
 /// Returns true when the cursor is inside a class/interface/enum body (at any depth),
@@ -607,12 +698,14 @@ mod tests {
         assert!(is_awaiting_declaration_name("    int ", 8));
         assert!(is_awaiting_declaration_name("    long ", 9));
         assert!(is_awaiting_declaration_name("    boolean ", 12));
+        assert!(is_awaiting_declaration_name("    void ", 9));
         // Reference types
         assert!(is_awaiting_declaration_name("    String ", 11));
         assert!(is_awaiting_declaration_name("    List<String> ", 17));
         assert!(is_awaiting_declaration_name("    int[] ", 10));
         // With modifiers
         assert!(is_awaiting_declaration_name("    final int ", 14));
+        assert!(is_awaiting_declaration_name("    public static void ", 23));
         // Partial name typed — still suppressed
         assert!(is_awaiting_declaration_name("    int myV", 11));
         assert!(is_awaiting_declaration_name("    final int a", 15));
@@ -636,5 +729,41 @@ mod tests {
         assert!(!is_after_assignment_operator("if (a >= ", 9));
         // Does NOT fire when a letter follows (user started typing)
         assert!(!is_after_assignment_operator("int x = s", 9));
+    }
+
+    #[test]
+    fn after_member_modifiers_suppresses() {
+        assert!(is_after_member_modifiers("    public ", 11));
+        assert!(is_after_member_modifiers("    private static ", 19));
+        assert!(is_after_member_modifiers("    protected final ", 20));
+
+        assert!(!is_after_member_modifiers("    public Str", 14));
+        assert!(!is_after_member_modifiers("    public class ", 17));
+        assert!(!is_after_member_modifiers("    int ", 8));
+    }
+
+    #[test]
+    fn after_member_parameter_list_suppresses() {
+        let member_sig = "    public static int test(int a) ";
+        let ctor_sig = "    Foo(String value)\t";
+        let if_stmt = "    if (ready) ";
+        let call_expr = "    int x = foo() ";
+        let method_body = "    public static int test(int a) {";
+
+        assert!(is_after_member_parameter_list(member_sig, member_sig.len()));
+        assert!(is_after_member_parameter_list(ctor_sig, ctor_sig.len()));
+
+        assert!(!is_after_member_parameter_list(if_stmt, if_stmt.len()));
+        assert!(!is_after_member_parameter_list(call_expr, call_expr.len()));
+        assert!(!is_after_member_parameter_list(method_body, method_body.len()));
+    }
+
+    #[test]
+    fn member_param_name_slot_is_line_local() {
+        assert!(is_in_member_param_name_slot("    public static int test(int )", 32));
+        assert!(is_in_member_param_name_slot("    void test(String na", 23));
+
+        assert!(!is_in_member_param_name_slot("    public i", 12));
+        assert!(!is_in_member_param_name_slot("    public static int test", 26));
     }
 }

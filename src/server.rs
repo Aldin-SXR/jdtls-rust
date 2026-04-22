@@ -542,6 +542,21 @@ impl LanguageServer for JavaLanguageServer {
         if syntax_completion::is_after_assignment_operator(&content, offset) {
             return Ok(Some(CompletionResponse::Array(vec![])));
         }
+        if is_after_numeric_literal_dot(&content, offset) {
+            return Ok(Some(CompletionResponse::Array(vec![])));
+        }
+        if let Some(tree) = tree.as_ref() {
+            if !syntax_completion::is_inside_method_body(tree, offset)
+                && syntax_completion::is_inside_class_body(tree, offset)
+            {
+                if syntax_completion::is_after_member_modifiers(&content, offset)
+                    || syntax_completion::is_in_member_param_name_slot(&content, offset)
+                    || syntax_completion::is_after_member_parameter_list(&content, offset)
+                {
+                    return Ok(Some(CompletionResponse::Array(vec![])));
+                }
+            }
+        }
 
         let mut items: Vec<CompletionItem> = Vec::new();
 
@@ -583,15 +598,17 @@ impl LanguageServer for JavaLanguageServer {
                 } else if in_method {
                     items.extend(snippets::method_body_snippets());
                 } else if in_class {
+                    items.extend(snippets::class_body_keywords());
                     items.extend(snippets::class_body_snippets());
                 }
                 // Top level: nothing added from Rust side; ECJ bridge handles it.
             }
-        } else if in_member_access {
+        } else if in_member_access && !in_import {
             // Syntax-level this. completion (ECJ will override with full semantic results)
             if let Some(tree) = tree.as_ref() {
                 items.extend(syntax_completion::this_member_completions(tree, &content, offset));
             }
+            items.extend(snippets::postfix_snippets(&content, offset, pos));
         }
 
         // Compute the word range at the cursor. The CodeRunner Monaco adapter in
@@ -1848,6 +1865,10 @@ fn completion_store_is_fresh(
     let Some(line_text) = content.lines().nth(line) else {
         return false;
     };
+    let line_utf16_len: usize = line_text.chars().map(char::len_utf16).sum();
+    if pos.character as usize > line_utf16_len {
+        return false;
+    }
     let byte_col = utf16_col_to_byte(line_text, pos.character as usize);
     if byte_col > line_text.len() {
         return false;
@@ -1864,6 +1885,9 @@ fn completion_store_is_fresh(
 
     let prev = before.chars().next_back();
     let next = line_text[byte_col..].chars().next();
+    if trigger_char.is_none() && next.is_some_and(is_java_ident_part) {
+        return false;
+    }
     !matches!(
         (prev, next),
         (Some(prev), Some(next))
@@ -2040,6 +2064,41 @@ fn is_member_access_context(content: &str, offset: usize) -> bool {
         i -= 1;
     }
     i > 0 && bytes[i - 1] == b'.'
+}
+
+fn is_after_numeric_literal_dot(content: &str, offset: usize) -> bool {
+    let end = offset.min(content.len());
+    if end == 0 || content.as_bytes()[end - 1] != b'.' {
+        return false;
+    }
+
+    let mut start = end - 1;
+    while start > 0 {
+        let ch = content[..start].chars().next_back().unwrap();
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            start -= ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    let token = &content[start..end - 1];
+    if token.is_empty() {
+        return false;
+    }
+
+    is_numeric_literal_token(token)
+}
+
+fn is_numeric_literal_token(token: &str) -> bool {
+    let stripped = token.strip_suffix(['l', 'L', 'f', 'F', 'd', 'D']).unwrap_or(token);
+    if let Some(rest) = stripped.strip_prefix("0x").or_else(|| stripped.strip_prefix("0X")) {
+        return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_hexdigit() || c == '_');
+    }
+    if let Some(rest) = stripped.strip_prefix("0b").or_else(|| stripped.strip_prefix("0B")) {
+        return !rest.is_empty() && rest.chars().all(|c| matches!(c, '0' | '1' | '_'));
+    }
+    !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit() || c == '_')
 }
 
 
@@ -2243,5 +2302,38 @@ mod tests {
                 None,
             )
         );
+    }
+
+    #[test]
+    fn completion_wait_detects_stale_member_access_suffix() {
+        let stale = "class T { void m() { value. } }\n";
+        assert!(
+            !completion_store_is_fresh(
+                stale,
+                Position { line: 0, character: 37 },
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn completion_wait_detects_stale_edit_inside_existing_identifier() {
+        let stale = "class T { public double test() { return 0.0; } }\n";
+        assert!(
+            !completion_store_is_fresh(
+                stale,
+                Position { line: 0, character: 18 },
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn suppresses_completion_after_numeric_literal_dot() {
+        assert!(is_after_numeric_literal_dot("return 0.", 9));
+        assert!(is_after_numeric_literal_dot("return 123_456.", 15));
+        assert!(is_after_numeric_literal_dot("return 0x1f.", 12));
+        assert!(!is_after_numeric_literal_dot("return value.", 13));
+        assert!(!is_after_numeric_literal_dot("return this.", 12));
     }
 }

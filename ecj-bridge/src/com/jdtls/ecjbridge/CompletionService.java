@@ -316,6 +316,22 @@ public class CompletionService {
             if (decl != null) {
                 addInstanceMembers(decl, cu, access.prefix, true, false, results, seen);
             }
+            return;
+        }
+
+        AbstractTypeDeclaration qualifiedType = findTypeDeclaration(cu, access.qualifier);
+        if (qualifiedType != null) {
+            boolean allowPrivate = currentType == qualifiedType;
+            addStaticMembers(qualifiedType, cu, access.prefix, true, allowPrivate, results, seen);
+            return;
+        }
+
+        String qualifierTypeName = resolveQualifierTypeName(node, cu, offset, access.qualifier);
+        if (qualifierTypeName != null) {
+            AbstractTypeDeclaration decl = findTypeDeclaration(cu, qualifierTypeName);
+            if (decl != null) {
+                addInstanceMembers(decl, cu, access.prefix, true, false, results, seen);
+            }
         }
     }
 
@@ -572,6 +588,80 @@ public class CompletionService {
             }
             if (includeInherited) {
                 addObjectMembers(prefix, results, seen);
+            }
+        }
+    }
+
+    private void addStaticMembers(
+            AbstractTypeDeclaration type,
+            CompilationUnit cu,
+            String prefix,
+            boolean includeInherited,
+            boolean allowPrivate,
+            List<BridgeCompletion> results,
+            Set<String> seen) {
+        if (type instanceof TypeDeclaration td) {
+            for (FieldDeclaration fd : td.getFields()) {
+                if (!Modifier.isStatic(fd.getModifiers())) continue;
+                if (!allowPrivate && Modifier.isPrivate(fd.getModifiers())) continue;
+                for (Object frag : fd.fragments()) {
+                    if (!(frag instanceof VariableDeclarationFragment vdf)) continue;
+                    String name = vdf.getName().getIdentifier();
+                    if (!name.startsWith(prefix) || !seen.add("SF:" + name)) continue;
+                    BridgeCompletion c = new BridgeCompletion();
+                    c.label = name;
+                    c.kind = 5;
+                    c.sortText = "0" + name;
+                    results.add(c);
+                }
+            }
+            for (MethodDeclaration md : td.getMethods()) {
+                if (md.isConstructor() || !Modifier.isStatic(md.getModifiers())) continue;
+                if (!allowPrivate && Modifier.isPrivate(md.getModifiers())) continue;
+                String name = md.getName().getIdentifier();
+                if (!isValidJavaIdentifier(name)) continue;
+                if (!name.startsWith(prefix) || !seen.add("SM:" + name + "/" + md.parameters().size())) continue;
+                BridgeCompletion c = new BridgeCompletion();
+                c.label = buildMethodLabel(md);
+                c.filterText = name;
+                c.kind = 2;
+                c.sortText = "0" + name;
+                c.insertText = buildInsertTextFromParams(name, md.parameters());
+                c.insertTextFormat = md.parameters().isEmpty() ? 1 : 2;
+                results.add(c);
+            }
+            if (includeInherited && td.getSuperclassType() != null) {
+                AbstractTypeDeclaration parent = findTypeDeclaration(cu, simpleTypeName(td.getSuperclassType().toString()));
+                if (parent != null) {
+                    addStaticMembers(parent, cu, prefix, true, false, results, seen);
+                }
+            }
+        } else if (type instanceof EnumDeclaration ed) {
+            for (Object ec : ed.enumConstants()) {
+                if (!(ec instanceof EnumConstantDeclaration ecd)) continue;
+                String name = ecd.getName().getIdentifier();
+                if (!name.startsWith(prefix) || !seen.add("SE:" + name)) continue;
+                BridgeCompletion c = new BridgeCompletion();
+                c.label = name;
+                c.kind = 20;
+                c.sortText = "0" + name;
+                results.add(c);
+            }
+            for (Object bd : ed.bodyDeclarations()) {
+                if (!(bd instanceof MethodDeclaration md)) continue;
+                if (md.isConstructor() || !Modifier.isStatic(md.getModifiers())) continue;
+                if (!allowPrivate && Modifier.isPrivate(md.getModifiers())) continue;
+                String name = md.getName().getIdentifier();
+                if (!isValidJavaIdentifier(name)) continue;
+                if (!name.startsWith(prefix) || !seen.add("SM:" + name + "/" + md.parameters().size())) continue;
+                BridgeCompletion c = new BridgeCompletion();
+                c.label = buildMethodLabel(md);
+                c.filterText = name;
+                c.kind = 2;
+                c.sortText = "0" + name;
+                c.insertText = buildInsertTextFromParams(name, md.parameters());
+                c.insertTextFormat = md.parameters().isEmpty() ? 1 : 2;
+                results.add(c);
             }
         }
     }
@@ -866,6 +956,59 @@ public class CompletionService {
             }
             context = context.getParent();
         }
+    }
+
+    private String resolveQualifierTypeName(ASTNode node, CompilationUnit cu, int offset, String qualifier) {
+        ASTNode context = node;
+        while (context != null) {
+            if (context instanceof MethodDeclaration md) {
+                for (Object param : md.parameters()) {
+                    if (param instanceof SingleVariableDeclaration svd
+                            && qualifier.equals(svd.getName().getIdentifier())
+                            && svd.getStartPosition() < offset) {
+                        return simpleTypeName(svd.getType().toString());
+                    }
+                }
+                if (md.getBody() != null) {
+                    QualifierTypeResolver resolver = new QualifierTypeResolver(qualifier, offset);
+                    md.getBody().accept(resolver);
+                    if (resolver.typeName != null) {
+                        return resolver.typeName;
+                    }
+                }
+                break;
+            }
+            if (context instanceof Initializer init && init.getBody() != null) {
+                QualifierTypeResolver resolver = new QualifierTypeResolver(qualifier, offset);
+                init.getBody().accept(resolver);
+                if (resolver.typeName != null) {
+                    return resolver.typeName;
+                }
+                break;
+            }
+            context = context.getParent();
+        }
+
+        AbstractTypeDeclaration type = enclosingType(node);
+        while (type != null) {
+            if (type instanceof TypeDeclaration td) {
+                for (FieldDeclaration fd : td.getFields()) {
+                    for (Object frag : fd.fragments()) {
+                        if (!(frag instanceof VariableDeclarationFragment vdf)) continue;
+                        if (qualifier.equals(vdf.getName().getIdentifier())) {
+                            return simpleTypeName(fd.getType().toString());
+                        }
+                    }
+                }
+                if (td.getSuperclassType() != null) {
+                    type = findTypeDeclaration(cu, simpleTypeName(td.getSuperclassType().toString()));
+                    continue;
+                }
+            }
+            break;
+        }
+
+        return null;
     }
 
     // ── Import completions ────────────────────────────────────────────────────
@@ -1682,6 +1825,61 @@ public class CompletionService {
                 if (frag instanceof VariableDeclarationFragment vdf) {
                     vars.add(vdf.getName().getIdentifier());
                 }
+            }
+            return true;
+        }
+    }
+
+    static class QualifierTypeResolver extends ASTVisitor {
+        final String qualifier;
+        final int offset;
+        String typeName;
+
+        QualifierTypeResolver(String qualifier, int offset) {
+            this.qualifier = qualifier;
+            this.offset = offset;
+        }
+
+        private boolean beforeCursor(ASTNode node) {
+            return node.getStartPosition() >= 0 && node.getStartPosition() < offset;
+        }
+
+        @Override
+        public boolean visit(VariableDeclarationStatement node) {
+            if (!beforeCursor(node) || typeName != null) return false;
+            String candidateType = simpleTypeName(node.getType().toString());
+            for (Object frag : node.fragments()) {
+                if (frag instanceof VariableDeclarationFragment vdf
+                        && qualifier.equals(vdf.getName().getIdentifier())
+                        && vdf.getStartPosition() < offset) {
+                    typeName = candidateType;
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        @Override
+        public boolean visit(VariableDeclarationExpression node) {
+            if (!beforeCursor(node) || typeName != null) return false;
+            String candidateType = simpleTypeName(node.getType().toString());
+            for (Object frag : node.fragments()) {
+                if (frag instanceof VariableDeclarationFragment vdf
+                        && qualifier.equals(vdf.getName().getIdentifier())
+                        && vdf.getStartPosition() < offset) {
+                    typeName = candidateType;
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        @Override
+        public boolean visit(SingleVariableDeclaration node) {
+            if (!beforeCursor(node) || typeName != null) return false;
+            if (qualifier.equals(node.getName().getIdentifier())) {
+                typeName = simpleTypeName(node.getType().toString());
+                return false;
             }
             return true;
         }

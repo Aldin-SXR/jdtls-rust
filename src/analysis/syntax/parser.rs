@@ -13,15 +13,10 @@ impl JavaParser {
         Self { inner: p }
     }
 
-    pub fn parse(&mut self, source: &str, old_tree: Option<&Tree>) -> Option<Tree> {
-        self.inner.parse(source.as_bytes(), old_tree)
-    }
-
     /// Convenience: parse and return tree, panicking only if source is empty.
     pub fn parse_fresh(&mut self, source: &str) -> Option<Tree> {
         self.inner.parse(source.as_bytes(), None)
     }
-
 }
 
 impl Default for JavaParser {
