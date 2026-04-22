@@ -305,7 +305,7 @@ impl LanguageServer for JavaLanguageServer {
                 ),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 code_lens_provider: Some(CodeLensOptions {
-                    resolve_provider: Some(false),
+                    resolve_provider: Some(true),
                 }),
                 call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
@@ -1279,7 +1279,6 @@ impl LanguageServer for JavaLanguageServer {
         if !self.dispatcher.is_ecj_ready().await {
             return Ok(None);
         }
-        let client_flavor = *self.client_flavor.read().await;
         match self.dispatcher.code_lens(uri).await {
             Ok(BridgeResponse::CodeLenses { lenses, .. }) => {
                 let items = lenses.iter().map(|l| {
@@ -1287,16 +1286,12 @@ impl LanguageServer for JavaLanguageServer {
                         start: Position { line: l.start_line, character: l.start_char },
                         end: Position { line: l.end_line, character: l.end_char },
                     };
-                    let command = l.command.as_ref().map(|cmd| {
-                        code_lens_command(client_flavor, cmd, &l.title, l.args.clone(), range)
-                    });
-                    // Informational lenses (no command) still need a title in the command field.
-                    let command = command.unwrap_or_else(|| Command {
-                        title: l.title.clone(),
-                        command: String::new(),
-                        arguments: None,
-                    });
-                    CodeLens { range, command: Some(command), data: None }
+                    let data = if matches!(l.command.as_deref(), Some("editor.action.showReferences")) {
+                        Some(json!([uri.to_string(), range.start, "references"]))
+                    } else {
+                        None
+                    };
+                    CodeLens { range, command: None, data }
                 }).collect();
                 Ok(Some(items))
             }
@@ -1310,6 +1305,59 @@ impl LanguageServer for JavaLanguageServer {
             }
             _ => Ok(None),
         }
+    }
+
+    async fn code_lens_resolve(&self, mut lens: CodeLens) -> LspResult<CodeLens> {
+        let client_flavor = *self.client_flavor.read().await;
+        let Some(data) = lens.data.clone() else {
+            return Ok(lens);
+        };
+        let Some(values) = data.as_array() else {
+            return Ok(lens);
+        };
+        if values.len() < 3 || values.get(2).and_then(Value::as_str) != Some("references") {
+            return Ok(lens);
+        }
+        let Some(uri) = values.first().and_then(Value::as_str).and_then(|s| Url::parse(s).ok()) else {
+            return Ok(lens);
+        };
+        let Some(position) = values.get(1).cloned().and_then(|v| serde_json::from_value::<Position>(v).ok()) else {
+            return Ok(lens);
+        };
+
+        let offset = match self.store.get(&uri) {
+            None => return Ok(lens),
+            Some(s) => pos_to_offset(&s.content, position).unwrap_or(0),
+        };
+
+        let locations = if self.dispatcher.is_ecj_ready().await {
+            match self.dispatcher.find_references(&uri, offset).await {
+                Ok(BridgeResponse::Locations { locations, .. }) => def_conv::to_lsp(&locations),
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+
+        let usage_refs: Vec<Location> = locations
+            .into_iter()
+            .filter(|loc| !(loc.uri == uri && loc.range.start == position))
+            .collect();
+        let usage_count = usage_refs.len();
+        let title = format!("{usage_count} reference{}", if usage_count == 1 { "" } else { "s" });
+        let args = vec![
+            Value::String(uri.to_string()),
+            serde_json::to_value(position).unwrap_or_else(|_| json!({ "line": lens.range.start.line, "character": lens.range.start.character })),
+            serde_json::to_value(&usage_refs).unwrap_or_else(|_| Value::Array(Vec::new())),
+        ];
+        lens.command = Some(code_lens_command(
+            client_flavor,
+            "editor.action.showReferences",
+            &title,
+            Some(args),
+            lens.range,
+        ));
+        Ok(lens)
     }
 
     // ── Call Hierarchy ────────────────────────────────────────────────────────
@@ -1960,14 +2008,43 @@ fn show_references_args_for_lms_monaco(args: Option<Vec<Value>>, range: Range) -
         .and_then(uri_string_from_monaco_arg)
         .map(Value::String)
         .unwrap_or_else(|| Value::String(String::new()));
-    let position = json!({ "line": range.start.line, "character": range.start.character });
+    let position = args
+        .get(1)
+        .and_then(position_from_show_references_arg)
+        .unwrap_or_else(|| json!({ "line": range.start.line, "character": range.start.character }));
     let references = args
         .get(2)
         .and_then(|v| v.as_array())
-        .map(|refs| refs.iter().filter_map(location_from_monaco_arg).collect::<Vec<_>>())
+        .map(|refs| refs.iter().filter_map(location_from_show_references_arg).collect::<Vec<_>>())
         .unwrap_or_default();
 
     vec![uri, position, Value::Array(references)]
+}
+
+fn position_from_show_references_arg(value: &Value) -> Option<Value> {
+    if let Some(obj) = value.as_object() {
+        if obj.get("line").and_then(Value::as_u64).is_some()
+            && obj.get("character").and_then(Value::as_u64).is_some()
+        {
+            return Some(json!({
+                "line": obj.get("line")?.as_u64()? as u32,
+                "character": obj.get("character")?.as_u64()? as u32,
+            }));
+        }
+
+        let line = obj.get("lineNumber").and_then(Value::as_u64)?;
+        let column = obj.get("column").and_then(Value::as_u64)?;
+        return Some(json!({
+            "line": line as u32 - 1,
+            "character": column as u32 - 1,
+        }));
+    }
+
+    None
+}
+
+fn location_from_show_references_arg(value: &Value) -> Option<Value> {
+    location_from_lsp_arg(value).or_else(|| location_from_monaco_arg(value))
 }
 
 fn uri_string_from_monaco_arg(value: &Value) -> Option<String> {
@@ -1992,6 +2069,28 @@ fn uri_string_from_monaco_arg(value: &Value) -> Option<String> {
         uri.push_str(fragment);
     }
     Some(uri)
+}
+
+fn location_from_lsp_arg(value: &Value) -> Option<Value> {
+    let obj = value.as_object()?;
+    let uri = uri_string_from_monaco_arg(obj.get("uri")?)?;
+    let range = obj.get("range")?.as_object()?;
+    let start = range.get("start")?.as_object()?;
+    let end = range.get("end")?.as_object()?;
+
+    Some(json!({
+        "uri": uri,
+        "range": {
+            "start": {
+                "line": start.get("line")?.as_u64()? as u32,
+                "character": start.get("character")?.as_u64()? as u32,
+            },
+            "end": {
+                "line": end.get("line")?.as_u64()? as u32,
+                "character": end.get("character")?.as_u64()? as u32,
+            }
+        }
+    }))
 }
 
 fn location_from_monaco_arg(value: &Value) -> Option<Value> {

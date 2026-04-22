@@ -3,7 +3,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde_json::Value;
 
 // ─── Requests (Rust → Java) ─────────────────────────────────────────────────
 
@@ -382,11 +381,8 @@ pub struct BridgeCodeLens {
     pub start_char: u32,
     pub end_line: u32,
     pub end_char: u32,
-    pub title: String,
     /// Command ID to invoke when clicked, or `None` for an informational-only lens.
     pub command: Option<String>,
-    /// Arguments forwarded to the command.
-    pub args: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Deserialize)]
