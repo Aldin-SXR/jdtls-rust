@@ -26,21 +26,71 @@ public class InMemoryNameEnvironment implements INameEnvironment {
 
     private static final Logger LOG = Logger.getLogger(InMemoryNameEnvironment.class.getName());
 
+    /**
+     * Shared classpath cache: fingerprint → pre-built, immutable list of ClasspathEntry.
+     * Entries are never closed — they are reused across all requests with the same classpath.
+     * Keyed by the sorted, joined classpath string so order differences don't create duplicates.
+     */
+    private static final ConcurrentHashMap<String, List<ClasspathEntry>> CLASSPATH_CACHE =
+        new ConcurrentHashMap<>();
+
     /** URI string → Java source code for all open files */
     private final Map<String, String> sourceFiles;
 
     /** Binary class name (e.g. "com/example/Foo") → bytecode, built as we compile */
     private final Map<String, byte[]> compiledClasses = new ConcurrentHashMap<>();
 
-    /** Classpath entries: JARs and directories provided by the client */
-    private final List<ClasspathEntry> classpathEntries = new ArrayList<>();
+    /** Classpath entries sourced from the shared cache — never closed by this instance. */
+    private final List<ClasspathEntry> classpathEntries;
 
     public InMemoryNameEnvironment(Map<String, String> sourceFiles, List<String> classpath) {
         this.sourceFiles = sourceFiles;
+        this.classpathEntries = cachedClasspath(classpath);
+    }
+
+    /**
+     * Return the cached ClasspathEntry list for the given classpath, building it on first use.
+     * Building is expensive (opens JarFiles, enumerates jrt:/ modules) so we do it exactly once
+     * per unique classpath regardless of how many concurrent requests share it.
+     */
+    private static List<ClasspathEntry> cachedClasspath(List<String> classpath) {
+        // Normalise order so ["a","b"] and ["b","a"] share the same cache entry.
+        String key = classpath.stream().sorted().collect(java.util.stream.Collectors.joining("|"));
+        return CLASSPATH_CACHE.computeIfAbsent(key, k -> buildClasspathEntries(classpath));
+    }
+
+    private static List<ClasspathEntry> buildClasspathEntries(List<String> classpath) {
+        List<ClasspathEntry> entries = new ArrayList<>();
         for (String cp : classpath) {
-            addClasspathEntry(cp);
+            File f = new File(cp);
+            if (!f.exists()) {
+                LOG.warning("Classpath entry not found: " + cp);
+                continue;
+            }
+            if (cp.endsWith(".jar") || cp.endsWith(".zip")) {
+                entries.add(new JarClasspathEntry(f));
+            } else if (f.isDirectory()) {
+                entries.add(new DirClasspathEntry(f));
+            }
         }
-        addBootClasspath();
+        // Boot classpath (JDK)
+        String javaHome = System.getProperty("java.home");
+        if (javaHome != null) {
+            File rtJar = new File(javaHome, "lib/rt.jar");
+            if (rtJar.exists()) {
+                entries.add(new JarClasspathEntry(rtJar));
+            } else {
+                try {
+                    java.nio.file.FileSystem jrtFs =
+                        java.nio.file.FileSystems.getFileSystem(java.net.URI.create("jrt:/"));
+                    entries.add(new JrtClasspathEntry(jrtFs));
+                    LOG.info("Using jrt:/ filesystem for JDK boot classpath");
+                } catch (Exception e) {
+                    LOG.warning("Cannot open jrt:/ filesystem: " + e.getMessage());
+                }
+            }
+        }
+        return Collections.unmodifiableList(entries);
     }
 
     /** Add compiled bytecode produced by a previous compilation pass. */
@@ -80,9 +130,9 @@ public class InMemoryNameEnvironment implements INameEnvironment {
 
     @Override
     public void cleanup() {
-        for (ClasspathEntry e : classpathEntries) {
-            e.close();
-        }
+        // classpathEntries are owned by the shared cache — do not close them.
+        // Only discard the per-request compiled bytecode.
+        compiledClasses.clear();
     }
 
     // ── Resolution logic ─────────────────────────────────────────────────────
@@ -127,43 +177,6 @@ public class InMemoryNameEnvironment implements INameEnvironment {
         return null;
     }
 
-    // ── Classpath setup ──────────────────────────────────────────────────────
-
-    private void addClasspathEntry(String path) {
-        File f = new File(path);
-        if (!f.exists()) {
-            LOG.warning("Classpath entry not found: " + path);
-            return;
-        }
-        if (path.endsWith(".jar") || path.endsWith(".zip")) {
-            classpathEntries.add(new JarClasspathEntry(f));
-        } else if (f.isDirectory()) {
-            classpathEntries.add(new DirClasspathEntry(f));
-        }
-    }
-
-    private void addBootClasspath() {
-        String javaHome = System.getProperty("java.home");
-        if (javaHome == null) return;
-
-        // Java 8: rt.jar
-        File rtJar = new File(javaHome, "lib/rt.jar");
-        if (rtJar.exists()) {
-            classpathEntries.add(new JarClasspathEntry(rtJar));
-            return;
-        }
-
-        // Java 9+: classes live in the jrt:/ virtual filesystem inside modules
-        try {
-            java.nio.file.FileSystem jrtFs =
-                    java.nio.file.FileSystems.getFileSystem(java.net.URI.create("jrt:/"));
-            classpathEntries.add(new JrtClasspathEntry(jrtFs));
-            LOG.info("Using jrt:/ filesystem for JDK boot classpath");
-        } catch (Exception e) {
-            LOG.warning("Cannot open jrt:/ filesystem: " + e.getMessage());
-        }
-    }
-
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static String toBinaryName(char[][] compoundName) {
@@ -186,6 +199,8 @@ public class InMemoryNameEnvironment implements INameEnvironment {
     static class JarClasspathEntry implements ClasspathEntry {
         private final File jarFile;
         private JarFile jar;
+        /** Cached package existence: packagePath → true/false. Avoids O(n) JAR scans. */
+        private final ConcurrentHashMap<String, Boolean> packageCache = new ConcurrentHashMap<>();
 
         JarClasspathEntry(File f) {
             this.jarFile = f;
@@ -211,15 +226,18 @@ public class InMemoryNameEnvironment implements INameEnvironment {
         @Override
         public boolean isPackage(String packagePath) {
             if (jar == null) return false;
-            return jar.stream().anyMatch(e -> {
-                String name = e.getName();
-                return name.startsWith(packagePath + "/") && name.endsWith(".class");
+            return packageCache.computeIfAbsent(packagePath, pkg -> {
+                String prefix = pkg + "/";
+                return jar.stream().anyMatch(e -> {
+                    String name = e.getName();
+                    return name.startsWith(prefix) && name.endsWith(".class");
+                });
             });
         }
 
         @Override
         public void close() {
-            if (jar != null) try { jar.close(); } catch (IOException ignored) {}
+            // Owned by the classpath cache — not closed per-request.
         }
     }
 

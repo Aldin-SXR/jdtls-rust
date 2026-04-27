@@ -8,6 +8,28 @@ use once_cell::sync::OnceCell;
 use std::path::{Path, PathBuf};
 
 static JAR_PATH: OnceCell<PathBuf> = OnceCell::new();
+static SOCKET_PATH: OnceCell<PathBuf> = OnceCell::new();
+
+/// FNV-1a hash of the embedded JAR bytes — used to version filenames so that
+/// stale files from old builds are never accidentally reused.
+fn jar_hash() -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in ECJ_JAR_BYTES {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Unix socket path for the shared ecj-bridge daemon process.
+/// Path: `<tmp>/ecj-bridge-<hash>.sock`
+pub fn socket_path() -> &'static Path {
+    SOCKET_PATH
+        .get_or_init(|| {
+            std::env::temp_dir().join(format!("ecj-bridge-{:016x}.sock", jar_hash()))
+        })
+        .as_path()
+}
 
 /// Returns the path to the extracted JAR, extracting it on first call.
 ///
@@ -28,18 +50,7 @@ fn extract() -> Result<PathBuf> {
         ));
     }
 
-    // Use a content-hash in the filename so stale JARs from old builds are
-    // automatically replaced.
-    let hash = {
-        let mut h: u64 = 0xcbf29ce484222325; // FNV-1a seed
-        for &b in ECJ_JAR_BYTES {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    };
-
-    let tmp = std::env::temp_dir().join(format!("jdtls-ecj-{hash:016x}.jar"));
+    let tmp = std::env::temp_dir().join(format!("jdtls-ecj-{:016x}.jar", jar_hash()));
 
     if tmp.exists() && tmp.metadata().map(|m| m.len()).unwrap_or(0) == ECJ_JAR_BYTES.len() as u64 {
         // Already extracted from a previous run — reuse it.

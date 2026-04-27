@@ -26,15 +26,19 @@ impl Dispatcher {
         }
     }
 
-    /// Start the ecj-bridge subprocess (called after initialize).
+    /// Connect to the shared ecj-bridge daemon, starting it if not running.
     pub async fn start_ecj(&self) -> Result<()> {
         let cfg = self.config.read().await;
         let jar = ecj_jar_path()?;
-        let proc = EcjProcess::spawn(jar, &cfg.java_binary()).await?;
+        let socket = crate::embedded_jar::socket_path();
+        let proc = EcjProcess::ensure_started(jar, &cfg.java_binary(), socket).await?;
         *self.ecj.write().await = Some(proc);
         Ok(())
     }
 
+    /// Drop the current connection and reconnect (or start a fresh daemon if
+    /// the socket is stale).  Other clients already connected to the daemon
+    /// are unaffected.
     pub async fn restart_ecj(&self) -> Result<()> {
         let old = {
             let mut guard = self.ecj.write().await;
@@ -43,6 +47,10 @@ impl Dispatcher {
         if let Some(ecj) = old {
             ecj.shutdown().await;
         }
+        // Remove the socket file so ensure_started spawns a fresh daemon
+        // rather than reconnecting to a potentially unhealthy one.
+        let socket = crate::embedded_jar::socket_path();
+        let _ = std::fs::remove_file(socket);
         self.start_ecj().await
     }
 

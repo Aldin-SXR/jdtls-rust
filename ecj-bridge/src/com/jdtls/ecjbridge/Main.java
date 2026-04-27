@@ -18,6 +18,25 @@ public class Main {
     private static final Logger LOG = Logger.getLogger(Main.class.getName());
     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
 
+    /**
+     * Bounded thread pool for CPU-heavy analysis work (compile, complete, navigate, …).
+     * Caps concurrent ECJ work at N_CORES regardless of how many clients are connected,
+     * preventing GC collapse under burst load (e.g. 40 students all typing at once).
+     */
+    private static final java.util.concurrent.ExecutorService ANALYSIS_POOL =
+        java.util.concurrent.Executors.newFixedThreadPool(
+            Runtime.getRuntime().availableProcessors(),
+            r -> { Thread t = new Thread(r, "ecj-analysis"); t.setDaemon(true); return t; });
+
+    /**
+     * Shared service singletons — all methods are stateless (all per-request state lives
+     * in local variables / InMemoryNameEnvironment), so sharing across threads is safe.
+     */
+    private static final CompilationService COMPILER = new CompilationService();
+    private static final CompletionService COMPLETER = new CompletionService();
+    private static final FormatterService FORMATTER = new FormatterService();
+    private static final AstNavigationService NAVIGATION = new AstNavigationService();
+
     public static void main(String[] args) throws Exception {
         LogManager.getLogManager().reset();
         Logger root = Logger.getLogger("");
@@ -27,35 +46,124 @@ public class Main {
         stderrHandler.setLevel(Level.ALL);
         root.addHandler(stderrHandler);
 
-        BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in, "UTF-8"));
-        PrintWriter stdout = new PrintWriter(new OutputStreamWriter(System.out, "UTF-8"), true);
-
-        CompilationService compiler = new CompilationService();
-        CompletionService completer = new CompletionService();
-        FormatterService formatter = new FormatterService();
-        AstNavigationService navigation = new AstNavigationService();
-
         // Build jrt:/ index eagerly in background so the first import completion
         // doesn't block the request thread (~1 s on cold start).
         Thread indexThread = new Thread(() -> CompletionService.ensureJrtIndex(), "jrt-index-builder");
         indexThread.setDaemon(true);
         indexThread.start();
 
-        LOG.info("ecj-bridge ready");
+        // Socket daemon mode: --socket <path>
+        if (args.length >= 2 && "--socket".equals(args[0])) {
+            runSocketServer(args[1]);
+            return;
+        }
 
-        String line;
-        while ((line = stdin.readLine()) != null) {
-            if (line.trim().isEmpty()) continue;
-            try {
-                Request req = GSON.fromJson(line, Request.class);
-                Object response = dispatch(req, compiler, completer, formatter, navigation);
-                stdout.println(GSON.toJson(response));
-            } catch (Exception e) {
-                long id = extractId(line);
-                ErrorResponse err = new ErrorResponse(id, e.getClass().getSimpleName() + ": " + e.getMessage());
-                stdout.println(GSON.toJson(err));
-                LOG.log(Level.SEVERE, "Error processing request: " + line, e);
+        // Legacy stdio mode (backward compat / testing).
+        BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in, "UTF-8"));
+        PrintWriter stdout = new PrintWriter(new OutputStreamWriter(System.out, "UTF-8"), true);
+        LOG.info("ecj-bridge ready (stdio mode)");
+        serveConnection(stdin, stdout, COMPILER, COMPLETER, FORMATTER, NAVIGATION);
+    }
+
+    /**
+     * Bind a Unix domain socket and serve requests from multiple clients,
+     * each in its own daemon thread.  Only one JVM process should be running
+     * for a given socket path; this method handles the stale-socket case.
+     */
+    private static void runSocketServer(String socketPathStr) throws Exception {
+        java.net.UnixDomainSocketAddress addr =
+            java.net.UnixDomainSocketAddress.of(socketPathStr);
+
+        // If another live bridge is already listening, exit immediately so the
+        // spawning Rust process connects to that one instead.
+        try (java.nio.channels.SocketChannel probe =
+                java.nio.channels.SocketChannel.open(addr)) {
+            LOG.info("Another ecj-bridge already running at " + socketPathStr + " — exiting.");
+            return;
+        } catch (IOException ignored) {
+            // No live bridge — clean up any stale socket file and bind.
+            java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(socketPathStr));
+        }
+
+        try (java.nio.channels.ServerSocketChannel server =
+                java.nio.channels.ServerSocketChannel.open(
+                    java.net.StandardProtocolFamily.UNIX)) {
+
+            server.bind(addr);
+
+            // Remove the socket file on exit so next launch starts fresh.
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try {
+                    java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(socketPathStr));
+                } catch (Exception ignored) {}
+            }));
+
+            LOG.info("ecj-bridge socket server listening at " + socketPathStr);
+
+            int clientId = 0;
+            while (true) {
+                java.nio.channels.SocketChannel channel = server.accept();
+                final int id = ++clientId;
+                Thread t = new Thread(() -> handleClient(channel, id), "ecj-client-" + id);
+                t.setDaemon(true);
+                t.start();
             }
+        } catch (java.net.BindException e) {
+            // Lost the bind race to another process — let it serve.
+            LOG.info("Socket bind failed (another process won) — exiting: " + e.getMessage());
+        }
+    }
+
+    /** Handle one client connection on its own thread. */
+    private static void handleClient(java.nio.channels.SocketChannel channel, int id) {
+        LOG.info("ecj-bridge client " + id + " connected");
+        try (channel) {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(
+                java.nio.channels.Channels.newInputStream(channel), "UTF-8"));
+            PrintWriter writer = new PrintWriter(new OutputStreamWriter(
+                java.nio.channels.Channels.newOutputStream(channel), "UTF-8"), true);
+            serveConnection(reader, writer, COMPILER, COMPLETER, FORMATTER, NAVIGATION);
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, "ecj-bridge client " + id + " error", e);
+        }
+        LOG.info("ecj-bridge client " + id + " disconnected");
+    }
+
+    /** Core request/response loop shared by both stdio and socket modes. */
+    private static void serveConnection(BufferedReader in, PrintWriter out,
+                                        CompilationService compiler,
+                                        CompletionService completer,
+                                        FormatterService formatter,
+                                        AstNavigationService navigation) {
+        String line;
+        try {
+            while ((line = in.readLine()) != null) {
+                if (line.trim().isEmpty()) continue;
+                final String captured = line;
+                try {
+                    Request req = GSON.fromJson(line, Request.class);
+                    // Submit to bounded analysis pool so at most N_CORES heavy ECJ
+                    // operations run simultaneously, even with 40 concurrent clients.
+                    java.util.concurrent.Future<Object> future = ANALYSIS_POOL.submit(
+                        () -> dispatch(req, compiler, completer, formatter, navigation));
+                    Object response = future.get(60, java.util.concurrent.TimeUnit.SECONDS);
+                    out.println(GSON.toJson(response));
+                } catch (java.util.concurrent.TimeoutException e) {
+                    long reqId = extractId(captured);
+                    out.println(GSON.toJson(new ErrorResponse(reqId, "Request timed out after 60s")));
+                    LOG.warning("Request timed out: " + captured);
+                } catch (Exception e) {
+                    long reqId = extractId(captured);
+                    Throwable cause = (e instanceof java.util.concurrent.ExecutionException)
+                        ? e.getCause() : e;
+                    ErrorResponse err = new ErrorResponse(reqId,
+                        cause.getClass().getSimpleName() + ": " + cause.getMessage());
+                    out.println(GSON.toJson(err));
+                    LOG.log(Level.SEVERE, "Error processing request: " + captured, cause);
+                }
+            }
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "Connection read error", e);
         }
     }
 
