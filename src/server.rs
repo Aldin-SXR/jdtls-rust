@@ -140,6 +140,12 @@ enum ClientFlavor {
 }
 
 impl JavaLanguageServer {
+    /// jdt.ls `java/searchSymbols`.
+    pub async fn search_symbols(&self, params: crate::features::workspace_symbols::SearchSymbolParams) -> LspResult<Vec<SymbolInformation>> {
+        let p = params;
+        Ok(crate::features::workspace_symbols::search(&self.dispatcher, p.query.as_deref(), p.max_results, p.project_name.as_deref(), p.source_only).await)
+    }
+
     pub fn new(client: Client) -> Self {
         let config = Arc::new(RwLock::new(Config::default()));
         let store = Arc::new(DocumentStore::new());
@@ -241,6 +247,7 @@ impl LanguageServer for JavaLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
         *self.client_flavor.write().await = detect_client_flavor(params.client_info.as_ref());
         crate::features::client_caps::set(&params.capabilities);
+        crate::features::preferences::init(&params);
         *self.workspace_folders.write().await = params.workspace_folders.clone().unwrap_or_default();
         *self.rename_client.write().await = crate::features::rename::RenameClient::from_capabilities(&params.capabilities);
 
@@ -396,6 +403,8 @@ impl LanguageServer for JavaLanguageServer {
                         "jdtls-rust.refreshDiagnostics".to_owned(),
                         "java.project.refreshDiagnostics".to_owned(),
                         "java.project.rebuild".to_owned(),
+                        "java.navigate.openTypeHierarchy".to_owned(),
+                        "java.navigate.resolveTypeHierarchy".to_owned(),
                     ],
                     work_done_progress_options: Default::default(),
                 }),
@@ -1079,19 +1088,7 @@ impl LanguageServer for JavaLanguageServer {
     }
 
     async fn symbol(&self, params: WorkspaceSymbolParams) -> LspResult<Option<Vec<SymbolInformation>>> {
-        let query = params.query.to_ascii_lowercase();
-        let mut symbols = Vec::new();
-
-        for state in self.store.snapshots() {
-            let Some(tree) = state.tree.as_ref() else {
-                continue;
-            };
-            let content = state.content_string();
-            let document_symbols = outline::document_symbols(tree, &content);
-            flatten_workspace_symbols(&mut symbols, &state.uri, None, &document_symbols, &query);
-        }
-
-        Ok(Some(symbols))
+        Ok(Some(crate::features::workspace_symbols::search(&self.dispatcher, Some(&params.query), 0, None, false).await))
     }
 
     // ── Code Action ────────────────────────────────────────────────────────────
@@ -1309,206 +1306,43 @@ impl LanguageServer for JavaLanguageServer {
     // ── Code Lenses ───────────────────────────────────────────────────────────
 
     async fn code_lens(&self, params: CodeLensParams) -> LspResult<Option<Vec<CodeLens>>> {
-        let uri = &params.text_document.uri;
-        if !self.dispatcher.is_ecj_ready().await {
-            return Ok(None);
-        }
-        match self.dispatcher.code_lens(uri).await {
-            Ok(BridgeResponse::CodeLenses { lenses, .. }) => {
-                let items = lenses.iter().map(|l| {
-                    let range = Range {
-                        start: Position { line: l.start_line, character: l.start_char },
-                        end: Position { line: l.end_line, character: l.end_char },
-                    };
-                    // Store bridge-computed title + args so code_lens_resolve can
-                    // use them directly without a second find_references round-trip.
-                    let data = if matches!(l.command.as_deref(), Some("editor.action.showReferences")) {
-                        Some(json!({
-                            "uri":   uri.to_string(),
-                            "pos":   range.start,
-                            "title": l.title,
-                            "args":  l.args,
-                            "tag":   "references"
-                        }))
-                    } else {
-                        None
-                    };
-                    CodeLens { range, command: None, data }
-                }).collect();
-                Ok(Some(items))
-            }
-            Ok(BridgeResponse::Error { message, .. }) => {
-                warn!("code lens ECJ error: {message}");
-                Ok(None)
-            }
-            Err(e) => {
-                warn!("code lens error: {e}");
-                Ok(None)
-            }
-            _ => Ok(None),
-        }
+        Ok(Some(crate::features::code_lens::code_lenses(&self.store, &params.text_document.uri)))
     }
 
-    async fn code_lens_resolve(&self, mut lens: CodeLens) -> LspResult<CodeLens> {
-        let client_flavor = *self.client_flavor.read().await;
-        let Some(data) = lens.data.clone() else {
-            return Ok(lens);
-        };
-        if data.get("tag").and_then(Value::as_str) != Some("references") {
-            return Ok(lens);
-        }
-        let Some(uri_str) = data.get("uri").and_then(Value::as_str) else {
-            return Ok(lens);
-        };
-        let Ok(uri) = Url::parse(uri_str) else {
-            return Ok(lens);
-        };
-
-        // Use the bridge's pre-computed title and args so we don't need a
-        // separate find_references round-trip (which used a different code path
-        // and could produce different — often zero — results).
-        let title = data.get("title")
-            .and_then(Value::as_str)
-            .unwrap_or("0 references")
-            .to_owned();
-
-        // bridge_args is already [uri, position, locations] — just unwrap the array.
-        let args: Vec<Value> = data.get("args")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_else(|| {
-                let pos = data.get("pos").cloned().unwrap_or_else(|| {
-                    json!({ "line": lens.range.start.line, "character": lens.range.start.character })
-                });
-                vec![Value::String(uri.to_string()), pos, Value::Array(vec![])]
-            });
-
-        lens.command = Some(code_lens_command(
-            client_flavor,
-            "editor.action.showReferences",
-            &title,
-            Some(args),
-            lens.range,
-        ));
-        Ok(lens)
+    async fn code_lens_resolve(&self, lens: CodeLens) -> LspResult<CodeLens> {
+        Ok(crate::features::code_lens::resolve(&self.dispatcher, lens).await)
     }
 
     // ── Call Hierarchy ────────────────────────────────────────────────────────
 
     async fn prepare_call_hierarchy(&self, params: CallHierarchyPrepareParams) -> LspResult<Option<Vec<CallHierarchyItem>>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let pos = params.text_document_position_params.position;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.call_hierarchy_prepare(uri, offset).await {
-            Ok(BridgeResponse::CallHierarchyPrepare { items, .. }) if !items.is_empty() => {
-                Ok(Some(items.iter().map(bridge_call_hierarchy_item_to_lsp).collect()))
-            }
-            _ => Ok(None),
-        }
+        let p = params.text_document_position_params;
+        Ok(crate::features::call_hierarchy::prepare(&self.dispatcher, &p.text_document.uri, p.position).await)
     }
 
     async fn incoming_calls(&self, params: CallHierarchyIncomingCallsParams) -> LspResult<Option<Vec<CallHierarchyIncomingCall>>> {
-        let item = &params.item;
-        let uri = &item.uri;
-        let pos = item.selection_range.start;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.call_hierarchy_incoming(uri, offset).await {
-            Ok(BridgeResponse::CallHierarchyIncomingCalls { calls, .. }) => {
-                let result = calls.iter().map(|c| CallHierarchyIncomingCall {
-                    from: bridge_call_hierarchy_item_to_lsp(&c.from),
-                    from_ranges: c.from_ranges.iter().map(|r| Range {
-                        start: Position { line: r.start_line, character: r.start_char },
-                        end: Position { line: r.end_line, character: r.end_char },
-                    }).collect(),
-                }).collect();
-                Ok(Some(result))
-            }
-            _ => Ok(None),
-        }
+        Ok(crate::features::call_hierarchy::incoming(&self.dispatcher, &params.item).await)
     }
 
     async fn outgoing_calls(&self, params: CallHierarchyOutgoingCallsParams) -> LspResult<Option<Vec<CallHierarchyOutgoingCall>>> {
-        let item = &params.item;
-        let uri = &item.uri;
-        let pos = item.selection_range.start;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.call_hierarchy_outgoing(uri, offset).await {
-            Ok(BridgeResponse::CallHierarchyOutgoingCalls { calls, .. }) => {
-                let result = calls.iter().map(|c| CallHierarchyOutgoingCall {
-                    to: bridge_call_hierarchy_item_to_lsp(&c.to),
-                    from_ranges: c.from_ranges.iter().map(|r| Range {
-                        start: Position { line: r.start_line, character: r.start_char },
-                        end: Position { line: r.end_line, character: r.end_char },
-                    }).collect(),
-                }).collect();
-                Ok(Some(result))
-            }
-            _ => Ok(None),
-        }
+        Ok(crate::features::call_hierarchy::outgoing(&self.dispatcher, &params.item).await)
     }
 
     // ── Type Hierarchy ────────────────────────────────────────────────────────
 
     async fn prepare_type_hierarchy(&self, params: TypeHierarchyPrepareParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let pos = params.text_document_position_params.position;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.type_hierarchy_prepare(uri, offset).await {
-            Ok(BridgeResponse::TypeHierarchyPrepare { items, .. }) if !items.is_empty() => {
-                Ok(Some(items.iter().map(bridge_type_hierarchy_item_to_lsp).collect()))
-            }
-            _ => Ok(None),
-        }
+        let p = params.text_document_position_params;
+        Ok(Some(crate::features::type_hierarchy::prepare(&self.dispatcher, &p.text_document.uri, p.position).await))
     }
 
     async fn supertypes(&self, params: TypeHierarchySupertypesParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        let data = match params.item.data.as_ref().and_then(|v| v.as_str()) {
-            Some(s) => s.to_owned(),
-            None => return Ok(None),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.type_hierarchy_supertypes(data).await {
-            Ok(BridgeResponse::TypeHierarchySupertypes { items, .. }) => {
-                Ok(Some(items.iter().map(bridge_type_hierarchy_item_to_lsp).collect()))
-            }
-            _ => Ok(None),
-        }
+        use crate::features::type_hierarchy::{resolve_items, Direction};
+        Ok(Some(resolve_items(&self.dispatcher, &params.item, Direction::Parents).await))
     }
 
     async fn subtypes(&self, params: TypeHierarchySubtypesParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        let data = match params.item.data.as_ref().and_then(|v| v.as_str()) {
-            Some(s) => s.to_owned(),
-            None => return Ok(None),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.type_hierarchy_subtypes(data).await {
-            Ok(BridgeResponse::TypeHierarchySubtypes { items, .. }) => {
-                Ok(Some(items.iter().map(bridge_type_hierarchy_item_to_lsp).collect()))
-            }
-            _ => Ok(None),
-        }
+        use crate::features::type_hierarchy::{resolve_items, Direction};
+        Ok(Some(resolve_items(&self.dispatcher, &params.item, Direction::Children).await))
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<Value>> {
@@ -1533,6 +1367,12 @@ impl LanguageServer for JavaLanguageServer {
                     .map(|p| Value::String(crate::project::java_file_uri(&p.root, true)))
                     .collect();
                 Ok(Some(Value::Array(uris)))
+            }
+            "java.navigate.openTypeHierarchy" => {
+                Ok(crate::features::type_hierarchy::open_type_hierarchy(&self.dispatcher, &params.arguments).await)
+            }
+            "java.navigate.resolveTypeHierarchy" => {
+                Ok(crate::features::type_hierarchy::resolve_type_hierarchy(&self.dispatcher, &params.arguments).await)
             }
             other => {
                 warn!("Ignoring unsupported workspace/executeCommand request: {other}");

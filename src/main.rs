@@ -4,6 +4,7 @@ mod document_store;
 mod embedded_jar;
 mod features;
 mod handlers;
+mod index;
 mod project;
 mod server;
 
@@ -22,6 +23,8 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::build(JavaLanguageServer::new).finish();
+    let (service, socket) = LspService::build(JavaLanguageServer::new)
+        .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
+        .finish();
     Server::new(stdin, stdout, socket).serve(service).await;
 }

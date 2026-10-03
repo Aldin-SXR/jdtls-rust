@@ -143,6 +143,7 @@ impl EcjProcess {
             | BridgeRequest::CallHierarchyIncoming { id, .. }
             | BridgeRequest::CallHierarchyOutgoing { id, .. }
             | BridgeRequest::AstBindings { id, .. }
+            | BridgeRequest::SemanticSearch { id, .. }
             | BridgeRequest::Shutdown { id } => *id,
         };
 

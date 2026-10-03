@@ -204,8 +204,13 @@ impl<'a> Semantic<'a> {
 
     async fn query(&self, pc: &ProjectContext, mut query: Value) -> Option<Value> {
         query["owned"] = json!(pc.owned);
+        let op = query["op"].clone();
         match self.dispatcher.semantic_search(&pc.ctx, query).await {
-            Ok(v) => Some(v),
+            Ok(mut v) => {
+                strip_nulls(&mut v);
+                tracing::debug!("semantic {op} ({:?}, {} files): {}", pc.project, pc.ctx.files.len(), v.to_string().chars().take(1500).collect::<String>());
+                Some(v)
+            }
             Err(e) => {
                 tracing::warn!("semantic search failed: {e}");
                 None
@@ -395,6 +400,18 @@ impl<'a> Semantic<'a> {
                 None
             }
         }
+    }
+}
+
+/// The bridge serializes nulls; absent fields take their serde defaults.
+fn strip_nulls(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            map.retain(|_, x| !x.is_null());
+            map.values_mut().for_each(strip_nulls);
+        }
+        Value::Array(items) => items.iter_mut().for_each(strip_nulls),
+        _ => {}
     }
 }
 

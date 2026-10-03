@@ -381,7 +381,6 @@ impl BridgeResponse {
             | BridgeResponse::CallHierarchyIncomingCalls { id, .. }
             | BridgeResponse::CallHierarchyOutgoingCalls { id, .. }
             | BridgeResponse::SemanticSearch { id, .. }
-    },
             | BridgeResponse::AstBindings { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
