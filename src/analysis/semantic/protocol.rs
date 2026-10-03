@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 // ─── Requests (Rust → Java) ─────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-#[serde(tag = "method", rename_all = "camelCase")]
+#[serde(tag = "method", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeRequest {
     Compile {
         id: u64,
@@ -229,7 +229,7 @@ pub struct BridgeRange {
 // ─── Responses (Java → Rust) ─────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "method", rename_all = "camelCase")]
+#[serde(tag = "method", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeResponse {
     Diagnostics {
         id: u64,
