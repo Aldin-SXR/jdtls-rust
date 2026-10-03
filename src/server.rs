@@ -819,45 +819,10 @@ impl LanguageServer for JavaLanguageServer {
     // ── Signature Help ────────────────────────────────────────────────────────
 
     async fn signature_help(&self, params: SignatureHelpParams) -> LspResult<Option<SignatureHelp>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let pos = params.text_document_position_params.position;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.signature_help(uri, offset).await {
-            Ok(BridgeResponse::SignatureHelp { signatures, active_signature, active_parameter, .. }) => {
-                let sigs: Vec<SignatureInformation> = signatures.iter().map(|s| {
-                    SignatureInformation {
-                        label: s.label.clone(),
-                        documentation: s.documentation.as_ref().map(|d| {
-                            Documentation::MarkupContent(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: d.clone(),
-                            })
-                        }),
-                        parameters: Some(s.parameters.iter().map(|p| ParameterInformation {
-                            label: ParameterLabel::Simple(p.label.clone()),
-                            documentation: p.documentation.as_ref().map(|d| {
-                                Documentation::MarkupContent(MarkupContent {
-                                    kind: MarkupKind::Markdown,
-                                    value: d.clone(),
-                                })
-                            }),
-                        }).collect()),
-                        active_parameter: None,
-                    }
-                }).collect();
-                Ok(Some(SignatureHelp {
-                    signatures: sigs,
-                    active_signature: Some(active_signature),
-                    active_parameter: Some(active_parameter),
-                }))
-            }
-            _ => Ok(None),
-        }
+        use crate::features::signature_help;
+        let settings = signature_help::Settings::from_settings(self.config.read().await.settings.as_ref());
+        let doc = params.text_document_position_params;
+        Ok(Some(signature_help::signature_help(&self.dispatcher, &doc.text_document.uri, doc.position, settings).await))
     }
 
     // ── Definition / Declaration / Type Definition / Implementation ───────────
@@ -1739,6 +1704,7 @@ fn import_settings(settings: Option<&Value>) -> crate::project::ImportSettings {
 
 fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
     let mut restart_ecj = false;
+    config.settings = Some(settings.clone());
 
     let updated_java_home = setting_string(settings, &["javaHome"])
         .or_else(|| setting_string(settings, &["java", "javaHome"]))

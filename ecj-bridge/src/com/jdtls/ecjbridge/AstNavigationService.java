@@ -89,18 +89,6 @@ public class AstNavigationService {
         }
     }
 
-    public static final class SignatureResult {
-        final List<BridgeSignature> signatures;
-        final int activeSignature;
-        final int activeParameter;
-
-        SignatureResult(List<BridgeSignature> signatures, int activeSignature, int activeParameter) {
-            this.signatures = signatures;
-            this.activeSignature = activeSignature;
-            this.activeParameter = activeParameter;
-        }
-    }
-
     public String hover(Map<String, String> sourceFiles, String sourceLevel, List<String> classpath,
                         String targetUri, int offset) {
         // 1. Fast path: same-file AST lookup (no bindings, no classpath needed).
@@ -535,32 +523,6 @@ public class AstNavigationService {
         }
 
         return locations;
-    }
-
-    public SignatureResult signatureHelp(
-            Map<String, String> sourceFiles,
-            String sourceLevel,
-            String targetUri,
-            int offset) {
-
-        ParsedUnit parsed = parse(sourceFiles, sourceLevel, targetUri);
-        if (parsed == null) {
-            return new SignatureResult(Collections.emptyList(), 0, 0);
-        }
-
-        ASTNode invocation = enclosingInvocation(nodeAt(parsed.cu, offset));
-        if (invocation == null) {
-            return new SignatureResult(Collections.emptyList(), 0, 0);
-        }
-
-        List<BridgeSignature> signatures = signaturesForInvocation(parsed, invocation);
-        if (signatures.isEmpty()) {
-            return new SignatureResult(Collections.emptyList(), 0, 0);
-        }
-
-        int activeParameter = activeParameter(invocation, offset);
-        int activeSignature = activeSignature(parsed, invocation, signatures, activeParameter);
-        return new SignatureResult(signatures, activeSignature, activeParameter);
     }
 
     public List<BridgeInlayHint> inlayHints(
@@ -1568,128 +1530,6 @@ public class AstNavigationService {
         return null;
     }
 
-    private List<BridgeSignature> signaturesForInvocation(ParsedUnit parsed, ASTNode invocation) {
-        if (invocation instanceof MethodInvocation methodInvocation) {
-            AbstractTypeDeclaration type = enclosingType(methodInvocation);
-            if (type == null) return Collections.emptyList();
-            String name = methodInvocation.getName().getIdentifier();
-            return methodSignatures(type, name, false);
-        }
-
-        if (invocation instanceof SuperMethodInvocation superMethodInvocation) {
-            AbstractTypeDeclaration type = enclosingType(superMethodInvocation);
-            if (type == null) return Collections.emptyList();
-            String name = superMethodInvocation.getName().getIdentifier();
-            return methodSignatures(type, name, false);
-        }
-
-        if (invocation instanceof ClassInstanceCreation classInstanceCreation) {
-            Type typeNode = classInstanceCreation.getType();
-            if (typeNode.isSimpleType()) {
-                Name name = ((SimpleType) typeNode).getName();
-                String identifier = name.getFullyQualifiedName();
-                Decl decl = findTypeDeclaration(parsed.cu, identifier);
-                if (decl != null && decl.declarationNode instanceof AbstractTypeDeclaration type) {
-                    return methodSignatures(type, identifier, true);
-                }
-            }
-        }
-
-        if (invocation instanceof ConstructorInvocation constructorInvocation) {
-            AbstractTypeDeclaration type = enclosingType(constructorInvocation);
-            if (type == null) return Collections.emptyList();
-            return methodSignatures(type, type.getName().getIdentifier(), true);
-        }
-
-        return Collections.emptyList();
-    }
-
-    private List<BridgeSignature> methodSignatures(AbstractTypeDeclaration type, String name, boolean constructorsOnly) {
-        List<BridgeSignature> signatures = new ArrayList<>();
-        for (Object bodyDeclObj : type.bodyDeclarations()) {
-            if (!(bodyDeclObj instanceof MethodDeclaration method)) continue;
-            if (constructorsOnly != method.isConstructor()) continue;
-            if (!name.equals(method.getName().getIdentifier())) continue;
-
-            BridgeSignature signature = new BridgeSignature();
-            signature.label = renderMethodSignature(method, method.isConstructor());
-            signature.documentation = renderJavadoc(method.getJavadoc());
-            signature.parameters = new ArrayList<>();
-            for (Object paramObj : method.parameters()) {
-                if (!(paramObj instanceof SingleVariableDeclaration param)) continue;
-                BridgeParameter bridgeParam = new BridgeParameter();
-                bridgeParam.label = param.getType() + " " + param.getName().getIdentifier();
-                bridgeParam.documentation = renderParamDocumentation(method.getJavadoc(), param.getName().getIdentifier());
-                signature.parameters.add(bridgeParam);
-            }
-            signatures.add(signature);
-        }
-        return signatures;
-    }
-
-    private int activeSignature(
-            ParsedUnit parsed,
-            ASTNode invocation,
-            List<BridgeSignature> signatures,
-            int activeParameter) {
-
-        Integer bindingIndex = activeSignatureFromBindings(parsed, invocation, signatures);
-        if (bindingIndex != null) {
-            return bindingIndex;
-        }
-
-        int requiredParams = activeParameter + 1;
-        int bestIndex = -1;
-        int bestParamCount = Integer.MAX_VALUE;
-        for (int i = 0; i < signatures.size(); i++) {
-            int paramCount = signatures.get(i).parameters != null ? signatures.get(i).parameters.size() : 0;
-            if (paramCount >= requiredParams && paramCount < bestParamCount) {
-                bestIndex = i;
-                bestParamCount = paramCount;
-            }
-        }
-        if (bestIndex >= 0) {
-            return bestIndex;
-        }
-
-        return 0;
-    }
-
-    private Integer activeSignatureFromBindings(
-            ParsedUnit parsed,
-            ASTNode invocation,
-            List<BridgeSignature> signatures) {
-
-        if (parsed.bindingCu == null) {
-            return null;
-        }
-
-        ASTNode bindingNode = nodeAt(parsed.bindingCu, invocation.getStartPosition());
-        ASTNode bindingInvocation = enclosingInvocation(bindingNode);
-        if (bindingInvocation == null
-                || bindingInvocation.getStartPosition() != invocation.getStartPosition()) {
-            return null;
-        }
-
-        IMethodBinding binding = resolveInvocationBinding(bindingInvocation);
-        if (binding == null) {
-            return null;
-        }
-
-        BindingResolution resolved = resolveMethodBinding(parsed.bindingCu, binding);
-        if (resolved.decl == null || !(resolved.decl.declarationNode instanceof MethodDeclaration method)) {
-            return null;
-        }
-
-        String targetLabel = renderMethodSignature(method, method.isConstructor());
-        for (int i = 0; i < signatures.size(); i++) {
-            if (targetLabel.equals(signatures.get(i).label)) {
-                return i;
-            }
-        }
-        return null;
-    }
-
     private IMethodBinding resolveInvocationBinding(ASTNode invocation) {
         if (invocation instanceof MethodInvocation methodInvocation) {
             return methodInvocation.resolveMethodBinding();
@@ -1720,20 +1560,6 @@ public class AstNavigationService {
         CompletionService.NodeLocator locator = new CompletionService.NodeLocator(offset);
         cu.accept(locator);
         return locator.found;
-    }
-
-    private ASTNode enclosingInvocation(ASTNode node) {
-        ASTNode current = node;
-        while (current != null) {
-            if (current instanceof MethodInvocation
-                    || current instanceof SuperMethodInvocation
-                    || current instanceof ClassInstanceCreation
-                    || current instanceof ConstructorInvocation) {
-                return current;
-            }
-            current = current.getParent();
-        }
-        return null;
     }
 
     private SimpleName asSimpleName(ASTNode node) {
@@ -1778,30 +1604,6 @@ public class AstNavigationService {
                 || node instanceof ForStatement
                 || node instanceof EnhancedForStatement
                 || node instanceof LambdaExpression;
-    }
-
-    private int activeParameter(ASTNode invocation, int offset) {
-        @SuppressWarnings("unchecked")
-        List<Expression> arguments =
-                invocation instanceof MethodInvocation methodInvocation ? methodInvocation.arguments()
-                : invocation instanceof SuperMethodInvocation superMethodInvocation ? superMethodInvocation.arguments()
-                : invocation instanceof ClassInstanceCreation classInstanceCreation ? classInstanceCreation.arguments()
-                : invocation instanceof ConstructorInvocation constructorInvocation ? constructorInvocation.arguments()
-                : Collections.emptyList();
-
-        // Count arguments that are fully before the cursor to find the active index.
-        // Using end position avoids the off-by-one that start position would cause.
-        int active = 0;
-        for (Expression argument : arguments) {
-            int argEnd = argument.getStartPosition() + argument.getLength();
-            if (argEnd < offset) {
-                active++;
-            }
-        }
-        if (!arguments.isEmpty()) {
-            active = Math.min(active, arguments.size() - 1);
-        }
-        return Math.max(active, 0);
     }
 
     private AbstractTypeDeclaration enclosingType(ASTNode node) {

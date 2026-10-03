@@ -29,6 +29,11 @@ public class BridgeProtocol {
         public boolean insertSpaces;
         public List<BridgeDiagnostic> diagnostics;
         public String data;    // opaque data passed back for typeHierarchy supertypes/subtypes
+        // signatureHelpData
+        public int searchOffset = -1;
+        public int contextOffset = -1;
+        public String fallbackName;
+        public boolean description;
     }
 
     public static class BridgeRange {
@@ -77,13 +82,44 @@ public class BridgeProtocol {
         }
     }
 
-    public static class SignatureHelpResponse extends Response {
-        public List<BridgeSignature> signatures;
-        public int activeSignature, activeParameter;
-        public SignatureHelpResponse(long id, List<BridgeSignature> sigs, int as_, int ap) {
-            this.id = id; this.method = "signatureHelp";
-            this.signatures = sigs; this.activeSignature = as_; this.activeParameter = ap;
+    /** Data for signature help (selection and shaping happen in Rust). */
+    public static class SignatureHelpDataResponse extends Response {
+        public List<SigNode> chain = new java.util.ArrayList<>();
+        public SigNode fallback;
+        public SignatureHelpDataResponse(long id) {
+            this.id = id; this.method = "signatureHelpData";
         }
+    }
+
+    /** A method-like AST node and what the completion engine proposes for it. */
+    public static class SigNode {
+        public String kind;
+        public int start, length;
+        public int nameEnd = -1;
+        public List<int[]> arguments;
+        public int optionalExpressionLength;
+        public String methodName;
+        public List<String> parameterTypes;
+        public List<String> parameterTypesFromBinding;
+        public SigCandidate boundMethod;
+        public List<SigCandidate> candidates;
+        public List<SigCandidate> secondaryCandidates;
+        public List<SigCandidate> declaredConstructors;
+        public List<SigCandidate> scopeCandidates;
+    }
+
+    /** One method binding, as a completion proposal would describe it. */
+    public static class SigCandidate {
+        public String name;
+        public boolean constructor;
+        public boolean varargs;
+        public String key;
+        public List<String> parameterTypes;
+        public String returnType;
+        public List<String> parameterNames;
+        public List<String> matchTypes;
+        public List<String> declaredTypes;
+        public String javadoc;
     }
 
     public static class WorkspaceEditResponse extends Response {

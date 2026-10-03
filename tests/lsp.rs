@@ -1848,8 +1848,8 @@ fn ecj_signature_help_multiple_methods() {
     assert_eq!(result["activeParameter"], 1, "expected second argument to be active, got: {result:?}");
     assert_eq!(
         signatures[result["activeSignature"].as_u64().unwrap_or(0) as usize]["label"],
-        "int foo(int s, String t)",
-        "expected best overload to be the two-parameter int/String method"
+        "foo(int s, String t) : int",
+        "expected best overload to be the two-parameter int/String method (jdt.ls label format)"
     );
 }
 

@@ -36,6 +36,7 @@ public class Main {
     private static final CompletionService COMPLETER = new CompletionService();
     private static final FormatterService FORMATTER = new FormatterService();
     private static final AstNavigationService NAVIGATION = new AstNavigationService();
+    private static final SignatureHelpService SIGNATURE_HELP = new SignatureHelpService();
 
     public static void main(String[] args) throws Exception {
         LogManager.getLogManager().reset();
@@ -204,12 +205,9 @@ public class Main {
                 List<BridgeAction> actions = codeActions(req, compiler);
                 yield new CodeActionsResponse(req.id, actions);
             }
-            case "signatureHelp" -> {
-                AstNavigationService.SignatureResult result = navigation.signatureHelp(
-                    req.files, orDefault(req.sourceLevel), req.uri, req.offset);
-                yield new SignatureHelpResponse(
-                    req.id, result.signatures, result.activeSignature, result.activeParameter);
-            }
+            case "signatureHelpData" -> SIGNATURE_HELP.compute(
+                    req.id, req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri,
+                    req.searchOffset, req.contextOffset, req.fallbackName, req.description);
             case "rename" -> {
                 List<BridgeFileEdit> edits = rename(req, compiler);
                 yield new WorkspaceEditResponse(req.id, edits);
