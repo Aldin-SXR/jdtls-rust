@@ -71,6 +71,8 @@ byte for byte. Don't guess messages, labels, titles, sort order or edit shapes.
   * `class_uri(project, fqn)`, `request(method, params)`, `open`, `change`, and
     `diagnostics(uri)`, which waits for `publishDiagnostics` after a fresh build.
   * `apply_edits`, `dos2unix`, `pos`, and `range`.
+  * `client().request_results`: canned results for server→client requests by
+    method (e.g. `workspace/executeClientCommand`); others get `null`.
   * The server starts lazily on the first request, after fixture setup, and the harness
     waits for `language/status` ServiceReady.
 * Keep the inputs and expected values exactly as upstream has them. If a test can't

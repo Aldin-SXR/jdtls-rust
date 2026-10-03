@@ -23,6 +23,14 @@ pub struct Config {
     /// jdt.ls `extendedClientCapabilities` (e.g. `nonStandardJavaFormatting`).
     pub extended_client_capabilities: Option<serde_json::Value>,
 
+    /// `initializationOptions.workspaceFolders` (URIs).
+    pub workspace_folders: Option<Vec<String>>,
+
+    /// jdt.ls `Preferences.getRootPaths()`: `workspaceFolders` from the
+    /// initialization options, else `rootUri`/`rootPath` (`BaseInitHandler`).
+    #[serde(skip)]
+    pub root_paths: Vec<std::path::PathBuf>,
+
     /// Maximum number of completion items to return.
     pub max_completions: usize,
 

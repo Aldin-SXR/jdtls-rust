@@ -216,7 +216,7 @@ impl JavaLanguageServer {
             dispatcher: &self.dispatcher,
             client: &self.client,
             settings: cfg.format.clone(),
-            roots: self.roots.read().await.clone(),
+            roots: cfg.root_paths.clone(),
             extended_client_capabilities: cfg.extended_client_capabilities.clone(),
         }
     }
@@ -275,6 +275,16 @@ impl LanguageServer for JavaLanguageServer {
             .and_then(|w| w.inlay_hint.as_ref())
             .and_then(|i| i.refresh_support)
             .unwrap_or(false);
+        {
+            let mut cfg = self.config.write().await;
+            #[allow(deprecated)]
+            let root_paths = formatting::options::jdtls_root_paths(
+                cfg.workspace_folders.as_deref(),
+                params.root_uri.as_ref(),
+                params.root_path.as_deref(),
+            );
+            cfg.root_paths = root_paths;
+        }
 
         // Import workspace projects (Gradle → Maven → Eclipse → invisible).
         let mut roots: Vec<std::path::PathBuf> = params

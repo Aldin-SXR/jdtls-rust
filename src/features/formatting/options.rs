@@ -201,6 +201,19 @@ pub fn workspace_formatter_options(settings: &FormatSettings, roots: &[PathBuf])
 
 // ── Profile location (`Preferences.getFormatterAsURI`) ───────────────────────
 
+/// `BaseInitHandler`: the root paths are `initializationOptions.workspaceFolders`,
+/// else `rootUri`, else `rootPath`.
+pub fn jdtls_root_paths(workspace_folders: Option<&[String]>, root_uri: Option<&url::Url>, root_path: Option<&str>) -> Vec<PathBuf> {
+    let to_path = |u: &url::Url| (u.scheme() == "file").then(|| u.to_file_path().ok()).flatten().map(|p| crate::project::canonicalize_lenient(&p));
+    if let Some(folders) = workspace_folders.filter(|f| !f.is_empty()) {
+        return folders.iter().filter_map(|f| url::Url::parse(f).ok()).filter_map(|u| to_path(&u)).collect();
+    }
+    if let Some(uri) = root_uri {
+        return to_path(uri).into_iter().collect();
+    }
+    root_path.map(PathBuf::from).into_iter().collect()
+}
+
 /// Resolve `java.format.settings.url` the way `Preferences.asURI` does and
 /// return the local file it designates.
 pub fn formatter_path(url: &str, roots: &[PathBuf]) -> Option<PathBuf> {

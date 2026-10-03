@@ -45,6 +45,9 @@ pub struct LspClient {
     next_id: u64,
     /// Notifications received while waiting for something else.
     pub notifications: Vec<Value>,
+    /// Canned results for server→client requests, by method
+    /// (e.g. `workspace/executeClientCommand`).
+    pub request_results: BTreeMap<String, Value>,
 }
 
 fn read_message(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Value> {
@@ -103,7 +106,7 @@ impl LspClient {
                 }
             }
         });
-        Self { child, stdin, rx, next_id: 1, notifications: Vec::new() }
+        Self { child, stdin, rx, next_id: 1, notifications: Vec::new(), request_results: BTreeMap::new() }
     }
 
     pub fn send(&mut self, msg: &Value) {
@@ -119,7 +122,9 @@ impl LspClient {
     /// Handle a server→client request (respond with `null`/defaults).
     fn answer_server_request(&mut self, msg: &Value) {
         let id = msg["id"].clone();
+        let canned = msg["method"].as_str().and_then(|m| self.request_results.get(m)).cloned();
         let result = match msg["method"].as_str() {
+            _ if canned.is_some() => canned.unwrap(),
             Some("workspace/configuration") => {
                 let n = msg["params"]["items"].as_array().map_or(0, |a| a.len());
                 Value::Array(vec![Value::Null; n])
