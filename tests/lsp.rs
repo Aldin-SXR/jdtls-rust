@@ -2142,7 +2142,9 @@ fn ecj_inlay_hint_char_literal() {
         return;
     }
 
-    let hints = c.inlay_hints(&uri, 0, 10);
+    // jdt.ls: a range end past the last line maps to offset -1 (no hints), so
+    // request a range inside the document.
+    let hints = c.inlay_hints(&uri, 0, 5);
     // Expect a hint labelled "c:" near line 3
     let labels: Vec<&str> = hints.iter()
         .filter_map(|h| h["label"].as_str())
@@ -2176,7 +2178,9 @@ fn ecj_inlay_hint_null_literal() {
         return;
     }
 
-    let hints = c.inlay_hints(&uri, 0, 10);
+    // jdt.ls: a range end past the last line maps to offset -1 (no hints), so
+    // request a range inside the document.
+    let hints = c.inlay_hints(&uri, 0, 5);
     let labels: Vec<&str> = hints.iter()
         .filter_map(|h| h["label"].as_str())
         .collect();
@@ -2210,12 +2214,58 @@ fn ecj_inlay_hint_no_hint_for_variable_arg() {
         return;
     }
 
-    let hints = c.inlay_hints(&uri, 0, 10);
+    // jdt.ls: a range end past the last line maps to offset -1 (no hints), so
+    // request a range inside the document.
+    let hints = c.inlay_hints(&uri, 0, 5);
     // Variable expressions should NOT produce a hint
     assert!(
         hints.is_empty(),
         "expected no inlay hints for variable arg, got: {hints:?}"
     );
+}
+
+/// `java.inlayHints.*` settings changed through `workspace/didChangeConfiguration`
+/// apply to the next request: mode `all`, then an exclusion pattern.
+#[test]
+fn ecj_inlay_hint_settings_via_did_change_configuration() {
+    let mut c = LspClient::spawn();
+    c.initialize();
+
+    let uri = test_uri("ecj_inlay_settings");
+    let src = indoc(r#"
+        class Foo {
+            void foo(String s) {}
+            void bar() {
+                String myVar = "hello";
+                foo(myVar);
+            }
+        }
+    "#);
+    c.open(&uri, &src);
+
+    if !ecj_ready(&mut c, &uri) {
+        eprintln!("SKIP ecj_inlay_hint_settings_via_did_change_configuration — ECJ not ready");
+        return;
+    }
+
+    assert!(c.inlay_hints(&uri, 0, 6).is_empty(), "literals mode by default");
+
+    let change = |c: &mut LspClient, settings: Value| {
+        c.send_raw(&json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeConfiguration",
+            "params": { "settings": settings }
+        }));
+    };
+    change(&mut c, json!({ "java": { "inlayHints": { "parameterNames": { "enabled": "all" } } } }));
+    let hints = c.inlay_hints(&uri, 0, 6);
+    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    assert_eq!(labels, vec!["s:"], "{hints:?}");
+    assert_eq!(hints[0]["position"], json!({ "line": 4, "character": 12 }));
+
+    change(&mut c, json!({ "java": { "inlayHints": { "parameterNames": { "exclusions": ["*.foo(*)"] } } } }));
+    let hints = c.inlay_hints(&uri, 0, 6);
+    assert!(hints.is_empty(), "excluded by *.foo(*): {hints:?}");
 }
 
 // ─── ECJ: code actions ────────────────────────────────────────────────────────

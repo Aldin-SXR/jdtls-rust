@@ -255,6 +255,13 @@ impl LanguageServer for JavaLanguageServer {
         } else {
             *self.config.write().await = Config::default().with_defaults();
         }
+        self.config.write().await.inlay_hint_refresh_support = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|w| w.inlay_hint.as_ref())
+            .and_then(|i| i.refresh_support)
+            .unwrap_or(false);
 
         // Import workspace projects (Gradle → Maven → Eclipse → invisible).
         let mut roots: Vec<std::path::PathBuf> = params
@@ -477,10 +484,18 @@ impl LanguageServer for JavaLanguageServer {
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
-        let restart_ecj = {
+        let (restart_ecj, refresh_inlay_hints) = {
             let mut config = self.config.write().await;
-            merge_config_settings(&mut config, &params.settings)
+            let old_inlay_hints = config.inlay_hints.clone();
+            let restart = merge_config_settings(&mut config, &params.settings);
+            (restart, config.inlay_hint_refresh_support && old_inlay_hints.needs_refresh(&config.inlay_hints))
         };
+        if refresh_inlay_hints {
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                let _ = client.inlay_hint_refresh().await;
+            });
+        }
 
         if restart_ecj {
             if let Err(e) = self.dispatcher.restart_ecj().await {
@@ -1332,40 +1347,8 @@ impl LanguageServer for JavaLanguageServer {
     // ── Inlay Hints ───────────────────────────────────────────────────────────
 
     async fn inlay_hint(&self, params: InlayHintParams) -> LspResult<Option<Vec<InlayHint>>> {
-        let uri = &params.text_document.uri;
-        if !self.dispatcher.is_ecj_ready().await {
-            return Ok(None);
-        }
-        match self.dispatcher.inlay_hints(uri).await {
-            Ok(BridgeResponse::InlayHints { hints, .. }) => {
-                let items = hints
-                    .iter()
-                    .map(|h| InlayHint {
-                        position: Position { line: h.line, character: h.character },
-                        label: InlayHintLabel::String(h.label.clone()),
-                        kind: Some(match h.kind {
-                            1 => InlayHintKind::TYPE,
-                            _ => InlayHintKind::PARAMETER,
-                        }),
-                        tooltip: None,
-                        padding_left: Some(false),
-                        padding_right: Some(true),
-                        text_edits: None,
-                        data: None,
-                    })
-                    .collect();
-                Ok(Some(items))
-            }
-            Ok(BridgeResponse::Error { message, .. }) => {
-                warn!("inlay hints ECJ error: {message}");
-                Ok(None)
-            }
-            Err(e) => {
-                warn!("inlay hints error: {e}");
-                Ok(None)
-            }
-            _ => Ok(None),
-        }
+        let prefs = self.config.read().await.inlay_hints.clone();
+        Ok(Some(crate::features::inlay_hints::inlay_hint(&self.dispatcher, &prefs, &params).await))
     }
 
     // ── Code Lenses ───────────────────────────────────────────────────────────
@@ -1728,6 +1711,7 @@ fn import_settings(settings: Option<&Value>) -> crate::project::ImportSettings {
 
 fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
     let mut restart_ecj = false;
+    config.inlay_hints.update_from(settings);
 
     let updated_java_home = setting_string(settings, &["javaHome"])
         .or_else(|| setting_string(settings, &["java", "javaHome"]))

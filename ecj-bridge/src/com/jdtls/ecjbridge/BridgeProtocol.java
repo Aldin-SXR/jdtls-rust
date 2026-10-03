@@ -32,6 +32,8 @@ public class BridgeProtocol {
         public List<String> uris;        // renameOccurrences: units to resolve
         public List<String> names;       // renameOccurrences: identifiers of interest
         public String packageName;       // renameOccurrences: package whose references to collect
+        public List<String> sourcepath; // source folders on disk (inlayHints binding environment)
+        public boolean formatParameters; // inlayHints: include expression text for format hints
     }
 
     public static class BridgeRange {
@@ -192,17 +194,10 @@ public class BridgeProtocol {
         public String documentation;
     }
 
-    public static class BridgeInlayHint {
-        public int line;
-        public int character;
-        public String label;
-        public int kind; // 1=Type, 2=Parameter
-    }
-
     public static class InlayHintsResponse extends Response {
-        public List<BridgeInlayHint> hints;
-        public InlayHintsResponse(long id, List<BridgeInlayHint> hints) {
-            this.id = id; this.method = "inlayHints"; this.hints = hints;
+        public List<InlayHintService.Node> nodes;
+        public InlayHintsResponse(long id, List<InlayHintService.Node> nodes) {
+            this.id = id; this.method = "inlayHints"; this.nodes = nodes;
         }
     }
 

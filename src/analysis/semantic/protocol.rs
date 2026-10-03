@@ -137,6 +137,12 @@ pub enum BridgeRequest {
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         options: BTreeMap<String, String>,
         uri: String,
+        /// Source folders on disk, for binding resolution across files.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        sourcepath: Vec<String>,
+        /// Include expression text (`toString()`) needed for format hints.
+        #[serde(rename = "formatParameters")]
+        format_parameters: bool,
     },
     CodeLens {
         id: u64,
@@ -283,7 +289,8 @@ pub enum BridgeResponse {
     },
     InlayHints {
         id: u64,
-        hints: Vec<BridgeInlayHint>,
+        #[serde(default)]
+        nodes: Vec<BridgeInlayNode>,
     },
     CodeLenses {
         id: u64,
@@ -430,13 +437,71 @@ pub struct BridgeParameter {
     pub documentation: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeInlayHint {
-    pub line: u32,
-    pub character: u32,
-    pub label: String,
-    pub kind: u8, // 1=Type, 2=Parameter
+/// An AST node visited by the jdt.ls `InlayHintVisitor`, with its bindings
+/// (see `InlayHintService.java`).  Offsets are UTF-16 offsets in the source.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeInlayNode {
+    /// DOM node class simple name (`MethodInvocation`, `LambdaExpression`, ...).
+    pub kind: String,
+    pub start: usize,
+    pub length: usize,
+    pub method: Option<BridgeInlayMethod>,
+    pub arguments: Option<Vec<BridgeInlayExpr>>,
+    /// Receiver of a `MethodInvocation`.
+    pub expression: Option<BridgeInlayExpr>,
+    /// `LambdaExpression`: parameter type names of its method binding.
+    pub lambda_parameter_types: Option<Vec<String>>,
+    pub lambda_parameters: Option<Vec<BridgeLambdaParameter>>,
+    /// `VariableDeclarationStatement`: `getType().isVar()`.
+    pub is_var: bool,
+    pub fragments: Option<Vec<BridgeVariableFragment>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeInlayExpr {
+    pub start: usize,
+    pub length: usize,
+    pub node: String,
+    pub identifier: Option<String>,
+    pub literal_value: Option<String>,
+    pub text: Option<String>,
+    pub inner: Option<Box<BridgeInlayExpr>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeInlayMethod {
+    pub name: String,
+    pub declaring_type: Option<String>,
+    pub declaring_package: Option<String>,
+    pub declaring_type_qualified_name: Option<String>,
+    pub from_source: bool,
+    pub in_target_unit: bool,
+    pub synthetic: bool,
+    pub record: bool,
+    pub varargs: bool,
+    pub constructor: bool,
+    pub parameter_names: Option<Vec<String>>,
+    pub parameter_types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeLambdaParameter {
+    pub node: String,
+    pub name_start: i64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeVariableFragment {
+    pub resolved: bool,
+    pub initializer: Option<String>,
+    pub type_name: Option<String>,
+    pub name_start: usize,
+    pub name_length: usize,
 }
 
 #[derive(Debug, Deserialize)]
