@@ -36,6 +36,7 @@ public class Main {
     private static final CompletionService COMPLETER = new CompletionService();
     private static final FormatterService FORMATTER = new FormatterService();
     private static final AstNavigationService NAVIGATION = new AstNavigationService();
+    private static final RenameBindingService RENAME = new RenameBindingService();
 
     public static void main(String[] args) throws Exception {
         LogManager.getLogManager().reset();
@@ -210,15 +211,11 @@ public class Main {
                 yield new SignatureHelpResponse(
                     req.id, result.signatures, result.activeSignature, result.activeParameter);
             }
-            case "rename" -> {
-                List<BridgeFileEdit> edits = rename(req, compiler);
-                yield new WorkspaceEditResponse(req.id, edits);
-            }
-            case "inlayHints" -> {
-                List<BridgeInlayHint> hints = navigation.inlayHints(
-                    req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri);
-                yield new InlayHintsResponse(req.id, hints);
-            }
+            case "renameTarget" -> new RenameTargetResponse(req.id, RENAME.target(
+                req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri, req.offset));
+            case "renameOccurrences" -> new RenameOccurrencesResponse(req.id, RENAME.occurrences(
+                req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uris, req.names, req.packageName));
+            case "inlayHints" -> new InlayHintsResponse(req.id, new InlayHintService().collect(req));
             case "codeLens" -> {
                 List<BridgeCodeLens> lenses = navigation.codeLens(
                     req.files, orDefault(req.sourceLevel), req.uri);
@@ -265,6 +262,7 @@ public class Main {
             case "navData" -> NavigationDataService.navData(req);
             case "classFileContents" -> NavigationDataService.classFileContents(req);
             case "classFileInfo" -> NavigationDataService.classFileInfo(req);
+            case "astBindings" -> AstBindingsService.handle(req);
             case "shutdown" -> new OkResponse(req.id);
             default -> new ErrorResponse(req.id, "Unknown method: " + req.method);
         };
@@ -2587,22 +2585,6 @@ public class Main {
         int start = lineStart(s, l), i = start;
         while (i < s.length() && (s.charAt(i) == ' ' || s.charAt(i) == '\t')) i++;
         return s.substring(start, i);
-    }
-
-    private static List<BridgeFileEdit> rename(Request r, CompilationService c) {
-        if (r.files == null || r.uri == null || r.newName == null) return List.of();
-        AstNavigationService nav = new AstNavigationService(); List<BridgeFileEdit> res = new ArrayList<>();
-        List<BridgeLocation> allRefs = nav.findReferences(r.files, orDefault(r.sourceLevel), r.uri, r.offset);
-        for (String furi : r.files.keySet()) {
-            List<BridgeLocation> refs = allRefs.stream().filter(l -> furi.equals(l.uri)).toList();
-            if (refs.isEmpty()) continue;
-            List<BridgeTextEdit> eds = new ArrayList<>();
-            for (var loc : refs) {
-                BridgeTextEdit e = new BridgeTextEdit(); e.startLine = loc.startLine; e.startChar = loc.startChar; e.endLine = loc.endLine; e.endChar = loc.endChar; e.newText = r.newName; eds.add(e);
-            }
-            BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = furi; fe.edits = eds; res.add(fe);
-        }
-        return res;
     }
 
     private static List<BridgeTextEdit> organizeImports(Request r, CompilationService c) {

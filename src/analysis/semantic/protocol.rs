@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 // ─── Requests (Rust → Java) ─────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-#[serde(tag = "method", rename_all = "camelCase")]
+#[serde(tag = "method", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeRequest {
     Compile {
         id: u64,
@@ -31,6 +31,16 @@ pub enum BridgeRequest {
         /// authoritative document-store content to avoid race conditions.
         #[serde(skip_serializing_if = "Option::is_none")]
         import_prefix: Option<String>,
+    },
+    /// Resolved DOM + bindings of one unit (`AstBindingsService`).
+    AstBindings {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        uri: String,
     },
     Hover {
         id: u64,
@@ -85,7 +95,8 @@ pub enum BridgeRequest {
         uri: String,
         offset: usize,
     },
-    Rename {
+    /// The element at `offset` (rename and prepareRename selection).
+    RenameTarget {
         id: u64,
         files: HashMap<String, String>,
         classpath: Vec<String>,
@@ -93,9 +104,24 @@ pub enum BridgeRequest {
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         options: BTreeMap<String, String>,
         uri: String,
+        /// UTF-16 offset into `files[uri]`.
         offset: usize,
-        #[serde(rename = "newName")]
-        new_name: String,
+    },
+    /// Name occurrences (with binding keys) of `names` in `uris`, the method
+    /// override relations in their hierarchies and the references to
+    /// `package_name`.  Every other entry of `files` is only visible to
+    /// binding resolution.
+    RenameOccurrences {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        uris: Vec<String>,
+        names: Vec<String>,
+        #[serde(rename = "packageName", skip_serializing_if = "Option::is_none")]
+        package_name: Option<String>,
     },
     OrganizeImports {
         id: u64,
@@ -121,6 +147,12 @@ pub enum BridgeRequest {
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         options: BTreeMap<String, String>,
         uri: String,
+        /// Source folders on disk, for binding resolution across files.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        sourcepath: Vec<String>,
+        /// Include expression text (`toString()`) needed for format hints.
+        #[serde(rename = "formatParameters")]
+        format_parameters: bool,
     },
     CodeLens {
         id: u64,
@@ -253,7 +285,7 @@ pub struct BridgeRange {
 // ─── Responses (Java → Rust) ─────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "method", rename_all = "camelCase")]
+#[serde(tag = "method", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeResponse {
     Diagnostics {
         id: u64,
@@ -292,9 +324,23 @@ pub enum BridgeResponse {
         uri: String,
         edits: Vec<BridgeTextEdit>,
     },
+    RenameTarget {
+        id: u64,
+        select: Option<BridgeRenameElement>,
+        prepare: Option<BridgeRenameElement>,
+        #[serde(rename = "packageName")]
+        package_name: Option<String>,
+    },
+    RenameOccurrences {
+        id: u64,
+        files: Vec<BridgeRenameFile>,
+        methods: Vec<BridgeRenameMethod>,
+        relations: Vec<Vec<String>>,
+    },
     InlayHints {
         id: u64,
-        hints: Vec<BridgeInlayHint>,
+        #[serde(default)]
+        nodes: Vec<BridgeInlayNode>,
     },
     CodeLenses {
         id: u64,
@@ -341,6 +387,12 @@ pub enum BridgeResponse {
         class_file: Option<crate::classfile::ClassFileDesc>,
         source_uri: Option<String>,
     },
+    AstBindings {
+        id: u64,
+        strings: Vec<String>,
+        nodes: Vec<Vec<i64>>,
+        bindings: Vec<Vec<i64>>,
+    },
     Ok { id: u64 },
     Error {
         id: u64,
@@ -359,6 +411,8 @@ impl BridgeResponse {
             | BridgeResponse::SignatureHelp { id, .. }
             | BridgeResponse::WorkspaceEdit { id, .. }
             | BridgeResponse::TextEdits { id, .. }
+            | BridgeResponse::RenameTarget { id, .. }
+            | BridgeResponse::RenameOccurrences { id, .. }
             | BridgeResponse::InlayHints { id, .. }
             | BridgeResponse::CodeLenses { id, .. }
             | BridgeResponse::TypeHierarchyPrepare { id, .. }
@@ -370,6 +424,7 @@ impl BridgeResponse {
             | BridgeResponse::NavData { id, .. }
             | BridgeResponse::ClassFileContents { id, .. }
             | BridgeResponse::ClassFileInfo { id, .. }
+            | BridgeResponse::AstBindings { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
         }
@@ -459,13 +514,71 @@ pub struct BridgeParameter {
     pub documentation: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeInlayHint {
-    pub line: u32,
-    pub character: u32,
-    pub label: String,
-    pub kind: u8, // 1=Type, 2=Parameter
+/// An AST node visited by the jdt.ls `InlayHintVisitor`, with its bindings
+/// (see `InlayHintService.java`).  Offsets are UTF-16 offsets in the source.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeInlayNode {
+    /// DOM node class simple name (`MethodInvocation`, `LambdaExpression`, ...).
+    pub kind: String,
+    pub start: usize,
+    pub length: usize,
+    pub method: Option<BridgeInlayMethod>,
+    pub arguments: Option<Vec<BridgeInlayExpr>>,
+    /// Receiver of a `MethodInvocation`.
+    pub expression: Option<BridgeInlayExpr>,
+    /// `LambdaExpression`: parameter type names of its method binding.
+    pub lambda_parameter_types: Option<Vec<String>>,
+    pub lambda_parameters: Option<Vec<BridgeLambdaParameter>>,
+    /// `VariableDeclarationStatement`: `getType().isVar()`.
+    pub is_var: bool,
+    pub fragments: Option<Vec<BridgeVariableFragment>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeInlayExpr {
+    pub start: usize,
+    pub length: usize,
+    pub node: String,
+    pub identifier: Option<String>,
+    pub literal_value: Option<String>,
+    pub text: Option<String>,
+    pub inner: Option<Box<BridgeInlayExpr>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeInlayMethod {
+    pub name: String,
+    pub declaring_type: Option<String>,
+    pub declaring_package: Option<String>,
+    pub declaring_type_qualified_name: Option<String>,
+    pub from_source: bool,
+    pub in_target_unit: bool,
+    pub synthetic: bool,
+    pub record: bool,
+    pub varargs: bool,
+    pub constructor: bool,
+    pub parameter_names: Option<Vec<String>>,
+    pub parameter_types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeLambdaParameter {
+    pub node: String,
+    pub name_start: i64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeVariableFragment {
+    pub resolved: bool,
+    pub initializer: Option<String>,
+    pub type_name: Option<String>,
+    pub name_start: usize,
+    pub name_length: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -555,4 +668,67 @@ pub struct RawLocation {
     /// Highlight kind (1=Text 2=Read 3=Write), 0 otherwise.
     #[serde(default)]
     pub kind: u8,
+}
+
+/// An element selected for rename (`RenameBindingService.Element`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeRenameElement {
+    /// local, field, enumConstant, method, type, typeParameter, package, other
+    pub kind: Option<String>,
+    pub key: Option<String>,
+    pub name: Option<String>,
+    /// UTF-16 offset of the selected name in the target file.
+    pub name_start: i64,
+    pub name_length: i64,
+    pub from_source: bool,
+    pub recovered: bool,
+    pub anonymous: bool,
+    pub is_static: bool,
+    pub is_private: bool,
+    pub record_component: bool,
+    pub top_level: bool,
+    pub declaring_type_key: Option<String>,
+    pub declaring_type_name: Option<String>,
+    pub package_name: Option<String>,
+    /// Field type, or method return type (erasure, qualified).
+    pub type_name: Option<String>,
+    pub param_count: i32,
+    pub param_types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeRenameOccurrence {
+    /// UTF-16 offset.
+    pub start: usize,
+    pub length: usize,
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub key: Option<String>,
+    /// decl, ref, constructorName, packageDecl, import
+    pub role: Option<String>,
+    pub declaring_type_key: Option<String>,
+    pub param_count: i32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeRenameFile {
+    pub uri: String,
+    pub package_name: Option<String>,
+    pub occurrences: Vec<BridgeRenameOccurrence>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeRenameMethod {
+    pub key: String,
+    pub name: Option<String>,
+    pub declaring_type_key: Option<String>,
+    pub declaring_type_name: Option<String>,
+    pub from_source: bool,
+    pub is_static: bool,
+    pub is_private: bool,
+    pub param_types: Option<Vec<String>>,
 }

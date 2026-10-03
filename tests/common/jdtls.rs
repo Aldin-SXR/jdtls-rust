@@ -17,6 +17,11 @@ use tower_lsp::lsp_types::Url;
 
 pub const TEST_PROJECT_NAME: &str = "TestProject";
 
+/// `true` when tests run against the reference Java jdt.ls (`JDTLS_ORACLE=1`).
+pub fn is_oracle() -> bool {
+    std::env::var("JDTLS_ORACLE").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
 pub fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
@@ -63,8 +68,26 @@ fn read_message(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Value> {
 }
 
 impl LspClient {
+    /// Spawn the server under test.  With `JDTLS_ORACLE=1` the reference
+    /// Java eclipse.jdt.ls (`scripts/oracle-jdtls.sh`) is spawned instead, so
+    /// the same test can be run against upstream to confirm expectations.
     pub fn spawn() -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_jdtls-rust"))
+        Self::spawn_in(None)
+    }
+
+    pub fn spawn_in(data_dir: Option<&Path>) -> Self {
+        let mut cmd = if is_oracle() {
+            let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/oracle-jdtls.sh");
+            let data = data_dir
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| std::env::temp_dir().join(format!("jdtls-oracle-{}", std::process::id())));
+            let mut c = Command::new(script);
+            c.arg(data);
+            c
+        } else {
+            Command::new(env!("CARGO_BIN_EXE_jdtls-rust"))
+        };
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(if std::env::var("JDTLS_TEST_STDERR").is_ok() { Stdio::inherit() } else { Stdio::null() })
@@ -293,7 +316,7 @@ impl Workspace {
     /// Start the server (if needed) and return the client.
     pub fn client(&mut self) -> &mut LspClient {
         if self.client.is_none() {
-            let mut c = LspClient::spawn();
+            let mut c = LspClient::spawn_in(Some(&self.dir.parent().unwrap().join("oracle-data")));
             let folders: Vec<Value> = self
                 .roots
                 .iter()
@@ -355,11 +378,38 @@ impl Workspace {
     }
 
     pub fn try_class_file_uri(&mut self, project: &str, fqn: &str) -> Option<String> {
+        if is_oracle() {
+            return self.oracle_type_uri(project, fqn);
+        }
         let v = self.request(
             "workspace/executeCommand",
             json!({ "command": "jdtls-rust.classFileUri", "arguments": [project, fqn] }),
         );
         v.as_str().map(str::to_owned)
+    }
+
+    /// Real jdt.ls has no `jdtls-rust.classFileUri`; find the type through
+    /// `workspace/symbol` (which reports binary types with jdt:// URIs).
+    fn oracle_type_uri(&mut self, project: &str, fqn: &str) -> Option<String> {
+        let dotted = fqn.replace('$', ".");
+        let (container, simple) = dotted.rsplit_once('.').unwrap_or(("", dotted.as_str()));
+        let result = self.request("workspace/symbol", json!({ "query": simple }));
+        let symbols = result.as_array().cloned().unwrap_or_default();
+        let matches = |s: &Value, exact: bool| {
+            let name = s["name"].as_str().unwrap_or("");
+            let cont = s["containerName"].as_str().unwrap_or("");
+            if exact { name == simple && cont == container } else { name.eq_ignore_ascii_case(simple) && cont.eq_ignore_ascii_case(container) }
+        };
+        let in_project = |s: &Value| {
+            let uri = s["location"]["uri"].as_str().unwrap_or("");
+            !uri.starts_with("jdt:") || uri.contains(&format!("={project}/"))
+        };
+        for exact in [true, false] {
+            if let Some(s) = symbols.iter().find(|s| matches(s, exact) && in_project(s)).or_else(|| symbols.iter().find(|s| matches(s, exact))) {
+                return s["location"]["uri"].as_str().map(str::to_owned);
+            }
+        }
+        None
     }
 
     /// `workspace/didChangeConfiguration` with `settings` (also kept as the
@@ -383,6 +433,15 @@ impl Workspace {
             }
         }
         panic!("project {name} not found");
+    }
+
+    /// `File.toURI()` form of a directory, as returned by `java.project.getAll`.
+    pub fn project_uri(&self, name: &str) -> String {
+        let root = self.project_root(name);
+        let mut s = String::from("file:");
+        s.push_str(&root.to_string_lossy().replace(' ', "%20"));
+        s.push('/');
+        s
     }
 
     pub fn path_uri(&self, rel: &str) -> String {
@@ -422,7 +481,11 @@ impl Workspace {
     pub fn diagnostics(&mut self, uri: &str) -> Vec<Value> {
         let c = self.client();
         c.notifications.retain(|m| !(m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri));
-        c.request("workspace/executeCommand", json!({ "command": "java.project.refreshDiagnostics", "arguments": [] }));
+        // jdt.ls `DiagnosticsCommand.refreshDiagnostics(uri, scope, syntaxOnly)`.
+        c.request(
+            "workspace/executeCommand",
+            json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] }),
+        );
         let msg = c
             .recv_until(Duration::from_secs(60), |m| {
                 m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri
