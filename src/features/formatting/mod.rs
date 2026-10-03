@@ -120,7 +120,7 @@ pub async fn format(env: &FormatEnv<'_>, uri: &Url, options: &FormattingOptions,
             _ => Vec::new(),
         };
     }
-    let Some(text) = env.dispatcher.store.get(uri).map(|s| s.content_string()) else {
+    let Some(text) = crate::features::source_text(&env.dispatcher.store, uri) else {
         return Vec::new();
     };
     let document = Document::new(&text);
@@ -252,7 +252,7 @@ pub async fn on_type_format(env: &FormatEnv<'_>, uri: &Url, options: &Formatting
     if !env.settings.on_type_enabled {
         return Vec::new();
     }
-    let Some(text) = env.dispatcher.store.get(uri).map(|s| s.content_string()) else {
+    let Some(text) = crate::features::source_text(&env.dispatcher.store, uri) else {
         return Vec::new();
     };
     let document = Document::new(&text);

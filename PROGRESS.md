@@ -33,7 +33,7 @@
 - [x] Code actions: add @Override, add throws clause, wrap with try/catch
 - [x] Code actions: organize imports (via source.organizeImports)
 - [x] Organize imports command (standalone)
-- [x] Rename refactoring (text-based, same-file via AstNavigationService + ECJ WorkspaceEdit)
+- [x] Rename / prepareRename (jdt.ls RenameHandler parity: binding keys from the bridge, edits + WorkspaceEdit shaping in `src/features/rename.rs`)
 - [x] Inlay hints: parameter name hints at call sites (source-based, non-trivial args only)
 - [x] 400 ms compile debounce (watch channel in server.rs)
 - [x] `JrtClasspathEntry.moduleList` static cache (double-checked locking, per-JVM lifetime)

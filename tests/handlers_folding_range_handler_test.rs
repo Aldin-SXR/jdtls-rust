@@ -35,6 +35,7 @@ fn test_class_for_valid_range(class_name: &str, ranges: &[Value]) {
 }
 
 #[test]
+#[ignore = "needs jdt:// classfile support"]
 fn test_folding_ranges() {
     let mut ws = setup();
     let ranges = get_folding_ranges(&mut ws, "org.apache.commons.lang3.text.WordUtils");

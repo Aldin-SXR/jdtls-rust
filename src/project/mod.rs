@@ -213,6 +213,32 @@ impl Workspace {
     }
 }
 
+/// `java.io.File.toURI().toString()`: `file:` + absolute path (trailing `/`
+/// for directories), quoting only characters illegal in a URI path — the
+/// exact form jdt.ls returns from commands such as `java.project.getAll`.
+pub fn java_file_uri(path: &Path, is_dir: bool) -> String {
+    let mut p = path.to_string_lossy().replace('\\', "/");
+    if !p.starts_with('/') {
+        p.insert(0, '/');
+    }
+    if is_dir && !p.ends_with('/') {
+        p.push('/');
+    }
+    let mut out = String::from("file:");
+    for c in p.chars() {
+        let legal = c.is_ascii_alphanumeric() || "-_.!~*'()/:@&=+$,;".contains(c) || (!c.is_ascii() && !c.is_control() && !c.is_whitespace());
+        if legal {
+            out.push(c);
+        } else {
+            let mut buf = [0u8; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    out
+}
+
 pub fn uri_to_path(uri: &Url) -> Option<PathBuf> {
     if uri.scheme() != "file" {
         return None;
@@ -319,6 +345,13 @@ pub(crate) fn source_attachment(jar: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::normalize_java_version as n;
+
+    #[test]
+    fn java_file_uri_matches_file_to_uri() {
+        use std::path::Path;
+        assert_eq!(super::java_file_uri(Path::new("/a/b c"), true), "file:/a/b%20c/");
+        assert_eq!(super::java_file_uri(Path::new("/a/Foo.java"), false), "file:/a/Foo.java");
+    }
 
     #[test]
     fn normalizes_versions() {

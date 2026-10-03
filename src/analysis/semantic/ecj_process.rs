@@ -130,7 +130,8 @@ impl EcjProcess {
             | BridgeRequest::FindReferences { id, .. }
             | BridgeRequest::CodeAction { id, .. }
             | BridgeRequest::SignatureHelp { id, .. }
-            | BridgeRequest::Rename { id, .. }
+            | BridgeRequest::RenameTarget { id, .. }
+            | BridgeRequest::RenameOccurrences { id, .. }
             | BridgeRequest::OrganizeImports { id, .. }
             | BridgeRequest::Format { id, .. }
             | BridgeRequest::InlayHints { id, .. }
@@ -141,6 +142,7 @@ impl EcjProcess {
             | BridgeRequest::CallHierarchyPrepare { id, .. }
             | BridgeRequest::CallHierarchyIncoming { id, .. }
             | BridgeRequest::CallHierarchyOutgoing { id, .. }
+            | BridgeRequest::AstBindings { id, .. }
             | BridgeRequest::Shutdown { id } => *id,
         };
 

@@ -32,6 +32,14 @@ pub struct Config {
 
     /// jdt.ls-style `settings` object (`{ "java": { ... } }`).
     pub settings: Option<serde_json::Value>,
+
+    /// Inlay-hint preferences (`java.inlayHints.*`), from `settings`.
+    #[serde(skip)]
+    pub inlay_hints: crate::features::inlay_hints::InlayHintPreferences,
+
+    /// Client capability `workspace.inlayHint.refreshSupport`.
+    #[serde(skip)]
+    pub inlay_hint_refresh_support: bool,
 }
 
 impl Config {

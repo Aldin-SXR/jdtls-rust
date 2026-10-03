@@ -31,6 +31,11 @@ public class BridgeProtocol {
         public String lineSeparator;
         public List<BridgeDiagnostic> diagnostics;
         public String data;    // opaque data passed back for typeHierarchy supertypes/subtypes
+        public List<String> uris;        // renameOccurrences: units to resolve
+        public List<String> names;       // renameOccurrences: identifiers of interest
+        public String packageName;       // renameOccurrences: package whose references to collect
+        public List<String> sourcepath; // source folders on disk (inlayHints binding environment)
+        public boolean formatParameters; // inlayHints: include expression text for format hints
     }
 
     public static class BridgeRange {
@@ -92,6 +97,26 @@ public class BridgeProtocol {
         public List<BridgeFileEdit> changes;
         public WorkspaceEditResponse(long id, List<BridgeFileEdit> changes) {
             this.id = id; this.method = "workspaceEdit"; this.changes = changes;
+        }
+    }
+
+    public static class RenameTargetResponse extends Response {
+        public RenameBindingService.Element select;
+        public RenameBindingService.Element prepare;
+        public String packageName;
+        public RenameTargetResponse(long id, RenameBindingService.TargetResult r) {
+            this.id = id; this.method = "renameTarget";
+            this.select = r.select; this.prepare = r.prepare; this.packageName = r.packageName;
+        }
+    }
+
+    public static class RenameOccurrencesResponse extends Response {
+        public List<RenameBindingService.FileOccurrences> files;
+        public List<RenameBindingService.MethodInfo> methods;
+        public List<List<String>> relations;
+        public RenameOccurrencesResponse(long id, RenameBindingService.OccurrencesResult r) {
+            this.id = id; this.method = "renameOccurrences";
+            this.files = r.files; this.methods = r.methods; this.relations = r.relations;
         }
     }
 
@@ -184,17 +209,10 @@ public class BridgeProtocol {
         public String documentation;
     }
 
-    public static class BridgeInlayHint {
-        public int line;
-        public int character;
-        public String label;
-        public int kind; // 1=Type, 2=Parameter
-    }
-
     public static class InlayHintsResponse extends Response {
-        public List<BridgeInlayHint> hints;
-        public InlayHintsResponse(long id, List<BridgeInlayHint> hints) {
-            this.id = id; this.method = "inlayHints"; this.hints = hints;
+        public List<InlayHintService.Node> nodes;
+        public InlayHintsResponse(long id, List<InlayHintService.Node> nodes) {
+            this.id = id; this.method = "inlayHints"; this.nodes = nodes;
         }
     }
 
