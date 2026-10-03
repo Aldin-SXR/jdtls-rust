@@ -85,7 +85,8 @@ pub enum BridgeRequest {
         uri: String,
         offset: usize,
     },
-    Rename {
+    /// The element at `offset` (rename and prepareRename selection).
+    RenameTarget {
         id: u64,
         files: HashMap<String, String>,
         classpath: Vec<String>,
@@ -93,9 +94,24 @@ pub enum BridgeRequest {
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         options: BTreeMap<String, String>,
         uri: String,
+        /// UTF-16 offset into `files[uri]`.
         offset: usize,
-        #[serde(rename = "newName")]
-        new_name: String,
+    },
+    /// Name occurrences (with binding keys) of `names` in `uris`, the method
+    /// override relations in their hierarchies and the references to
+    /// `package_name`.  Every other entry of `files` is only visible to
+    /// binding resolution.
+    RenameOccurrences {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        uris: Vec<String>,
+        names: Vec<String>,
+        #[serde(rename = "packageName", skip_serializing_if = "Option::is_none")]
+        package_name: Option<String>,
     },
     OrganizeImports {
         id: u64,
@@ -252,6 +268,19 @@ pub enum BridgeResponse {
         uri: String,
         edits: Vec<BridgeTextEdit>,
     },
+    RenameTarget {
+        id: u64,
+        select: Option<BridgeRenameElement>,
+        prepare: Option<BridgeRenameElement>,
+        #[serde(rename = "packageName")]
+        package_name: Option<String>,
+    },
+    RenameOccurrences {
+        id: u64,
+        files: Vec<BridgeRenameFile>,
+        methods: Vec<BridgeRenameMethod>,
+        relations: Vec<Vec<String>>,
+    },
     InlayHints {
         id: u64,
         hints: Vec<BridgeInlayHint>,
@@ -302,6 +331,8 @@ impl BridgeResponse {
             | BridgeResponse::SignatureHelp { id, .. }
             | BridgeResponse::WorkspaceEdit { id, .. }
             | BridgeResponse::TextEdits { id, .. }
+            | BridgeResponse::RenameTarget { id, .. }
+            | BridgeResponse::RenameOccurrences { id, .. }
             | BridgeResponse::InlayHints { id, .. }
             | BridgeResponse::CodeLenses { id, .. }
             | BridgeResponse::TypeHierarchyPrepare { id, .. }
@@ -479,4 +510,67 @@ pub struct BridgeCallHierarchyIncomingCall {
 pub struct BridgeCallHierarchyOutgoingCall {
     pub to: BridgeCallHierarchyItem,
     pub from_ranges: Vec<BridgeCallFromRange>,
+}
+
+/// An element selected for rename (`RenameBindingService.Element`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeRenameElement {
+    /// local, field, enumConstant, method, type, typeParameter, package, other
+    pub kind: Option<String>,
+    pub key: Option<String>,
+    pub name: Option<String>,
+    /// UTF-16 offset of the selected name in the target file.
+    pub name_start: i64,
+    pub name_length: i64,
+    pub from_source: bool,
+    pub recovered: bool,
+    pub anonymous: bool,
+    pub is_static: bool,
+    pub is_private: bool,
+    pub record_component: bool,
+    pub top_level: bool,
+    pub declaring_type_key: Option<String>,
+    pub declaring_type_name: Option<String>,
+    pub package_name: Option<String>,
+    /// Field type, or method return type (erasure, qualified).
+    pub type_name: Option<String>,
+    pub param_count: i32,
+    pub param_types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeRenameOccurrence {
+    /// UTF-16 offset.
+    pub start: usize,
+    pub length: usize,
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub key: Option<String>,
+    /// decl, ref, constructorName, packageDecl, import
+    pub role: Option<String>,
+    pub declaring_type_key: Option<String>,
+    pub param_count: i32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeRenameFile {
+    pub uri: String,
+    pub package_name: Option<String>,
+    pub occurrences: Vec<BridgeRenameOccurrence>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BridgeRenameMethod {
+    pub key: String,
+    pub name: Option<String>,
+    pub declaring_type_key: Option<String>,
+    pub declaring_type_name: Option<String>,
+    pub from_source: bool,
+    pub is_static: bool,
+    pub is_private: bool,
+    pub param_types: Option<Vec<String>>,
 }

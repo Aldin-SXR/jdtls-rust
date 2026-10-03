@@ -2410,9 +2410,10 @@ fn ecj_code_action_remove_all_unused_imports() {
 
 // ─── ECJ: rename ─────────────────────────────────────────────────────────────
 
-/// Prepare rename should return the selected identifier range and placeholder.
+/// Prepare rename returns the range of the selected name (jdt.ls
+/// `PrepareRenameHandler` answers with a plain `Range`, no placeholder).
 #[test]
-fn ui_prepare_rename_returns_placeholder() {
+fn ui_prepare_rename_returns_range() {
     let mut c = LspClient::spawn();
     c.initialize();
 
@@ -2427,9 +2428,17 @@ fn ui_prepare_rename_returns_placeholder() {
     "#);
     c.open(&uri, &src);
 
+    if !ecj_ready(&mut c, &uri) {
+        eprintln!("SKIP ui_prepare_rename_returns_range — ECJ not ready");
+        return;
+    }
+
     let result = c.prepare_rename(&uri, 3, 9);
-    assert_eq!(result["placeholder"], "count");
-    assert!(result["range"].is_object(), "expected prepareRename range, got: {result:?}");
+    assert_eq!(
+        result,
+        json!({ "start": { "line": 3, "character": 8 }, "end": { "line": 3, "character": 13 } }),
+        "expected the range of 'count', got: {result:?}"
+    );
 }
 
 /// Linked editing should return all ranges for the current symbol in the file.

@@ -94,6 +94,20 @@ impl Dispatcher {
         self.context_for_project(&ws, project.as_deref(), uri.is_none()).await
     }
 
+    /// Contexts of the other projects whose closure includes the project
+    /// owning `uri` (they may reference its elements).
+    pub async fn dependent_contexts(&self, uri: &Url) -> Vec<RequestContext> {
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(owner) = ws.project_for_uri(uri).map(|p| p.name.clone()) else { return Vec::new() };
+        let mut out = Vec::new();
+        for p in &ws.projects {
+            if p.name != owner && ws.project_closure(p).iter().any(|c| c.name == owner) {
+                out.push(self.context_for_project(&ws, Some(&p.name), false).await);
+            }
+        }
+        out
+    }
+
     /// Context for the named project, or for the default project when `None`
     /// (`everything`: include all documents, used for workspace-wide queries).
     async fn context_for_project(&self, ws: &Workspace, project: Option<&str>, everything: bool) -> RequestContext {
@@ -268,17 +282,37 @@ impl Dispatcher {
         }).await
     }
 
-    pub async fn rename(&self, uri: &Url, offset: usize, new_name: String) -> Result<BridgeResponse> {
-        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
-        self.send(BridgeRequest::Rename {
+    /// The element at `offset` (UTF-16) in `uri`, resolved against the
+    /// project owning `uri`.
+    pub async fn rename_target(&self, uri: &Url, offset: usize, ctx: &RequestContext) -> Result<BridgeResponse> {
+        self.send(BridgeRequest::RenameTarget {
             id: next_id(),
-            files,
-            classpath,
-            source_level,
-            options,
+            files: ctx.files.clone(),
+            classpath: ctx.classpath.clone(),
+            source_level: ctx.source_level.clone(),
+            options: ctx.options.clone(),
             uri: uri.to_string(),
             offset,
-            new_name,
+        }).await
+    }
+
+    /// Occurrences of `names` (and of `package_name`) in `uris`.
+    pub async fn rename_occurrences(
+        &self,
+        ctx: &RequestContext,
+        uris: Vec<String>,
+        names: Vec<String>,
+        package_name: Option<String>,
+    ) -> Result<BridgeResponse> {
+        self.send(BridgeRequest::RenameOccurrences {
+            id: next_id(),
+            files: ctx.files.clone(),
+            classpath: ctx.classpath.clone(),
+            source_level: ctx.source_level.clone(),
+            options: ctx.options.clone(),
+            uris,
+            names,
+            package_name,
         }).await
     }
 
