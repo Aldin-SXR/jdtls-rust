@@ -2,7 +2,7 @@
 //! Each request/response is a single JSON line on stdin/stdout.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 // ─── Requests (Rust → Java) ─────────────────────────────────────────────────
 
@@ -14,12 +14,16 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
     },
     Complete {
         id: u64,
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         offset: usize,
         /// If the cursor is inside an `import` statement, the prefix typed so far
@@ -33,6 +37,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         offset: usize,
     },
@@ -41,6 +47,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         offset: usize,
         kind: NavKind,
@@ -50,6 +58,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         offset: usize,
     },
@@ -58,6 +68,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         range: BridgeRange,
         #[serde(default)]
@@ -68,6 +80,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         offset: usize,
     },
@@ -76,6 +90,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         offset: usize,
         #[serde(rename = "newName")]
@@ -86,6 +102,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
     },
     Format {
@@ -100,6 +118,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
     },
     CodeLens {
@@ -107,6 +127,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
     },
     TypeHierarchyPrepare {
@@ -114,6 +136,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         offset: usize,
     },
@@ -122,6 +146,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         /// Opaque data from `BridgeTypeHierarchyItem.data` (uri + "\t" + offset)
         data: String,
     },
@@ -130,6 +156,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         data: String,
     },
     CallHierarchyPrepare {
@@ -137,6 +165,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         offset: usize,
     },
@@ -145,6 +175,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         offset: usize,
     },
@@ -153,6 +185,8 @@ pub enum BridgeRequest {
         files: HashMap<String, String>,
         classpath: Vec<String>,
         source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
         uri: String,
         offset: usize,
     },

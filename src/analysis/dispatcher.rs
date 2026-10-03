@@ -8,11 +8,21 @@ use super::semantic::ecj_process::next_id;
 use anyhow::{anyhow, Result};
 use tower_lsp::lsp_types::Url;
 use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use crate::project::Workspace;
 use tokio::sync::RwLock;
 
 /// Central dispatcher: owns the ECJ process and the document store.
+pub struct RequestContext {
+    pub files: HashMap<String, String>,
+    pub classpath: Vec<String>,
+    pub source_level: String,
+    pub options: BTreeMap<String, String>,
+}
+
 pub struct Dispatcher {
     pub store: Arc<DocumentStore>,
+    pub workspace: Arc<std::sync::RwLock<Workspace>>,
     ecj: Arc<RwLock<Option<EcjProcess>>>,
     config: Arc<RwLock<Config>>,
 }
@@ -21,6 +31,7 @@ impl Dispatcher {
     pub fn new(store: Arc<DocumentStore>, config: Arc<RwLock<Config>>) -> Self {
         Self {
             store,
+            workspace: Arc::new(std::sync::RwLock::new(Workspace::default())),
             ecj: Arc::new(RwLock::new(None)),
             config,
         }
@@ -54,6 +65,13 @@ impl Dispatcher {
         self.start_ecj().await
     }
 
+    /// Whether `uri` lies in a source folder of an imported project.
+    pub fn owns_source_path(&self, uri: &Url) -> bool {
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner());
+        crate::project::uri_to_path(uri)
+            .is_some_and(|p| ws.project_for_path(&p).is_some_and(|proj| proj.source_folder_for(&p).is_some()))
+    }
+
     pub async fn is_ecj_ready(&self) -> bool {
         self.ecj.read().await.is_some()
     }
@@ -66,21 +84,97 @@ impl Dispatcher {
         ecj.send(req).await
     }
 
-    async fn classpath_and_level(&self) -> (Vec<String>, String) {
-        let cfg = self.config.read().await;
-        (cfg.classpath.clone(), cfg.source_compatibility.clone())
+    /// Build the ECJ request context for `uri`: the sources, classpath,
+    /// compliance and compiler options of the project owning it.  Documents
+    /// outside every imported project (including virtual documents) share the
+    /// default project, which uses only the configured classpath/compliance.
+    pub async fn context_for(&self, uri: Option<&Url>) -> RequestContext {
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let project = uri.and_then(|u| ws.project_for_uri(u)).map(|p| p.name.clone());
+        self.context_for_project(&ws, project.as_deref(), uri.is_none()).await
+    }
+
+    /// Context for the named project, or for the default project when `None`
+    /// (`everything`: include all documents, used for workspace-wide queries).
+    async fn context_for_project(&self, ws: &Workspace, project: Option<&str>, everything: bool) -> RequestContext {
+        let cfg = self.config.read().await.clone();
+        let mut all = self.store.all_contents();
+        let Some(project) = project.and_then(|n| ws.project(n)) else {
+            if !everything {
+                all.retain(|u, _| Url::parse(u).ok().map_or(true, |u| ws.project_for_uri(&u).is_none()));
+            }
+            let mut options = crate::project::jdtls_default_options();
+            options.extend(cfg.compiler_options.clone());
+            return RequestContext {
+                files: all,
+                classpath: cfg.classpath.clone(),
+                source_level: cfg.source_compatibility.clone(),
+                options,
+            };
+        };
+        let closure = ws.project_closure(project);
+        let names: std::collections::HashSet<&str> = closure.iter().map(|p| p.name.as_str()).collect();
+        all.retain(|u, _| {
+            Url::parse(u)
+                .ok()
+                .and_then(|u| ws.project_for_uri(&u))
+                .is_some_and(|p| names.contains(p.name.as_str()))
+        });
+        let mut classpath: Vec<String> = Vec::new();
+        for p in &closure {
+            for lib in &p.libraries {
+                let s = lib.path.to_string_lossy().into_owned();
+                if !classpath.contains(&s) {
+                    classpath.push(s);
+                }
+            }
+        }
+        classpath.extend(cfg.classpath.iter().cloned());
+        let mut options = crate::project::jdtls_default_options();
+        options.extend(cfg.compiler_options.clone());
+        options.extend(project.options.clone());
+        let source_level = project
+            .compliance()
+            .map(str::to_owned)
+            .unwrap_or_else(|| cfg.source_compatibility.clone());
+        RequestContext { files: all, classpath, source_level, options }
     }
 
     // ── Public analysis ops ──────────────────────────────────────────────────
 
+    /// Compile every project (and the default project) separately and
+    /// return the merged diagnostics; each project only reports diagnostics
+    /// for its own files.
     pub async fn compile_all(&self) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
-        self.send(BridgeRequest::Compile {
-            id: next_id(),
-            files: self.store.all_contents(),
-            classpath,
-            source_level,
-        }).await
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut targets: Vec<Option<String>> = ws.projects.iter().map(|p| Some(p.name.clone())).collect();
+        targets.push(None);
+        let mut items = Vec::new();
+        let mut last_id = 0;
+        for target in targets {
+            let RequestContext { files, classpath, source_level, options } =
+                self.context_for_project(&ws, target.as_deref(), false).await;
+            if files.is_empty() {
+                continue;
+            }
+            let own: std::collections::HashSet<String> = files
+                .keys()
+                .filter(|u| {
+                    let owner = Url::parse(u).ok().and_then(|u| ws.project_for_uri(&u)).map(|p| p.name.clone());
+                    owner == target
+                })
+                .cloned()
+                .collect();
+            let id = next_id();
+            last_id = id;
+            match self.send(BridgeRequest::Compile { id, files, classpath, source_level, options }).await? {
+                BridgeResponse::Diagnostics { items: diags, .. } => {
+                    items.extend(diags.into_iter().filter(|d| own.contains(&d.uri)));
+                }
+                other => return Ok(other),
+            }
+        }
+        Ok(BridgeResponse::Diagnostics { id: last_id, items })
     }
 
     /// `content_snapshot` is the content of `uri` at the time `offset` was computed.
@@ -93,14 +187,14 @@ impl Dispatcher {
         import_prefix: Option<String>,
         content_snapshot: String,
     ) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
-        let mut files = self.store.all_contents();
+        let RequestContext { mut files, classpath, source_level, options } = self.context_for(None).await;
         files.insert(uri.to_string(), content_snapshot);
         self.send(BridgeRequest::Complete {
             id: next_id(),
             files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             offset,
             import_prefix,
@@ -108,24 +202,26 @@ impl Dispatcher {
     }
 
     pub async fn hover(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::Hover {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             offset,
         }).await
     }
 
     pub async fn navigate(&self, uri: &Url, offset: usize, kind: NavKind) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::Navigate {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             offset,
             kind,
@@ -133,24 +229,26 @@ impl Dispatcher {
     }
 
     pub async fn find_references(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::FindReferences {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             offset,
         }).await
     }
 
     pub async fn code_action(&self, uri: &Url, range: BridgeRange, diagnostics: Vec<BridgeDiagnostic>) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::CodeAction {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             range,
             diagnostics,
@@ -158,24 +256,26 @@ impl Dispatcher {
     }
 
     pub async fn signature_help(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::SignatureHelp {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             offset,
         }).await
     }
 
     pub async fn rename(&self, uri: &Url, offset: usize, new_name: String) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::Rename {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             offset,
             new_name,
@@ -183,34 +283,37 @@ impl Dispatcher {
     }
 
     pub async fn organize_imports(&self, uri: &Url) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::OrganizeImports {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
         }).await
     }
 
     pub async fn code_lens(&self, uri: &Url) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::CodeLens {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
         }).await
     }
 
     pub async fn inlay_hints(&self, uri: &Url) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::InlayHints {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
         }).await
     }
@@ -227,70 +330,76 @@ impl Dispatcher {
     }
 
     pub async fn type_hierarchy_prepare(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::TypeHierarchyPrepare {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             offset,
         }).await
     }
 
     pub async fn type_hierarchy_supertypes(&self, data: String) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(None).await;
         self.send(BridgeRequest::TypeHierarchySupertypes {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             data,
         }).await
     }
 
     pub async fn type_hierarchy_subtypes(&self, data: String) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(None).await;
         self.send(BridgeRequest::TypeHierarchySubtypes {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             data,
         }).await
     }
 
     pub async fn call_hierarchy_prepare(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::CallHierarchyPrepare {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             offset,
         }).await
     }
 
     pub async fn call_hierarchy_incoming(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::CallHierarchyIncoming {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             offset,
         }).await
     }
 
     pub async fn call_hierarchy_outgoing(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
-        let (classpath, source_level) = self.classpath_and_level().await;
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::CallHierarchyOutgoing {
             id: next_id(),
-            files: self.store.all_contents(),
+            files,
             classpath,
             source_level,
+            options,
             uri: uri.to_string(),
             offset,
         }).await

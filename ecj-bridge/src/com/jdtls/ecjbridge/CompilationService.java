@@ -138,35 +138,7 @@ public class CompilationService {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private CompilerOptions buildOptions(String sourceLevel) {
-        Map<String, String> opts = new HashMap<>();
-        String ver = resolveVersion(sourceLevel);
-        opts.put(CompilerOptions.OPTION_Source, ver);
-        opts.put(CompilerOptions.OPTION_Compliance, ver);
-        opts.put(CompilerOptions.OPTION_TargetPlatform, ver);
-        opts.put(CompilerOptions.OPTION_ReportDeprecation, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportUnusedImport, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportUnusedLocal, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportUnusedParameter, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportUnusedParameterIncludeDocCommentReference, CompilerOptions.ENABLED);
-        opts.put(CompilerOptions.OPTION_ReportNullReference, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportPotentialNullReference, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportUncheckedTypeOperation, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportRawTypeReference, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportUnusedDeclaredThrownException, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportUnusedDeclaredThrownExceptionIncludeDocCommentReference, CompilerOptions.ENABLED);
-        opts.put(CompilerOptions.OPTION_ReportUnusedDeclaredThrownExceptionExemptExceptionAndThrowable, CompilerOptions.ENABLED);
-        opts.put(CompilerOptions.OPTION_ReportUnnecessaryTypeCheck, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportDeadCode, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportDeadCodeInTrivialIfStatement, CompilerOptions.ENABLED);
-        opts.put(CompilerOptions.OPTION_ReportNoEffectAssignment, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportUnusedObjectAllocation, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_DocCommentSupport, CompilerOptions.ENABLED);
-        opts.put(CompilerOptions.OPTION_ReportMissingJavadocTags, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportMissingJavadocTagsVisibility, CompilerOptions.PRIVATE);
-        opts.put(CompilerOptions.OPTION_ReportInvalidJavadoc, CompilerOptions.WARNING);
-        opts.put(CompilerOptions.OPTION_ReportInvalidJavadocTags, CompilerOptions.ENABLED);
-        opts.put(CompilerOptions.OPTION_ReportInvalidJavadocTagsVisibility, CompilerOptions.PRIVATE);
-        opts.put(CompilerOptions.OPTION_SuppressWarnings, CompilerOptions.ENABLED);
+        Map<String, String> opts = BridgeOptions.map(sourceLevel);
         opts.put(CompilerOptions.OPTION_Process_Annotations, CompilerOptions.ENABLED);
         return new CompilerOptions(opts);
     }
@@ -212,14 +184,7 @@ public class CompilationService {
     }
 
     private String resolveVersion(String level) {
-        return switch (level.trim()) {
-            case "8", "1.8" -> CompilerOptions.VERSION_1_8;
-            case "11" -> CompilerOptions.VERSION_11;
-            case "17" -> CompilerOptions.VERSION_17;
-            case "21" -> CompilerOptions.VERSION_21;
-            case "22" -> CompilerOptions.VERSION_22;
-            default -> CompilerOptions.VERSION_21;
-        };
+        return BridgeOptions.version(level);
     }
 
     private String originatingUri(char[] fileName, Map<String, String> sourceFiles) {

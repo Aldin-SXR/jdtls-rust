@@ -17,6 +17,7 @@ public class BridgeProtocol {
         public Map<String, String> files;
         public List<String> classpath;
         public String sourceLevel;
+        public Map<String, String> options; // effective JDT core options (computed by Rust)
         public String uri;
         public int offset;
         public String kind;     // NavKind for Navigate requests

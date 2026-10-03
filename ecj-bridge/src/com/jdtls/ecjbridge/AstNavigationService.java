@@ -149,7 +149,7 @@ public class AstNavigationService {
         // Include the running VM's boot classpath so JDK types (System, String, …)
         // are always resolvable, plus any user-provided classpath entries.
         String[] cp = classpath != null ? classpath.toArray(new String[0]) : new String[0];
-        parser.setEnvironment(cp, null, null, /* includeRunningVMBootclasspath */ true);
+        BridgeOptions.configureEnvironment(parser, cp);
 
         CompilationUnit cu = (CompilationUnit) parser.createAST(null);
 
@@ -608,7 +608,7 @@ public class AstNavigationService {
         bindingParser.setCompilerOptions(compilerOptions(sourceLevel));
         bindingParser.setUnitName(unitName(targetUri));
         String[] cp = classpath != null ? classpath.toArray(new String[0]) : new String[0];
-        bindingParser.setEnvironment(cp, null, null, false); // don't use running VM boot classpath (avoids hang on Java 25+)
+        BridgeOptions.configureEnvironment(bindingParser, cp);
         CompilationUnit bindingCu = (CompilationUnit) bindingParser.createAST(null);
 
         // Walk the target file for method / constructor invocations and emit hints.
@@ -1232,28 +1232,12 @@ public class AstNavigationService {
         parser.setStatementsRecovery(true);
         parser.setCompilerOptions(compilerOptions(sourceLevel));
         parser.setUnitName(unitName(targetUri));
-        parser.setEnvironment(new String[0], null, null, false);
+        BridgeOptions.configureEnvironment(parser, new String[0]);
         return (CompilationUnit) parser.createAST(null);
     }
 
     private Map<String, String> compilerOptions(String sourceLevel) {
-        String ver = switch (sourceLevel.trim()) {
-            case "8", "1.8" -> "1.8";
-            case "11" -> "11";
-            case "17" -> "17";
-            case "21" -> "21";
-            case "22" -> "22";
-            default -> "21";
-        };
-
-        Map<String, String> opts = new HashMap<>();
-        opts.put(org.eclipse.jdt.core.JavaCore.COMPILER_SOURCE, ver);
-        opts.put(org.eclipse.jdt.core.JavaCore.COMPILER_COMPLIANCE, ver);
-        opts.put(org.eclipse.jdt.core.JavaCore.COMPILER_CODEGEN_TARGET_PLATFORM, ver);
-        // Required so method.getJavadoc() returns the parsed Javadoc AST node
-        opts.put(org.eclipse.jdt.core.JavaCore.COMPILER_DOC_COMMENT_SUPPORT,
-                 org.eclipse.jdt.core.JavaCore.ENABLED);
-        return opts;
+        return BridgeOptions.map(sourceLevel);
     }
 
     private String unitName(String uri) {

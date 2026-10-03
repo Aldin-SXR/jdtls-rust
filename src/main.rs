@@ -3,6 +3,7 @@ mod config;
 mod document_store;
 mod embedded_jar;
 mod handlers;
+mod project;
 mod server;
 
 use server::JavaLanguageServer;

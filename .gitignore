@@ -1,6 +1,6 @@
-eclipse.jdt.ls/
-target/
-tests/
-web/
-ui/
+/eclipse.jdt.ls/
+/target/
+/ecj-bridge/target/
+/web/
+/ui/
 .DS_Store

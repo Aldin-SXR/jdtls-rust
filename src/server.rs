@@ -101,6 +101,21 @@ async fn publish_diagnostics(store: &DocumentStore, dispatcher: &Dispatcher, cli
     }
 }
 
+/// jdt.ls `language/status` notification.
+enum LanguageStatus {}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LanguageStatusParams {
+    #[serde(rename = "type")]
+    typ: String,
+    message: String,
+}
+
+impl tower_lsp::lsp_types::notification::Notification for LanguageStatus {
+    type Params = LanguageStatusParams;
+    const METHOD: &'static str = "language/status";
+}
+
 pub struct JavaLanguageServer {
     client: Client,
     store: Arc<DocumentStore>,
@@ -111,6 +126,8 @@ pub struct JavaLanguageServer {
     workspace_folders: Arc<RwLock<Vec<WorkspaceFolder>>>,
     /// Sends a signal that source changed; background task debounces and compiles.
     compile_tx: watch::Sender<u64>,
+    /// Workspace root folders used for project import.
+    roots: Arc<RwLock<Vec<std::path::PathBuf>>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -137,6 +154,7 @@ impl JavaLanguageServer {
             client_flavor: Arc::new(RwLock::new(ClientFlavor::Default)),
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             compile_tx,
+            roots: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -172,6 +190,27 @@ impl JavaLanguageServer {
 
     // ── Utilities ─────────────────────────────────────────────────────────────
 
+    /// (Re-)import all projects under the workspace roots and register their
+    /// source files with the document store.
+    async fn reimport_workspace(&self) {
+        let roots = self.roots.read().await.clone();
+        let settings = import_settings(self.config.read().await.settings.as_ref());
+        let ws = tokio::task::spawn_blocking(move || crate::project::Workspace::import(&roots, &settings))
+            .await
+            .unwrap_or_default();
+        for p in &ws.projects {
+            info!("Imported {:?} project '{}' at {}", p.kind, p.name, p.root.display());
+        }
+        let files: Vec<Url> = ws.java_files().into_keys().filter_map(|p| Url::from_file_path(p).ok()).collect();
+        self.store.set_workspace_files(files);
+        *self.dispatcher.workspace.write().unwrap_or_else(|e| e.into_inner()) = ws;
+    }
+
+    fn request_compile(&self) {
+        let next = (*self.compile_tx.borrow()).wrapping_add(1);
+        let _ = self.compile_tx.send(next);
+    }
+
     /// Compile all open files and publish diagnostics to the client immediately.
     /// Used on demand (e.g. after a workspace-wide action); the background loop
     /// in `spawn_compile_loop` handles the normal debounced case.
@@ -202,16 +241,38 @@ impl LanguageServer for JavaLanguageServer {
 
         // Parse initializationOptions
         if let Some(opts) = params.initialization_options {
-            let cfg: Config = serde_json::from_value::<Config>(opts)
+            let mut cfg: Config = serde_json::from_value::<Config>(opts)
                 .unwrap_or_default()
                 .with_defaults();
+            if let Some(settings) = cfg.settings.clone() {
+                merge_config_settings(&mut cfg, &settings);
+            }
             *self.config.write().await = cfg;
         } else {
             *self.config.write().await = Config::default().with_defaults();
         }
 
+        // Import workspace projects (Gradle → Maven → Eclipse → invisible).
+        let mut roots: Vec<std::path::PathBuf> = params
+            .workspace_folders
+            .iter()
+            .flatten()
+            .filter_map(|f| f.uri.to_file_path().ok())
+            .collect();
+        if roots.is_empty() {
+            #[allow(deprecated)]
+            if let Some(p) = params.root_uri.as_ref().and_then(|u| u.to_file_path().ok()) {
+                roots.push(p);
+            } else if let Some(p) = params.root_path.as_ref() {
+                roots.push(std::path::PathBuf::from(p));
+            }
+        }
+        *self.roots.write().await = roots;
+        self.reimport_workspace().await;
+
         // Start ecj-bridge in background, then kick the compile loop
         let dispatcher = Arc::clone(&self.dispatcher);
+        let store = Arc::clone(&self.store);
         let client = self.client.clone();
         let compile_tx = self.compile_tx.clone();
         tokio::spawn(async move {
@@ -221,8 +282,17 @@ impl LanguageServer for JavaLanguageServer {
                     format!("jdtls-rust: failed to start ecj-bridge: {e}")).await;
             } else {
                 info!("ecj-bridge started");
-                // Trigger an initial compile — use a fresh increment so the watch
-                // always fires even if did_open already sent a signal earlier.
+                // Initial build of the imported workspace, then report readiness
+                // the way jdt.ls does (`language/status` ServiceReady).
+                publish_diagnostics(&store, &dispatcher, &client).await;
+                client
+                    .send_notification::<LanguageStatus>(LanguageStatusParams {
+                        typ: "ServiceReady".into(),
+                        message: "ServiceReady".into(),
+                    })
+                    .await;
+                // Trigger a compile for anything opened meanwhile — use a fresh
+                // increment so the watch always fires.
                 let next = (*compile_tx.borrow()).wrapping_add(1);
                 let _ = compile_tx.send(next);
             }
@@ -310,6 +380,7 @@ impl LanguageServer for JavaLanguageServer {
                 call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec![
+                        "java.project.getAll".to_owned(),
                         "jdtls-rust.refreshDiagnostics".to_owned(),
                         "java.project.refreshDiagnostics".to_owned(),
                         "java.project.rebuild".to_owned(),
@@ -378,11 +449,15 @@ impl LanguageServer for JavaLanguageServer {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        self.store.close(&params.text_document.uri);
-        // Clear diagnostics for the closed file
-        self.client
-            .publish_diagnostics(params.text_document.uri, vec![], None)
-            .await;
+        let uri = params.text_document.uri;
+        self.store.close(&uri);
+        if self.store.is_workspace_file(&uri) {
+            // Reverts to the on-disk content; diagnostics follow the build.
+            self.request_compile();
+        } else {
+            // Clear diagnostics for the closed virtual/external file
+            self.client.publish_diagnostics(uri, vec![], None).await;
+        }
     }
 
     async fn did_save(&self, _params: DidSaveTextDocumentParams) {
@@ -414,16 +489,30 @@ impl LanguageServer for JavaLanguageServer {
     }
 
     async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
-        let mut folders = self.workspace_folders.write().await;
-        folders.retain(|folder| !params.event.removed.iter().any(|removed| removed.uri == folder.uri));
-        for added in params.event.added {
-            if !folders.iter().any(|folder| folder.uri == added.uri) {
-                folders.push(added);
+        {
+            let mut folders = self.workspace_folders.write().await;
+            folders.retain(|folder| !params.event.removed.iter().any(|removed| removed.uri == folder.uri));
+            for added in &params.event.added {
+                if !folders.iter().any(|folder| folder.uri == added.uri) {
+                    folders.push(added.clone());
+                }
+            }
+            let mut roots = self.roots.write().await;
+            for removed in &params.event.removed {
+                if let Ok(p) = removed.uri.to_file_path() {
+                    roots.retain(|r| r != &p);
+                }
+            }
+            for added in &params.event.added {
+                if let Ok(p) = added.uri.to_file_path() {
+                    if !roots.contains(&p) {
+                        roots.push(p);
+                    }
+                }
             }
         }
-
-        let next = (*self.compile_tx.borrow()).wrapping_add(1);
-        let _ = self.compile_tx.send(next);
+        self.reimport_workspace().await;
+        self.request_compile();
     }
 
     async fn did_create_files(&self, _params: CreateFilesParams) {
@@ -452,29 +541,47 @@ impl LanguageServer for JavaLanguageServer {
             let Ok(uri) = Url::parse(&deleted.uri) else {
                 continue;
             };
-            self.store.close(&uri);
+            self.store.remove(&uri);
             self.client.publish_diagnostics(uri, vec![], None).await;
         }
+        self.request_compile();
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         let mut should_recompile = false;
+        let mut reimport = false;
         for change in params.changes {
+            let name = change.uri.path().rsplit('/').next().unwrap_or("").to_owned();
+            if is_build_descriptor(&name) {
+                reimport = true;
+                continue;
+            }
             match change.typ {
                 FileChangeType::DELETED => {
-                    self.store.close(&change.uri);
+                    self.store.remove(&change.uri);
                     self.client.publish_diagnostics(change.uri, vec![], None).await;
+                    should_recompile = true;
                 }
-                FileChangeType::CREATED | FileChangeType::CHANGED => {
+                FileChangeType::CREATED => {
+                    if name.ends_with(".java") && self.dispatcher.owns_source_path(&change.uri) {
+                        self.store.add_workspace_file(change.uri);
+                    }
+                    should_recompile = true;
+                }
+                FileChangeType::CHANGED => {
+                    self.store.invalidate_disk(&change.uri);
                     should_recompile = true;
                 }
                 _ => {}
             }
         }
 
+        if reimport {
+            self.reimport_workspace().await;
+            should_recompile = true;
+        }
         if should_recompile {
-            let next = (*self.compile_tx.borrow()).wrapping_add(1);
-            let _ = self.compile_tx.send(next);
+            self.request_compile();
         }
     }
 
@@ -1488,6 +1595,18 @@ impl LanguageServer for JavaLanguageServer {
                 }
                 Ok(None)
             }
+            "java.project.getAll" => {
+                // jdt.ls `ProjectCommand.getAllJavaProjects`: URIs of all
+                // imported Java projects (excluding the default project).
+                let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+                let uris: Vec<Value> = ws
+                    .projects
+                    .iter()
+                    .filter_map(|p| Url::from_directory_path(&p.root).ok())
+                    .map(|u| Value::String(u.to_string().trim_end_matches('/').to_owned()))
+                    .collect();
+                Ok(Some(Value::Array(uris)))
+            }
             other => {
                 warn!("Ignoring unsupported workspace/executeCommand request: {other}");
                 Ok(None)
@@ -1584,6 +1703,38 @@ fn java_file_operation_registration_options() -> FileOperationRegistrationOption
             },
         }],
     }
+}
+
+fn is_build_descriptor(name: &str) -> bool {
+    matches!(
+        name,
+        "pom.xml" | ".classpath" | ".project" | "build.gradle" | "settings.gradle" | "build.gradle.kts"
+            | "settings.gradle.kts" | "org.eclipse.jdt.core.prefs"
+    )
+}
+
+/// Project import settings from a jdt.ls `settings` object.
+fn import_settings(settings: Option<&Value>) -> crate::project::ImportSettings {
+    let mut s = crate::project::ImportSettings::jdtls_defaults();
+    let Some(v) = settings else { return s };
+    if let Some(ex) = setting_string_array(v, &["java", "import", "exclusions"]) {
+        s.exclusions = ex;
+    }
+    if let Some(b) = setting_value(v, &["java", "import", "maven", "enabled"]).and_then(Value::as_bool) {
+        s.maven_enabled = b;
+    }
+    if let Some(b) = setting_value(v, &["java", "import", "gradle", "enabled"]).and_then(Value::as_bool) {
+        s.gradle_enabled = b;
+    }
+    if let Some(sp) = setting_string_array(v, &["java", "project", "sourcePaths"]) {
+        s.source_paths = sp;
+    }
+    if let Some(libs) = setting_string_array(v, &["java", "project", "referencedLibraries"]) {
+        s.referenced_libraries = libs;
+    } else if let Some(libs) = setting_string_array(v, &["java", "project", "referencedLibraries", "include"]) {
+        s.referenced_libraries = libs;
+    }
+    s
 }
 
 fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
@@ -2282,7 +2433,7 @@ pub fn detect_import_prefix(
 
 #[cfg(test)]
 mod tests {
-    use super::{completion_store_is_fresh, detect_import_prefix};
+    use super::{completion_store_is_fresh, detect_import_prefix, is_after_numeric_literal_dot};
     use tower_lsp::lsp_types::Position;
 
     // ── Normal (non-stale) cases ──────────────────────────────────────────────

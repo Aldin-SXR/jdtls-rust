@@ -70,11 +70,7 @@ public class CompletionService {
             parser.setStatementsRecovery(true);
             parser.setBindingsRecovery(true);
 
-            Map<String, String> opts = new HashMap<>();
-            String ver = resolveVersion(sourceLevel);
-            opts.put(org.eclipse.jdt.core.JavaCore.COMPILER_SOURCE, ver);
-            opts.put(org.eclipse.jdt.core.JavaCore.COMPILER_COMPLIANCE, ver);
-            parser.setCompilerOptions(opts);
+            parser.setCompilerOptions(BridgeOptions.map(sourceLevel));
 
             CompilationUnit cu = (CompilationUnit) parser.createAST(null);
             int clampedOffset = Math.max(0, Math.min(offset, source.length()));
@@ -1789,13 +1785,7 @@ public class CompletionService {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private String resolveVersion(String level) {
-        return switch (level.trim()) {
-            case "8", "1.8" -> "1.8";
-            case "11" -> "11";
-            case "17" -> "17";
-            case "21" -> "21";
-            default -> "21";
-        };
+        return BridgeOptions.version(level);
     }
 
     /** Finds the deepest AST node containing the given offset. */

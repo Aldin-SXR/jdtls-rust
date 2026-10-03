@@ -172,6 +172,7 @@ public class Main {
                                    CompletionService completer,
                                    FormatterService formatter,
                                    AstNavigationService navigation) {
+        BridgeOptions.setCurrent(req.options);
         return switch (req.method) {
             case "compile" -> {
                 List<BridgeDiagnostic> diags = compiler.compile(
@@ -781,25 +782,14 @@ public class Main {
         
         // Provide environment for binding resolution
         String[] cp = classpath.toArray(new String[0]);
-        parser.setEnvironment(cp, new String[]{}, null, true);
+        BridgeOptions.configureEnvironment(parser, cp);
 
-        java.util.Map<String, String> opts = new java.util.HashMap<>();
-        String ver = resolveSourceLevel(sourceLevel);
-        opts.put(org.eclipse.jdt.core.JavaCore.COMPILER_SOURCE, ver);
-        opts.put(org.eclipse.jdt.core.JavaCore.COMPILER_COMPLIANCE, ver);
-        opts.put(org.eclipse.jdt.core.JavaCore.COMPILER_DOC_COMMENT_SUPPORT, org.eclipse.jdt.core.JavaCore.ENABLED);
-        parser.setCompilerOptions(opts);
+        parser.setCompilerOptions(BridgeOptions.map(sourceLevel));
         return (org.eclipse.jdt.core.dom.CompilationUnit) parser.createAST(null);
     }
 
     private static String resolveSourceLevel(String level) {
-        return switch (level.trim()) {
-            case "8", "1.8" -> "1.8";
-            case "11" -> "11";
-            case "17" -> "17";
-            case "21" -> "21";
-            default -> "21";
-        };
+        return BridgeOptions.version(level);
     }
 
     private static BridgeAction makeReplaceNodeAction(String title, String uri, String source, org.eclipse.jdt.core.dom.ASTNode node, String newText) {

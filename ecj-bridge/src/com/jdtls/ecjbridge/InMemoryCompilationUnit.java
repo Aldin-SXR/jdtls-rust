@@ -51,6 +51,14 @@ public class InMemoryCompilationUnit implements ICompilationUnit {
     }
 
     @Override
+    public org.eclipse.jdt.internal.compiler.lookup.ModuleBinding module(
+            org.eclipse.jdt.internal.compiler.lookup.LookupEnvironment environment) {
+        // Workspace sources live in the unnamed module (ECJ >= 3.40 reports
+        // "module not found" for a null module name otherwise).
+        return environment.UnNamedModule;
+    }
+
+    @Override
     public boolean ignoreOptionalProblems() {
         return false;
     }

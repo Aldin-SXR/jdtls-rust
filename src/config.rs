@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Parsed from LSP `initializationOptions`.
@@ -20,6 +21,13 @@ pub struct Config {
 
     /// Maximum number of completion items to return.
     pub max_completions: usize,
+
+    /// Extra JDT core compiler options (`org.eclipse.jdt.core.*` keys)
+    /// applied to every project, e.g. problem severities.
+    pub compiler_options: BTreeMap<String, String>,
+
+    /// jdt.ls-style `settings` object (`{ "java": { ... } }`).
+    pub settings: Option<serde_json::Value>,
 }
 
 impl Config {
