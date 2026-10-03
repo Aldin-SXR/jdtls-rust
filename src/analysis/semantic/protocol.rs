@@ -139,12 +139,21 @@ pub enum BridgeRequest {
         options: BTreeMap<String, String>,
         uri: String,
     },
+    /// Run the Eclipse code formatter (`CodeFormatter.format(kind, source,
+    /// offset, length, indentationLevel, lineSeparator)`) with a fully
+    /// resolved option map.  Offsets are UTF-16 code units.
     Format {
         id: u64,
         source: String,
-        uri: String,
-        tab_size: u32,
-        insert_spaces: bool,
+        #[serde(rename = "formatKind")]
+        format_kind: i32,
+        offset: usize,
+        length: usize,
+        #[serde(rename = "indentationLevel")]
+        indentation_level: i32,
+        #[serde(rename = "lineSeparator")]
+        line_separator: String,
+        options: BTreeMap<String, String>,
     },
     InlayHints {
         id: u64,
@@ -284,10 +293,17 @@ pub enum BridgeResponse {
         id: u64,
         changes: Vec<BridgeFileEdit>,
     },
+    #[allow(dead_code)] // organizeImports (not consumed yet)
     TextEdits {
         id: u64,
         uri: String,
         edits: Vec<BridgeTextEdit>,
+    },
+    /// Flattened leaf edits of the formatter's `TextEdit`, or `None` when the
+    /// formatter returned `null` (source could not be formatted).
+    FormatEdits {
+        id: u64,
+        edits: Option<Vec<BridgeFormatEdit>>,
     },
     RenameTarget {
         id: u64,
@@ -359,6 +375,7 @@ impl BridgeResponse {
             | BridgeResponse::SignatureHelpData { id, .. }
             | BridgeResponse::WorkspaceEdit { id, .. }
             | BridgeResponse::TextEdits { id, .. }
+            | BridgeResponse::FormatEdits { id, .. }
             | BridgeResponse::RenameTarget { id, .. }
             | BridgeResponse::RenameOccurrences { id, .. }
             | BridgeResponse::InlayHints { id, .. }
@@ -432,6 +449,15 @@ pub struct BridgeAction {
 pub struct BridgeFileEdit {
     pub uri: String,
     pub edits: Vec<BridgeTextEdit>,
+}
+
+/// One leaf edit of a formatter result: replace `length` UTF-16 code units at
+/// `offset` with `text`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BridgeFormatEdit {
+    pub offset: usize,
+    pub length: usize,
+    pub text: String,
 }
 
 #[derive(Debug, Deserialize)]

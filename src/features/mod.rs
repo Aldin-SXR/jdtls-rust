@@ -5,6 +5,7 @@ pub mod client_caps;
 pub mod document_symbol;
 pub mod dom;
 pub mod folding_range;
+pub mod formatting;
 pub mod inlay_hint_filter;
 pub mod inlay_hints;
 pub mod java_model;

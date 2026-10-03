@@ -16,8 +16,20 @@ pub struct Config {
     /// Java source/target compatibility level (default: "21").
     pub source_compatibility: String,
 
-    /// Formatter profile: "google" | "eclipse" (default: "eclipse").
-    pub formatter_profile: String,
+    /// `java.format.*` preferences (from `settings`).
+    #[serde(skip)]
+    pub format: crate::features::formatting::FormatSettings,
+
+    /// jdt.ls `extendedClientCapabilities` (e.g. `nonStandardJavaFormatting`).
+    pub extended_client_capabilities: Option<serde_json::Value>,
+
+    /// `initializationOptions.workspaceFolders` (URIs).
+    pub workspace_folders: Option<Vec<String>>,
+
+    /// jdt.ls `Preferences.getRootPaths()`: `workspaceFolders` from the
+    /// initialization options, else `rootUri`/`rootPath` (`BaseInitHandler`).
+    #[serde(skip)]
+    pub root_paths: Vec<std::path::PathBuf>,
 
     /// Maximum number of completion items to return.
     pub max_completions: usize,
@@ -42,9 +54,6 @@ impl Config {
     pub fn with_defaults(mut self) -> Self {
         if self.source_compatibility.is_empty() {
             self.source_compatibility = "21".to_owned();
-        }
-        if self.formatter_profile.is_empty() {
-            self.formatter_profile = "eclipse".to_owned();
         }
         if self.max_completions == 0 {
             self.max_completions = 50;

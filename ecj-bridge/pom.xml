@@ -42,13 +42,6 @@
       <artifactId>gson</artifactId>
       <version>2.10.1</version>
     </dependency>
-
-    <!-- Java formatter (optional — gracefully degrades if absent) -->
-    <dependency>
-      <groupId>com.google.googlejavaformat</groupId>
-      <artifactId>google-java-format</artifactId>
-      <version>1.22.0</version>
-    </dependency>
   </dependencies>
 
   <build>

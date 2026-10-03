@@ -1,57 +1,72 @@
 package com.jdtls.ecjbridge;
 
-import com.google.googlejavaformat.java.Formatter;
-import com.google.googlejavaformat.java.FormatterException;
-
 import java.util.*;
-import java.util.logging.Logger;
+
+import org.eclipse.jdt.core.formatter.CodeFormatter;
+import org.eclipse.jdt.core.formatter.DefaultCodeFormatterConstants;
+import org.eclipse.jdt.internal.formatter.DefaultCodeFormatter;
+import org.eclipse.text.edits.InsertEdit;
+import org.eclipse.text.edits.ReplaceEdit;
+import org.eclipse.text.edits.TextEdit;
 
 import com.jdtls.ecjbridge.BridgeProtocol.*;
 
 /**
- * Formats Java source using google-java-format.
+ * Runs the Eclipse code formatter.  The Rust server resolves the complete
+ * option map (defaults, profile, project and client options) and computes
+ * the region; this only calls {@code CodeFormatter.format} and returns the
+ * flattened leaf edits (jdt.ls {@code TextEditUtil.flatten}).
  */
 public class FormatterService {
 
-    private static final Logger LOG = Logger.getLogger(FormatterService.class.getName());
-
-    // google-java-format Formatter instance (thread-safe)
-    private final Formatter formatter;
-    private final boolean available;
-
-    public FormatterService() {
-        Formatter f = null;
-        boolean ok = false;
-        try {
-            f = new Formatter();
-            ok = true;
-        } catch (Throwable t) {
-            LOG.warning("google-java-format not available: " + t.getMessage());
+    /**
+     * @return the leaf edits, or {@code null} when the formatter returned {@code null}
+     */
+    public List<BridgeFormatEdit> format(String source, int kind, int offset, int length,
+                                         int indentationLevel, String lineSeparator,
+                                         Map<String, String> options) {
+        CodeFormatter formatter = createCodeFormatter(options);
+        TextEdit edit = formatter.format(kind, source, offset, length, indentationLevel, lineSeparator);
+        if (edit == null) {
+            return null;
         }
-        this.formatter = f;
-        this.available = ok;
+        List<BridgeFormatEdit> out = new ArrayList<>();
+        // jdt.ls treats a root without children as "no edits".
+        for (TextEdit child : edit.getChildren()) {
+            flatten(child, out);
+        }
+        return out;
     }
 
-    public List<BridgeTextEdit> format(String source, int tabSize, boolean insertSpaces) {
-        if (!available || formatter == null) {
-            return Collections.emptyList();
-        }
-        try {
-            String formatted = formatter.formatSource(source);
-            if (formatted.equals(source)) return Collections.emptyList();
+    /**
+     * {@code ToolFactory.createCodeFormatter(options, M_FORMAT_NEW)} without the
+     * extension-point lookup (no OSGi here).
+     */
+    private static CodeFormatter createCodeFormatter(Map<String, String> options) {
+        Map<String, String> current = new HashMap<>(options == null ? Map.of() : options);
+        current.put(DefaultCodeFormatterConstants.FORMATTER_COMMENT_FORMAT_LINE_COMMENT_STARTING_ON_FIRST_COLUMN, DefaultCodeFormatterConstants.TRUE);
+        current.put(DefaultCodeFormatterConstants.FORMATTER_NEVER_INDENT_BLOCK_COMMENTS_ON_FIRST_COLUMN, DefaultCodeFormatterConstants.FALSE);
+        current.put(DefaultCodeFormatterConstants.FORMATTER_NEVER_INDENT_LINE_COMMENTS_ON_FIRST_COLUMN, DefaultCodeFormatterConstants.FALSE);
+        return new DefaultCodeFormatter(current);
+    }
 
-            // Return single full-file replacement
-            BridgeTextEdit te = new BridgeTextEdit();
-            te.startLine = 0;
-            te.startChar = 0;
-            String[] lines = source.split("\n", -1);
-            te.endLine = lines.length - 1;
-            te.endChar = lines[lines.length - 1].length();
-            te.newText = formatted;
-            return List.of(te);
-        } catch (FormatterException e) {
-            LOG.warning("Formatter error: " + e.getMessage());
-            return Collections.emptyList();
+    private static void flatten(TextEdit edit, List<BridgeFormatEdit> out) {
+        if (!edit.hasChildren()) {
+            BridgeFormatEdit e = new BridgeFormatEdit();
+            e.offset = edit.getOffset();
+            e.length = edit.getLength();
+            if (edit instanceof ReplaceEdit r) {
+                e.text = r.getText();
+            } else if (edit instanceof InsertEdit i) {
+                e.text = i.getText();
+            } else {
+                e.text = "";
+            }
+            out.add(e);
+            return;
+        }
+        for (TextEdit child : edit.getChildren()) {
+            flatten(child, out);
         }
     }
 }
