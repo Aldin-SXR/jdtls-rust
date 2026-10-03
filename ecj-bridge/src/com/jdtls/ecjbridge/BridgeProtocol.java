@@ -32,6 +32,7 @@ public class BridgeProtocol {
         public List<String> uris;        // renameOccurrences: units to resolve
         public List<String> names;       // renameOccurrences: identifiers of interest
         public String packageName;       // renameOccurrences: package whose references to collect
+        public com.google.gson.JsonObject query; // semanticSearch: SemanticIndexService query
     }
 
     public static class BridgeRange {
@@ -121,6 +122,13 @@ public class BridgeProtocol {
         public List<BridgeTextEdit> edits;
         public TextEditsResponse(long id, String uri, List<BridgeTextEdit> edits) {
             this.id = id; this.method = "textEdits"; this.uri = uri; this.edits = edits;
+        }
+    }
+
+    public static class SemanticSearchResponse extends Response {
+        public Object result;
+        public SemanticSearchResponse(long id, Object result) {
+            this.id = id; this.method = "semanticSearch"; this.result = result;
         }
     }
 

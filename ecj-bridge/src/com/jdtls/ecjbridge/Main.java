@@ -37,6 +37,7 @@ public class Main {
     private static final FormatterService FORMATTER = new FormatterService();
     private static final AstNavigationService NAVIGATION = new AstNavigationService();
     private static final RenameBindingService RENAME = new RenameBindingService();
+    private static final SemanticIndexService SEMANTIC = new SemanticIndexService();
 
     public static void main(String[] args) throws Exception {
         LogManager.getLogManager().reset();
@@ -211,6 +212,8 @@ public class Main {
                 yield new SignatureHelpResponse(
                     req.id, result.signatures, result.activeSignature, result.activeParameter);
             }
+            case "semanticSearch" -> new SemanticSearchResponse(req.id, SEMANTIC.request(
+                req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.query));
             case "renameTarget" -> new RenameTargetResponse(req.id, RENAME.target(
                 req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri, req.offset));
             case "renameOccurrences" -> new RenameOccurrencesResponse(req.id, RENAME.occurrences(

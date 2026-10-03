@@ -206,6 +206,17 @@ pub enum BridgeRequest {
         uri: String,
         offset: usize,
     },
+    /// Binding-resolved semantic index query (`SemanticIndexService`);
+    /// the query shapes live in `features::semantic`.
+    SemanticSearch {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        query: serde_json::Value,
+    },
     Shutdown { id: u64 },
 }
 
@@ -313,6 +324,11 @@ pub enum BridgeResponse {
         id: u64,
         calls: Vec<BridgeCallHierarchyOutgoingCall>,
     },
+    SemanticSearch {
+        id: u64,
+        #[serde(default)]
+        result: serde_json::Value,
+    },
     Ok { id: u64 },
     Error {
         id: u64,
@@ -341,6 +357,7 @@ impl BridgeResponse {
             | BridgeResponse::CallHierarchyPrepare { id, .. }
             | BridgeResponse::CallHierarchyIncomingCalls { id, .. }
             | BridgeResponse::CallHierarchyOutgoingCalls { id, .. }
+            | BridgeResponse::SemanticSearch { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
         }
