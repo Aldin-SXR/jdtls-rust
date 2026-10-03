@@ -142,6 +142,7 @@ impl EcjProcess {
             | BridgeRequest::CallHierarchyPrepare { id, .. }
             | BridgeRequest::CallHierarchyIncoming { id, .. }
             | BridgeRequest::CallHierarchyOutgoing { id, .. }
+            | BridgeRequest::AstBindings { id, .. }
             | BridgeRequest::Shutdown { id } => *id,
         };
 

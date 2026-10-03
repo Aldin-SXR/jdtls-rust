@@ -218,11 +218,7 @@ public class Main {
                 req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri, req.offset));
             case "renameOccurrences" -> new RenameOccurrencesResponse(req.id, RENAME.occurrences(
                 req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uris, req.names, req.packageName));
-            case "inlayHints" -> {
-                List<BridgeInlayHint> hints = navigation.inlayHints(
-                    req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri);
-                yield new InlayHintsResponse(req.id, hints);
-            }
+            case "inlayHints" -> new InlayHintsResponse(req.id, new InlayHintService().collect(req));
             case "codeLens" -> {
                 List<BridgeCodeLens> lenses = navigation.codeLens(
                     req.files, orDefault(req.sourceLevel), req.uri);
@@ -266,6 +262,7 @@ public class Main {
                     req.files, orDefault(req.sourceLevel), req.uri, req.offset);
                 yield new CallHierarchyOutgoingCallsResponse(req.id, calls);
             }
+            case "astBindings" -> AstBindingsService.handle(req);
             case "shutdown" -> new OkResponse(req.id);
             default -> new ErrorResponse(req.id, "Unknown method: " + req.method);
         };

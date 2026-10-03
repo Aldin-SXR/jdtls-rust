@@ -845,10 +845,10 @@ fn test_rename_record_field() {
     ws.import_projects(&[&format!("eclipse/{name}")]);
     // assertIsJavaProject(project)
     let root = ws.project_root(name);
+    let root_uri = ws.project_uri(name);
     let projects = ws.request("workspace/executeCommand", json!({ "command": "java.project.getAll", "arguments": [] }));
-    let root_uri = url::Url::from_file_path(&root).unwrap().to_string();
     assert!(
-        projects.as_array().unwrap().iter().any(|p| p.as_str() == Some(root_uri.trim_end_matches('/'))),
+        projects.as_array().unwrap().iter().any(|p| p.as_str() == Some(root_uri.as_str())),
         "{name} is not a Java project: {projects}"
     );
     // assertEquals("17", getJavaSourceLevel(project)): the fixture's JDT prefs

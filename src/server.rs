@@ -9,8 +9,8 @@ use crate::analysis::semantic::hover as hover_conv;
 use crate::analysis::semantic::protocol::{BridgeCallHierarchyItem, BridgeTypeHierarchyItem, BridgeRange, BridgeResponse, BridgeDiagnostic};
 use crate::analysis::semantic::NavKind;
 use crate::analysis::syntax::{
-    completion as syntax_completion, diagnostics as syntax_diagnostics, folding, outline,
-    navigation as syntax_navigation, selection, snippets, tokens,
+    completion as syntax_completion, diagnostics as syntax_diagnostics, outline,
+    navigation as syntax_navigation, snippets,
 };
 use crate::analysis::syntax::parser::JavaParser;
 use crate::config::Config;
@@ -240,6 +240,7 @@ impl JavaLanguageServer {
 impl LanguageServer for JavaLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
         *self.client_flavor.write().await = detect_client_flavor(params.client_info.as_ref());
+        crate::features::client_caps::set(&params.capabilities);
         *self.workspace_folders.write().await = params.workspace_folders.clone().unwrap_or_default();
         *self.rename_client.write().await = crate::features::rename::RenameClient::from_capabilities(&params.capabilities);
 
@@ -255,6 +256,13 @@ impl LanguageServer for JavaLanguageServer {
         } else {
             *self.config.write().await = Config::default().with_defaults();
         }
+        self.config.write().await.inlay_hint_refresh_support = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|w| w.inlay_hint.as_ref())
+            .and_then(|i| i.refresh_support)
+            .unwrap_or(false);
 
         // Import workspace projects (Gradle → Maven → Eclipse → invisible).
         let mut roots: Vec<std::path::PathBuf> = params
@@ -303,7 +311,7 @@ impl LanguageServer for JavaLanguageServer {
         });
         self.spawn_compile_loop();
 
-        let token_legend = tokens::legend();
+        let token_legend = crate::features::semantic_tokens::legend();
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -371,7 +379,7 @@ impl LanguageServer for JavaLanguageServer {
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
                             legend: token_legend,
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            full: Some(SemanticTokensFullOptions::Delta { delta: Some(false) }),
                             range: Some(false),
                             work_done_progress_options: Default::default(),
                         },
@@ -477,10 +485,18 @@ impl LanguageServer for JavaLanguageServer {
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
-        let restart_ecj = {
+        let (restart_ecj, refresh_inlay_hints) = {
             let mut config = self.config.write().await;
-            merge_config_settings(&mut config, &params.settings)
+            let old_inlay_hints = config.inlay_hints.clone();
+            let restart = merge_config_settings(&mut config, &params.settings);
+            (restart, config.inlay_hint_refresh_support && old_inlay_hints.needs_refresh(&config.inlay_hints))
         };
+        if refresh_inlay_hints {
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                let _ = client.inlay_hint_refresh().await;
+            });
+        }
 
         if restart_ecj {
             if let Err(e) = self.dispatcher.restart_ecj().await {
@@ -1058,19 +1074,8 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn document_symbol(&self, params: DocumentSymbolParams) -> LspResult<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let state = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => s,
-        };
-        let tree = match &state.tree {
-            None => return Ok(None),
-            Some(t) => t.clone(),
-        };
-        let content = state.content_string();
-        drop(state);
-
-        let syms = outline::document_symbols(&tree, &content);
-        Ok(Some(DocumentSymbolResponse::Nested(syms)))
+        let Some(text) = crate::features::source_text(&self.store, uri) else { return Ok(Some(DocumentSymbolResponse::Nested(Vec::new()))) };
+        Ok(Some(crate::features::document_symbol::document_symbols(uri, &text)))
     }
 
     async fn symbol(&self, params: WorkspaceSymbolParams) -> LspResult<Option<Vec<SymbolInformation>>> {
@@ -1266,106 +1271,39 @@ impl LanguageServer for JavaLanguageServer {
     // ── Folding Ranges ────────────────────────────────────────────────────────
 
     async fn folding_range(&self, params: FoldingRangeParams) -> LspResult<Option<Vec<FoldingRange>>> {
-        let uri = &params.text_document.uri;
-        let state = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => s,
-        };
-        let tree = match &state.tree {
-            None => return Ok(None),
-            Some(t) => t.clone(),
-        };
-        let content = state.content_string();
-        drop(state);
-
-        Ok(Some(folding::folding_ranges(&tree, &content)))
+        let Some(text) = crate::features::source_text(&self.store, &params.text_document.uri) else { return Ok(Some(Vec::new())) };
+        Ok(Some(crate::features::folding_range::folding_ranges(&text)))
     }
 
     // ── Semantic Tokens ────────────────────────────────────────────────────────
 
     async fn semantic_tokens_full(&self, params: SemanticTokensParams) -> LspResult<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-        let state = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => s,
-        };
-        let tree = match &state.tree {
-            None => return Ok(None),
-            Some(t) => t.clone(),
-        };
-        let content = state.content_string();
-        drop(state);
-
-        let token_vec = tokens::semantic_tokens_full(&tree, &content);
-        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
-            result_id: None,
-            data: token_vec,
-        })))
+        let empty = || Ok(Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data: Vec::new() })));
+        let Some(text) = crate::features::source_text(&self.store, uri) else { return empty() };
+        // jdt.ls waits for the document life-cycle jobs; wait for the bridge.
+        for _ in 0..600 {
+            if self.dispatcher.is_ecj_ready().await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let Ok(BridgeResponse::AstBindings { strings, nodes, bindings, .. }) = self.dispatcher.ast_bindings(uri).await else { return empty() };
+        let ast = crate::features::semantic_tokens::Ast::from_bridge(&strings, &nodes, &bindings);
+        let data = crate::features::semantic_tokens::semantic_tokens(&text, &ast);
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data })))
     }
 
     async fn selection_range(&self, params: SelectionRangeParams) -> LspResult<Option<Vec<SelectionRange>>> {
-        let uri = &params.text_document.uri;
-        let state = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => s,
-        };
-        let tree = match &state.tree {
-            None => return Ok(None),
-            Some(t) => t.clone(),
-        };
-
-        let mut ranges = Vec::with_capacity(params.positions.len());
-        for position in params.positions {
-            let offset = pos_to_offset(&state.content, position).unwrap_or(0);
-            ranges.push(selection::selection_range(&tree, offset).unwrap_or(SelectionRange {
-                range: Range {
-                    start: position,
-                    end: position,
-                },
-                parent: None,
-            }));
-        }
-
-        Ok(Some(ranges))
+        let Some(text) = crate::features::source_text(&self.store, &params.text_document.uri) else { return Ok(Some(Vec::new())) };
+        Ok(Some(crate::features::selection_range::selection_ranges(&text, &params.positions)))
     }
 
     // ── Inlay Hints ───────────────────────────────────────────────────────────
 
     async fn inlay_hint(&self, params: InlayHintParams) -> LspResult<Option<Vec<InlayHint>>> {
-        let uri = &params.text_document.uri;
-        if !self.dispatcher.is_ecj_ready().await {
-            return Ok(None);
-        }
-        match self.dispatcher.inlay_hints(uri).await {
-            Ok(BridgeResponse::InlayHints { hints, .. }) => {
-                let items = hints
-                    .iter()
-                    .map(|h| InlayHint {
-                        position: Position { line: h.line, character: h.character },
-                        label: InlayHintLabel::String(h.label.clone()),
-                        kind: Some(match h.kind {
-                            1 => InlayHintKind::TYPE,
-                            _ => InlayHintKind::PARAMETER,
-                        }),
-                        tooltip: None,
-                        padding_left: Some(false),
-                        padding_right: Some(true),
-                        text_edits: None,
-                        data: None,
-                    })
-                    .collect();
-                Ok(Some(items))
-            }
-            Ok(BridgeResponse::Error { message, .. }) => {
-                warn!("inlay hints ECJ error: {message}");
-                Ok(None)
-            }
-            Err(e) => {
-                warn!("inlay hints error: {e}");
-                Ok(None)
-            }
-            _ => Ok(None),
-        }
+        let prefs = self.config.read().await.inlay_hints.clone();
+        Ok(Some(crate::features::inlay_hints::inlay_hint(&self.dispatcher, &prefs, &params).await))
     }
 
     // ── Code Lenses ───────────────────────────────────────────────────────────
@@ -1585,14 +1523,14 @@ impl LanguageServer for JavaLanguageServer {
                 Ok(None)
             }
             "java.project.getAll" => {
-                // jdt.ls `ProjectCommand.getAllJavaProjects`: URIs of all
-                // imported Java projects (excluding the default project).
+                // jdt.ls `ProjectCommand.getAllJavaProjects`: `File.toURI()` of
+                // every Java project folder, in workspace (name) order.
                 let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
-                let uris: Vec<Value> = ws
-                    .projects
+                let mut projects: Vec<&crate::project::Project> = ws.projects.iter().collect();
+                projects.sort_by(|a, b| a.name.cmp(&b.name));
+                let uris: Vec<Value> = projects
                     .iter()
-                    .filter_map(|p| Url::from_directory_path(&p.root).ok())
-                    .map(|u| Value::String(u.to_string().trim_end_matches('/').to_owned()))
+                    .map(|p| Value::String(crate::project::java_file_uri(&p.root, true)))
                     .collect();
                 Ok(Some(Value::Array(uris)))
             }
@@ -1728,6 +1666,7 @@ fn import_settings(settings: Option<&Value>) -> crate::project::ImportSettings {
 
 fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
     let mut restart_ecj = false;
+    config.inlay_hints.update_from(settings);
 
     let updated_java_home = setting_string(settings, &["javaHome"])
         .or_else(|| setting_string(settings, &["java", "javaHome"]))
