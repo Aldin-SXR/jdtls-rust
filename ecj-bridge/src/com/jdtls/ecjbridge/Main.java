@@ -214,11 +214,7 @@ public class Main {
                 List<BridgeFileEdit> edits = rename(req, compiler);
                 yield new WorkspaceEditResponse(req.id, edits);
             }
-            case "inlayHints" -> {
-                List<BridgeInlayHint> hints = navigation.inlayHints(
-                    req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri);
-                yield new InlayHintsResponse(req.id, hints);
-            }
+            case "inlayHints" -> new InlayHintsResponse(req.id, new InlayHintService().collect(req));
             case "codeLens" -> {
                 List<BridgeCodeLens> lenses = navigation.codeLens(
                     req.files, orDefault(req.sourceLevel), req.uri);

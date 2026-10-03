@@ -20,6 +20,16 @@ pub struct RequestContext {
     pub options: BTreeMap<String, String>,
 }
 
+/// Result of [`Dispatcher::inlay_hint_data`].
+pub struct InlayHintData {
+    pub response: BridgeResponse,
+    /// The document text the bridge offsets refer to.
+    pub source: String,
+    /// Package implied by the document's location in a source folder (the
+    /// JDT package fragment), when it lies in one.
+    pub folder_package: Option<String>,
+}
+
 pub struct Dispatcher {
     pub store: Arc<DocumentStore>,
     pub workspace: Arc<std::sync::RwLock<Workspace>>,
@@ -306,16 +316,46 @@ impl Dispatcher {
         }).await
     }
 
-    pub async fn inlay_hints(&self, uri: &Url) -> Result<BridgeResponse> {
+    /// Inlay-hint binding data for `uri` (see `features::inlay_hints`).
+    pub async fn inlay_hint_data(&self, uri: &Url, format_parameters: bool) -> Result<InlayHintData> {
         let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
-        self.send(BridgeRequest::InlayHints {
-            id: next_id(),
-            files,
-            classpath,
-            source_level,
-            options,
-            uri: uri.to_string(),
-        }).await
+        let source = files.get(uri.as_str()).cloned().unwrap_or_default();
+        let (sourcepath, folder_package) = {
+            let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner());
+            let path = crate::project::uri_to_path(uri);
+            match path.as_deref().and_then(|p| ws.project_for_path(p).map(|proj| (p, proj))) {
+                Some((path, project)) => {
+                    let sourcepath = ws
+                        .project_closure(project)
+                        .iter()
+                        .flat_map(|p| p.source_folders.iter())
+                        .filter(|sf| sf.path.is_dir())
+                        .map(|sf| sf.path.to_string_lossy().into_owned())
+                        .collect();
+                    let package = project.source_folder_for(path).and_then(|sf| {
+                        let dir = path.parent()?.strip_prefix(&sf.path).ok()?;
+                        let segments: Vec<String> =
+                            dir.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+                        Some(segments.join("."))
+                    });
+                    (sourcepath, package)
+                }
+                None => (Vec::new(), None),
+            }
+        };
+        let response = self
+            .send(BridgeRequest::InlayHints {
+                id: next_id(),
+                files,
+                classpath,
+                source_level,
+                options,
+                uri: uri.to_string(),
+                sourcepath,
+                format_parameters,
+            })
+            .await?;
+        Ok(InlayHintData { response, source, folder_package })
     }
 
     pub async fn format(&self, uri: &Url, tab_size: u32, insert_spaces: bool) -> Result<BridgeResponse> {
