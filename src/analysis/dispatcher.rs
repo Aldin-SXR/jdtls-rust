@@ -285,16 +285,26 @@ impl Dispatcher {
         }).await
     }
 
-    pub async fn signature_help(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
+    pub async fn signature_help_data(
+        &self,
+        uri: &Url,
+        search_offset: Option<usize>,
+        context_offset: Option<usize>,
+        fallback_name: Option<String>,
+        description: bool,
+    ) -> Result<BridgeResponse> {
         let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
-        self.send(BridgeRequest::SignatureHelp {
+        self.send(BridgeRequest::SignatureHelpData {
             id: next_id(),
             files,
             classpath,
             source_level,
             options,
             uri: uri.to_string(),
-            offset,
+            search_offset: search_offset.map_or(-1, |o| o as i64),
+            context_offset: context_offset.map_or(-1, |o| o as i64),
+            fallback_name,
+            description,
         }).await
     }
 

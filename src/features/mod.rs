@@ -12,6 +12,7 @@ pub mod rename;
 pub mod scanner;
 pub mod selection_range;
 pub mod semantic_tokens;
+pub mod signature_help;
 mod ts_dump;
 
 use tower_lsp::lsp_types::Url;

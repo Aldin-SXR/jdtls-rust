@@ -85,7 +85,10 @@ pub enum BridgeRequest {
         #[serde(default)]
         diagnostics: Vec<BridgeDiagnostic>,
     },
-    SignatureHelp {
+    /// Data for signature help: the method-like nodes around `search_offset`
+    /// (`SignatureHelpContext`) and around `context_offset` (the heuristic
+    /// fallback of `SignatureHelpHandler`), with their candidate methods.
+    SignatureHelpData {
         id: u64,
         files: HashMap<String, String>,
         classpath: Vec<String>,
@@ -93,7 +96,11 @@ pub enum BridgeRequest {
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         options: BTreeMap<String, String>,
         uri: String,
-        offset: usize,
+        search_offset: i64,
+        context_offset: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fallback_name: Option<String>,
+        description: bool,
     },
     /// The element at `offset` (rename and prepareRename selection).
     RenameTarget {
@@ -267,13 +274,11 @@ pub enum BridgeResponse {
         id: u64,
         actions: Vec<BridgeAction>,
     },
-    SignatureHelp {
+    SignatureHelpData {
         id: u64,
-        signatures: Vec<BridgeSignature>,
-        #[serde(rename = "activeSignature")]
-        active_signature: u32,
-        #[serde(rename = "activeParameter")]
-        active_parameter: u32,
+        #[serde(default)]
+        chain: Vec<SigNode>,
+        fallback: Option<SigNode>,
     },
     WorkspaceEdit {
         id: u64,
@@ -351,7 +356,7 @@ impl BridgeResponse {
             | BridgeResponse::Hover { id, .. }
             | BridgeResponse::Locations { id, .. }
             | BridgeResponse::CodeActions { id, .. }
-            | BridgeResponse::SignatureHelp { id, .. }
+            | BridgeResponse::SignatureHelpData { id, .. }
             | BridgeResponse::WorkspaceEdit { id, .. }
             | BridgeResponse::TextEdits { id, .. }
             | BridgeResponse::RenameTarget { id, .. }
@@ -439,19 +444,47 @@ pub struct BridgeTextEdit {
     pub new_text: String,
 }
 
-#[derive(Debug, Deserialize)]
+/// A method-like AST node for signature help (see `SignatureHelpService.java`).
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeSignature {
-    pub label: String,
-    pub documentation: Option<String>,
-    pub parameters: Vec<BridgeParameter>,
+pub struct SigNode {
+    pub kind: String,
+    pub start: i64,
+    pub length: i64,
+    pub name_end: i64,
+    /// `[start, length]` of each AST argument; `None` for non-invocations.
+    pub arguments: Option<Vec<[i64; 2]>>,
+    pub optional_expression_length: i64,
+    pub method_name: Option<String>,
+    pub parameter_types: Option<Vec<String>>,
+    pub parameter_types_from_binding: Option<Vec<String>>,
+    pub bound_method: Option<SigCandidate>,
+    pub candidates: Option<Vec<SigCandidate>>,
+    pub secondary_candidates: Option<Vec<SigCandidate>>,
+    pub declared_constructors: Option<Vec<SigCandidate>>,
+    pub scope_candidates: Option<Vec<SigCandidate>>,
 }
 
-#[derive(Debug, Deserialize)]
+/// A candidate method, shaped like a JDT completion proposal.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeParameter {
-    pub label: String,
-    pub documentation: Option<String>,
+pub struct SigCandidate {
+    pub name: String,
+    pub constructor: bool,
+    pub varargs: bool,
+    /// Identity of the proposal signature (dedup key).
+    pub key: String,
+    /// Display names, lower bound applied (`SignatureUtil.getLowerBound`).
+    pub parameter_types: Vec<String>,
+    /// Display name of the return type, upper bound applied; `None` for constructors.
+    pub return_type: Option<String>,
+    pub parameter_names: Vec<String>,
+    /// `SignatureHelpUtils.getSimpleTypeName` of each proposal parameter type.
+    pub match_types: Vec<String>,
+    /// Simple names of the declared (unsubstituted) parameter types (`IMethod.getParameterTypes`).
+    pub declared_types: Vec<String>,
+    /// Raw Javadoc comment of the declaration, when requested and available.
+    pub javadoc: Option<String>,
 }
 
 /// An AST node visited by the jdt.ls `InlayHintVisitor`, with its bindings
