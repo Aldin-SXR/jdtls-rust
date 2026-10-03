@@ -37,6 +37,7 @@ public class Main {
     private static final FormatterService FORMATTER = new FormatterService();
     private static final AstNavigationService NAVIGATION = new AstNavigationService();
     private static final RenameBindingService RENAME = new RenameBindingService();
+    private static final SignatureHelpService SIGNATURE_HELP = new SignatureHelpService();
 
     public static void main(String[] args) throws Exception {
         LogManager.getLogManager().reset();
@@ -205,12 +206,9 @@ public class Main {
                 List<BridgeAction> actions = codeActions(req, compiler);
                 yield new CodeActionsResponse(req.id, actions);
             }
-            case "signatureHelp" -> {
-                AstNavigationService.SignatureResult result = navigation.signatureHelp(
-                    req.files, orDefault(req.sourceLevel), req.uri, req.offset);
-                yield new SignatureHelpResponse(
-                    req.id, result.signatures, result.activeSignature, result.activeParameter);
-            }
+            case "signatureHelpData" -> SIGNATURE_HELP.compute(
+                    req.id, req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri,
+                    req.searchOffset, req.contextOffset, req.fallbackName, req.description);
             case "renameTarget" -> new RenameTargetResponse(req.id, RENAME.target(
                 req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri, req.offset));
             case "renameOccurrences" -> new RenameOccurrencesResponse(req.id, RENAME.occurrences(
@@ -226,8 +224,9 @@ public class Main {
                 yield new TextEditsResponse(req.id, req.uri, edits);
             }
             case "format" -> {
-                List<BridgeTextEdit> edits = formatter.format(req.source, req.tabSize, req.insertSpaces);
-                yield new TextEditsResponse(req.id, req.uri, edits);
+                List<BridgeFormatEdit> edits = formatter.format(req.source, req.formatKind, req.offset,
+                    req.length, req.indentationLevel, req.lineSeparator, req.options);
+                yield new FormatEditsResponse(req.id, edits);
             }
             case "typeHierarchyPrepare" -> {
                 List<BridgeTypeHierarchyItem> items = navigation.prepareTypeHierarchy(

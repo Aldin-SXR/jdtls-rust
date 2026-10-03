@@ -129,7 +129,7 @@ impl EcjProcess {
             | BridgeRequest::Navigate { id, .. }
             | BridgeRequest::FindReferences { id, .. }
             | BridgeRequest::CodeAction { id, .. }
-            | BridgeRequest::SignatureHelp { id, .. }
+            | BridgeRequest::SignatureHelpData { id, .. }
             | BridgeRequest::RenameTarget { id, .. }
             | BridgeRequest::RenameOccurrences { id, .. }
             | BridgeRequest::OrganizeImports { id, .. }

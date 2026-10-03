@@ -285,16 +285,26 @@ impl Dispatcher {
         }).await
     }
 
-    pub async fn signature_help(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
+    pub async fn signature_help_data(
+        &self,
+        uri: &Url,
+        search_offset: Option<usize>,
+        context_offset: Option<usize>,
+        fallback_name: Option<String>,
+        description: bool,
+    ) -> Result<BridgeResponse> {
         let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
-        self.send(BridgeRequest::SignatureHelp {
+        self.send(BridgeRequest::SignatureHelpData {
             id: next_id(),
             files,
             classpath,
             source_level,
             options,
             uri: uri.to_string(),
-            offset,
+            search_offset: search_offset.map_or(-1, |o| o as i64),
+            context_offset: context_offset.map_or(-1, |o| o as i64),
+            fallback_name,
+            description,
         }).await
     }
 
@@ -398,15 +408,48 @@ impl Dispatcher {
         Ok(InlayHintData { response, source, folder_package })
     }
 
-    pub async fn format(&self, uri: &Url, tab_size: u32, insert_spaces: bool) -> Result<BridgeResponse> {
-        let state = self.store.get(uri).ok_or_else(|| anyhow!("document not open"))?;
-        self.send(BridgeRequest::Format {
+    /// Run the Eclipse formatter on `source` (see `BridgeRequest::Format`).
+    /// `Ok(None)` when the formatter returned `null`.
+    pub async fn format_source(
+        &self,
+        source: &str,
+        format_kind: i32,
+        offset: usize,
+        length: usize,
+        line_separator: &str,
+        options: BTreeMap<String, String>,
+    ) -> Result<Option<Vec<super::semantic::protocol::BridgeFormatEdit>>> {
+        match self.send(BridgeRequest::Format {
             id: next_id(),
-            source: state.content_string(),
-            uri: uri.to_string(),
-            tab_size,
-            insert_spaces,
-        }).await
+            source: source.to_owned(),
+            format_kind,
+            offset,
+            length,
+            indentation_level: 0,
+            line_separator: line_separator.to_owned(),
+            options,
+        }).await? {
+            BridgeResponse::FormatEdits { edits, .. } => Ok(edits),
+            BridgeResponse::Error { message, .. } => Err(anyhow!(message)),
+            other => Err(anyhow!("unexpected format response: {other:?}")),
+        }
+    }
+
+    /// The JDT options (and source level) of the project owning `uri`,
+    /// without collecting its sources: `context_for(..).options`.
+    pub async fn options_for(&self, uri: Option<&Url>) -> (BTreeMap<String, String>, String) {
+        let cfg = self.config.read().await.clone();
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner());
+        let mut options = crate::project::jdtls_default_options();
+        options.extend(cfg.compiler_options.clone());
+        match uri.and_then(|u| ws.project_for_uri(u)) {
+            Some(project) => {
+                options.extend(project.options.clone());
+                let level = project.compliance().map(str::to_owned).unwrap_or_else(|| cfg.source_compatibility.clone());
+                (options, level)
+            }
+            None => (options, cfg.source_compatibility.clone()),
+        }
     }
 
     pub async fn type_hierarchy_prepare(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {

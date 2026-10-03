@@ -1848,8 +1848,8 @@ fn ecj_signature_help_multiple_methods() {
     assert_eq!(result["activeParameter"], 1, "expected second argument to be active, got: {result:?}");
     assert_eq!(
         signatures[result["activeSignature"].as_u64().unwrap_or(0) as usize]["label"],
-        "int foo(int s, String t)",
-        "expected best overload to be the two-parameter int/String method"
+        "foo(int s, String t) : int",
+        "expected best overload to be the two-parameter int/String method (jdt.ls label format)"
     );
 }
 
@@ -1961,24 +1961,33 @@ fn ecj_format_returns_edits() {
     }
 
     let edits = c.format(&uri);
-    if edits.is_empty() {
-        // google-java-format requires --add-exports flags on JVM 17+ to access
-        // javac internals; if the formatter initialised without them it silently
-        // disables itself and returns no edits.  Treat as skip, not failure.
-        eprintln!("INFO ecj_format_returns_edits — formatter returned no edits (may need --add-exports flags for this JVM)");
-        return;
-    }
     // Every edit must have a range and newText
     for edit in &edits {
         assert!(edit["range"].is_object(), "edit must have a range");
         assert!(edit["newText"].is_string(), "edit must have newText");
     }
-    // The formatted output should contain proper indentation
-    let new_text = edits[0]["newText"].as_str().unwrap_or("");
-    assert!(
-        new_text.contains("  void") || new_text.contains("    void"),
-        "formatted code should indent method body, got: {new_text:?}"
+    // jdt.ls (Eclipse formatter) returns small whitespace edits; applied
+    // they give the Eclipse-formatted file.
+    assert_eq!(
+        apply_text_edits(src, &edits),
+        "class E {\n    void go() {\n        int x = 1;\n    }\n}"
     );
+}
+
+/// Apply LSP edits (ranges refer to the original text, ASCII only).
+fn apply_text_edits(text: &str, edits: &[Value]) -> String {
+    let starts: Vec<usize> = std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1)).collect();
+    let off = |p: &Value| starts[p["line"].as_u64().unwrap() as usize] + p["character"].as_u64().unwrap() as usize;
+    let mut spans: Vec<(usize, usize, String)> = edits
+        .iter()
+        .map(|e| (off(&e["range"]["start"]), off(&e["range"]["end"]), e["newText"].as_str().unwrap().to_owned()))
+        .collect();
+    spans.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut out = text.to_owned();
+    for (s, e, t) in spans {
+        out.replace_range(s..e, &t);
+    }
+    out
 }
 
 /// Formatting already-correct code → no edits (idempotent).
@@ -1989,8 +1998,8 @@ fn ecj_format_idempotent() {
     c.initialize();
 
     let uri = test_uri("ecj_format_idem");
-    // google-java-format style: 2-space indent, non-public class
-    let src = "class E {\n  void go() {\n    int x = 1;\n  }\n}\n";
+    // Eclipse (jdt.ls default) style with 4-space indentation
+    let src = "class E {\n    void go() {\n        int x = 1;\n    }\n}\n";
     c.open(&uri, src);
 
     if !ecj_ready(&mut c, &uri) {
@@ -1999,19 +2008,20 @@ fn ecj_format_idempotent() {
     }
 
     let edits = c.format(&uri);
-    // If the source is already in google-java-format style, no edits should be returned.
-    // Every edit that IS returned must be structurally valid.
-    for edit in &edits {
-        assert!(edit["range"].is_object(), "edit must have a range");
-        assert!(edit["newText"].is_string(), "edit must have newText");
-    }
+    // Already formatted: jdt.ls returns no edits.
+    assert!(edits.is_empty(), "expected no edits, got: {edits:?}");
 }
 
 /// On-type formatting should return edits for badly-formatted Java when typing `;`.
 #[test]
 fn ui_on_type_formatting_returns_edits() {
     let mut c = LspClient::spawn();
-    c.initialize();
+    // jdt.ls: on-type formatting is off unless `java.format.onType.enabled`.
+    c.initialize_with_options(json!({
+        "javaHome": java_home(),
+        "sourceCompatibility": "21",
+        "settings": { "java": { "format": { "onType": { "enabled": true } } } }
+    }));
 
     let uri = test_uri("ui_on_type_formatting");
     let src = "class E {\nvoid go() {\nint x=1;\n}\n}";
@@ -3466,10 +3476,6 @@ fn syntax_range_formatting() {
 
     // Format the entire file range (lines 0 to 5)
     let edits = c.range_formatting(&uri, 0, 0, 5, 0);
-    if edits.is_empty() {
-        eprintln!("INFO syntax_range_formatting — formatter returned no edits (may need --add-exports flags for this JVM)");
-        return;
-    }
     assert!(!edits.is_empty(), "expected range formatting to return edits for messy code");
 }
 
