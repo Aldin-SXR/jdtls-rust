@@ -540,12 +540,27 @@ final class OccurrencesFinders {
                 return true;
             }
 
-            @Override
-            public boolean visit(SimpleName node) {
-                IBinding b = node.resolveBinding();
+            private boolean addUsage(Name node, IBinding b) {
                 if (b != null && key.equals(NavigationDataService.key(b))) {
                     result.add(new Occurrence(node, writes.contains(node)));
+                    return true;
                 }
+                return false;
+            }
+
+            @Override
+            public boolean visit(QualifiedName node) {
+                IBinding b = node.resolveBinding();
+                if (b instanceof IVariableBinding v && v.isField()) {
+                    SimpleName name = node.getName();
+                    return !addUsage(name, name.resolveBinding());
+                }
+                return !addUsage(node, b);
+            }
+
+            @Override
+            public boolean visit(SimpleName node) {
+                addUsage(node, node.resolveBinding());
                 return true;
             }
         });

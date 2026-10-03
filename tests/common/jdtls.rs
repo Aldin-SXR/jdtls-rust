@@ -400,9 +400,19 @@ impl Workspace {
             let cont = s["containerName"].as_str().unwrap_or("");
             if exact { name == simple && cont == container } else { name.eq_ignore_ascii_case(simple) && cont.eq_ignore_ascii_case(container) }
         };
+        let root = self
+            .roots
+            .iter()
+            .flat_map(|r| std::iter::once(r.clone()).chain(walk_dirs(r)))
+            .find(|d| project_name_of(d).as_deref() == Some(project))
+            .map(|d| Url::from_file_path(d).unwrap().to_string() + "/");
         let in_project = |s: &Value| {
             let uri = s["location"]["uri"].as_str().unwrap_or("");
-            !uri.starts_with("jdt:") || uri.contains(&format!("={project}/"))
+            if uri.starts_with("jdt:") {
+                uri.contains(&format!("={project}/"))
+            } else {
+                root.as_ref().is_some_and(|r| uri.starts_with(r.as_str()))
+            }
         };
         for exact in [true, false] {
             if let Some(s) = symbols.iter().find(|s| matches(s, exact) && in_project(s)).or_else(|| symbols.iter().find(|s| matches(s, exact))) {

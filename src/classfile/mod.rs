@@ -327,12 +327,72 @@ pub fn maven_attributes(jar: &Path, is_test: bool, local_repo: &Path) -> Vec<(St
     if is_test {
         attrs.push(("test".to_owned(), "true".to_owned()));
     }
+    let javadoc = jar.with_file_name(format!("{artifact}-{version}-javadoc.jar"));
+    if javadoc.is_file() {
+        attrs.push(("javadoc_location".to_owned(), format!("jar:file:{}!/", javadoc.to_string_lossy())));
+    }
     attrs.push(("maven.groupId".to_owned(), group));
     attrs.push(("maven.artifactId".to_owned(), artifact));
     attrs.push(("maven.version".to_owned(), version));
     attrs.push(("maven.scope".to_owned(), if is_test { "test" } else { "compile" }.to_owned()));
     attrs.push(("maven.pomderived".to_owned(), "true".to_owned()));
     attrs
+}
+
+/// The JDK's default Javadoc location (`JavaRuntime`'s
+/// `JavadocLocations` for the execution environment), from the `release`
+/// file of the JDK owning `jrt_fs` (`<java.home>/lib/jrt-fs.jar`).
+pub fn jdk_javadoc_location(jrt_fs: &Path) -> Option<String> {
+    let home = jrt_fs.parent()?.parent()?;
+    let release = std::fs::read_to_string(home.join("release")).ok()?;
+    let version = release
+        .lines()
+        .find_map(|l| l.strip_prefix("JAVA_VERSION="))?
+        .trim()
+        .trim_matches('"')
+        .to_owned();
+    let mut parts = version.split(|c: char| c == '.' || c == '_' || c == '-');
+    let first: u32 = parts.next()?.parse().ok()?;
+    let major = if first == 1 { parts.next()?.parse().ok()? } else { first };
+    Some(if major >= 11 {
+        format!("https://docs.oracle.com/en/java/javase/{major}/docs/api/")
+    } else {
+        format!("https://docs.oracle.com/javase/{major}/docs/api/")
+    })
+}
+
+fn classpath_entries(project_root: &Path) -> Vec<(String, String, Vec<(String, String)>)> {
+    let Ok(text) = std::fs::read_to_string(project_root.join(".classpath")) else { return Vec::new() };
+    let Ok(doc) = roxmltree::Document::parse(&text) else { return Vec::new() };
+    doc.descendants()
+        .filter(|n| n.has_tag_name("classpathentry"))
+        .map(|n| {
+            let attrs = n
+                .descendants()
+                .filter(|a| a.has_tag_name("attribute"))
+                .filter_map(|a| Some((a.attribute("name")?.to_owned(), a.attribute("value")?.to_owned())))
+                .collect();
+            (n.attribute("kind").unwrap_or("").to_owned(), n.attribute("path").unwrap_or("").to_owned(), attrs)
+        })
+        .collect()
+}
+
+/// Extra attributes of an Eclipse project's JRE container entry (`.classpath`).
+pub fn eclipse_container_attributes(project_root: &Path) -> Vec<(String, String)> {
+    classpath_entries(project_root)
+        .into_iter()
+        .find(|(kind, path, _)| kind == "con" && path.starts_with("org.eclipse.jdt.launching.JRE_CONTAINER"))
+        .map(|(_, _, a)| a)
+        .unwrap_or_default()
+}
+
+/// Extra attributes of an Eclipse project's library entry for `jar`.
+pub fn eclipse_library_attributes(project_root: &Path, jar: &Path) -> Vec<(String, String)> {
+    classpath_entries(project_root)
+        .into_iter()
+        .find(|(kind, path, _)| kind == "lib" && (project_root.join(path) == jar || Path::new(path) == jar))
+        .map(|(_, _, a)| a)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

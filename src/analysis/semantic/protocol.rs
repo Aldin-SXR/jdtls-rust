@@ -245,6 +245,15 @@ pub enum BridgeRequest {
         include_decompiled: bool,
         include_declaration: bool,
         include_accessors: bool,
+        /// references: library roots in search order ("jrt" = the JDK).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        libraries: Option<Vec<String>>,
+        /// references: library roots already searched for another project.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        skip_libraries: Vec<String>,
+        /// referencesByKeys: "<includeDeclaration>|<binding key>".
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        search_keys: Vec<String>,
     },
     /// `java/classFileContents`: attached source or decompiled content.
     #[serde(rename_all = "camelCase")]
@@ -376,6 +385,12 @@ pub enum BridgeResponse {
         locations: Vec<RawLocation>,
         #[serde(default)]
         null_result: bool,
+        #[serde(default)]
+        search_keys: Option<Vec<String>>,
+        #[serde(default)]
+        scanned_libraries: Option<Vec<String>>,
+        #[serde(default)]
+        source_elements: bool,
     },
     ClassFileContents {
         id: u64,

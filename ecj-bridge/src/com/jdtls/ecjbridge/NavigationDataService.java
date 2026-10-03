@@ -47,6 +47,12 @@ final class NavigationDataService {
         public List<RawLocation> locations;
         /** {@code true} when the handler's answer is {@code null} rather than empty. */
         public boolean nullResult;
+        /** references: the searched elements ("<includeDeclaration>|<key>"). */
+        public List<String> searchKeys;
+        /** references: library roots searched. */
+        public List<String> scannedLibraries;
+        /** references: every searched element is declared in this project's sources. */
+        public boolean sourceElements;
 
         NavDataResponse(long id, List<RawLocation> locations, boolean nullResult) {
             this.id = id;
@@ -86,6 +92,10 @@ final class NavigationDataService {
         boolean includeAccessors = true;
         Map<String, String> attachments = Map.of();
         List<String> classpath = List.of();
+        /** Library roots searched for references, in order ("jrt" = the JDK). */
+        List<String> libraries;
+        /** Library roots already searched (by another project). */
+        Set<String> skipLibraries = Set.of();
         String sourceLevel;
     }
 
@@ -166,6 +176,13 @@ final class NavigationDataService {
         Options options;
         /** Top-level type key → unit declaring it. */
         final Map<String, Unit> typeOwners = new HashMap<>();
+        /** Elements searched by `references` ("<includeDeclaration>|<key>"). */
+        final List<String> searched = new ArrayList<>();
+        /** Library roots searched by `references`. */
+        final Set<String> scannedLibraries = new LinkedHashSet<>();
+        boolean searchedSourceOnly = true;
+        /** Bindings requested by key. */
+        final Map<String, IBinding> keyBindings = new HashMap<>();
 
         List<Unit> sourceUnits() {
             List<Unit> out = new ArrayList<>();
@@ -204,6 +221,10 @@ final class NavigationDataService {
      * when the request targets a class file) in one batch.
      */
     static Units parse(Map<String, String> files, Options options, String targetUri, ClassFileDesc classFile) {
+        return parse(files, options, targetUri, classFile, List.of());
+    }
+
+    static Units parse(Map<String, String> files, Options options, String targetUri, ClassFileDesc classFile, List<String> bindingKeys) {
         Units units = new Units();
         units.options = options;
         Path tmp = null;
@@ -254,7 +275,7 @@ final class NavigationDataService {
             ASTParser parser = newParser(options);
             String[] encodings = new String[paths.size()];
             Arrays.fill(encodings, "UTF-8");
-            parser.createASTs(paths.toArray(new String[0]), encodings, new String[0], new FileASTRequestor() {
+            parser.createASTs(paths.toArray(new String[0]), encodings, bindingKeys.toArray(new String[0]), new FileASTRequestor() {
                 @Override
                 public void acceptAST(String sourceFilePath, CompilationUnit ast) {
                     Unit u = byPath.get(sourceFilePath);
@@ -263,6 +284,13 @@ final class NavigationDataService {
                     }
                     if (u != null) {
                         u.cu = ast;
+                    }
+                }
+
+                @Override
+                public void acceptBinding(String bindingKey, IBinding binding) {
+                    if (binding != null) {
+                        units.keyBindings.put(bindingKey, binding);
                     }
                 }
             }, null);
@@ -1255,6 +1283,20 @@ final class NavigationDataService {
         return locations;
     }
 
+    /** References of elements given by binding key (another project's search). */
+    static List<RawLocation> referencesByKeys(Units units, List<String> searchKeys) {
+        List<RawLocation> locations = new ArrayList<>();
+        for (String sk : searchKeys) {
+            int bar = sk.indexOf('|');
+            boolean includeDeclaration = Boolean.parseBoolean(sk.substring(0, bar));
+            IBinding b = units.keyBindings.get(sk.substring(bar + 1));
+            if (b != null) {
+                search(units, normalize(b), includeDeclaration, locations);
+            }
+        }
+        return locations;
+    }
+
     private static String capitalize(String s) {
         return s.isEmpty() ? s : Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
@@ -1324,6 +1366,10 @@ final class NavigationDataService {
         if (key == null) {
             return;
         }
+        units.searched.add(includeDeclaration + "|" + key);
+        if (!(sourceDeclaration(units, element) != null && !sourceDeclaration(units, element).unit.isClassFile())) {
+            units.searchedSourceOnly = false;
+        }
         boolean local = element instanceof IVariableBinding v && !v.isField() || element instanceof ITypeBinding t && t.isTypeVariable();
         for (Unit u : units.sourceUnits()) {
             List<int[]> matches = matches(u, element, key, includeDeclaration, false);
@@ -1339,38 +1385,136 @@ final class NavigationDataService {
         if (cfType == null || cfType.isFromSource() && !isFromClassFileUnit(units, cfType)) {
             return;
         }
-        ITypeBinding top = topLevel(cfType);
-        ClassFileDesc home = classFileOf(units.options, top);
-        if (home == null || home.isJrt()) {
-            return;
+        // Candidates grouped by their top-level class file (one source/decompiled unit each).
+        Map<String, ClassFileDesc> tops = new java.util.LinkedHashMap<>();
+        Map<String, ClassFileDesc> firstCandidate = new java.util.HashMap<>();
+        ClassFileDesc home = classFileOf(units.options, topLevel(cfType));
+        boolean insideJre = home == null || home.isJrt();
+        List<String> libraries = units.options.libraries != null ? units.options.libraries : new ArrayList<>(units.options.classpath);
+        if (units.options.libraries == null) {
+            libraries.add("jrt");
         }
-        for (String lib : units.options.classpath) {
-            for (ClassFileDesc cf : LibraryReferences.candidates(lib, element, cfType)) {
-                Unit cu = null;
-                if (units.target != null && units.target.isClassFile() && units.target.classFile.key().equals(topDesc(cf).key())) {
-                    cu = units.target;
-                }
-                boolean attached = ClassFileService.hasAttachedSource(cf, units.options.attachments);
-                if (cu == null) {
-                    if (!attached && !units.options.includeDecompiled) {
-                        continue;
-                    }
-                    cu = parseClassFile(cf, units.options);
-                }
-                if (cu == null) {
-                    continue;
-                }
-                // Attached source: precise matches; decompiled: every occurrence
-                // (JDTUtils.searchDecompiledSources with the OccurrencesFinder).
-                List<int[]> matches = matches(cu, element, key, includeDeclaration || !attached, !attached);
-                for (int[] m : matches) {
-                    RawLocation l = cu.location(m[0], m[1]);
-                    l.classFile = ClassFileService.complete(cf);
-                    l.uri = null;
-                    out.add(l);
+        for (String lib : libraries) {
+            if (units.options.skipLibraries.contains(lib) || lib.equals("jrt") && !insideJre) {
+                continue;
+            }
+            units.scannedLibraries.add(lib);
+            List<ClassFileDesc> candidates = lib.equals("jrt") ? LibraryReferences.jrtCandidates(element, cfType)
+                    : LibraryReferences.candidates(lib, element, cfType);
+            for (ClassFileDesc cf : candidates) {
+                ClassFileDesc top = topDesc(cf);
+                if (tops.putIfAbsent(top.key(), top) == null) {
+                    firstCandidate.put(top.key(), cf);
                 }
             }
         }
+        List<ClassFileDesc> toParse = new ArrayList<>();
+        Map<String, Unit> parsed = new java.util.HashMap<>();
+        for (ClassFileDesc top : tops.values()) {
+            if (units.target != null && units.target.isClassFile() && topDesc(units.target.classFile).key().equals(top.key())) {
+                parsed.put(top.key(), units.target);
+                continue;
+            }
+            boolean attached = ClassFileService.hasAttachedSource(top, units.options.attachments);
+            if (attached || units.options.includeDecompiled) {
+                toParse.add(top);
+            }
+        }
+        for (Unit cu : parseClassFiles(toParse, units.options)) {
+            parsed.put(cu.classFile.key(), cu);
+        }
+        for (ClassFileDesc top : tops.values()) {
+            Unit cu = parsed.get(top.key());
+            if (cu == null) {
+                continue;
+            }
+            boolean attached = ClassFileService.hasAttachedSource(top, units.options.attachments);
+            // Attached source: precise matches, each in the class file of its
+            // enclosing type; decompiled: every occurrence in the decompiled
+            // unit (JDTUtils.searchDecompiledSources with the OccurrencesFinder).
+            List<int[]> matches = matches(cu, element, key, includeDeclaration || !attached, !attached);
+            for (int[] m : matches) {
+                RawLocation l = cu.location(m[0], m[1]);
+                l.uri = null;
+                l.classFile = attached ? enclosingClassFile(cu, top, m[0]) : ClassFileService.complete(firstCandidate.get(top.key()));
+                out.add(l);
+            }
+        }
+    }
+
+    /** The class file of the innermost type enclosing {@code offset} in a class file's source. */
+    private static ClassFileDesc enclosingClassFile(Unit cu, ClassFileDesc top, int offset) {
+        ASTNode node = NodeFinder.perform(cu.cu, offset, 0);
+        while (node != null && !(node instanceof AbstractTypeDeclaration) && !(node instanceof AnonymousClassDeclaration)) {
+            node = node.getParent();
+        }
+        ITypeBinding b = node instanceof AbstractTypeDeclaration td ? td.resolveBinding()
+                : node instanceof AnonymousClassDeclaration acd ? acd.resolveBinding() : null;
+        String binary = b == null ? null : b.getBinaryName();
+        if (binary != null) {
+            ClassFileDesc d = new ClassFileDesc();
+            d.root = top.root;
+            d.module = top.module;
+            d.packageName = top.packageName;
+            d.classFileName = binary.substring(binary.lastIndexOf('.') + 1) + ".class";
+            if (ClassFileService.bytes(d) != null) {
+                return ClassFileService.complete(d);
+            }
+        }
+        return ClassFileService.complete(top);
+    }
+
+    /** Resolve the contents of several class files in one batch. */
+    static List<Unit> parseClassFiles(List<ClassFileDesc> descs, Options options) {
+        List<Unit> out = new ArrayList<>();
+        if (descs.isEmpty()) {
+            return out;
+        }
+        Path tmp = null;
+        try {
+            tmp = Files.createTempDirectory("jdtls-cf");
+            List<String> paths = new ArrayList<>();
+            Map<String, Unit> byPath = new java.util.HashMap<>();
+            int i = 0;
+            for (ClassFileDesc d : descs) {
+                String contents = ClassFileService.contents(d, options.attachments);
+                if (contents == null || contents.isBlank()) {
+                    continue;
+                }
+                Unit u = new Unit();
+                u.classFile = ClassFileService.complete(d);
+                u.source = contents;
+                Path p = tmp.resolve(Integer.toString(i++) + ClassFileService.unitName(d));
+                Files.createDirectories(p.getParent());
+                Files.writeString(p, contents, StandardCharsets.UTF_8);
+                paths.add(p.toString());
+                byPath.put(p.toString(), u);
+            }
+            if (paths.isEmpty()) {
+                return out;
+            }
+            ASTParser parser = newParser(options);
+            String[] encodings = new String[paths.size()];
+            Arrays.fill(encodings, "UTF-8");
+            parser.createASTs(paths.toArray(new String[0]), encodings, new String[0], new FileASTRequestor() {
+                @Override
+                public void acceptAST(String sourceFilePath, CompilationUnit ast) {
+                    Unit u = byPath.get(sourceFilePath);
+                    if (u != null) {
+                        u.cu = ast;
+                        u.lineStarts = lineStarts(u.source);
+                        out.add(u);
+                    }
+                }
+            }, null);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } finally {
+            if (tmp != null) {
+                deleteRecursively(tmp);
+            }
+        }
+        return out;
     }
 
     private static ClassFileDesc topDesc(ClassFileDesc cf) {
@@ -1533,6 +1677,8 @@ final class NavigationDataService {
         o.includeDeclaration = req.includeDeclaration;
         o.includeAccessors = req.includeAccessors == null || req.includeAccessors;
         o.attachments = req.sourceAttachments == null ? Map.of() : req.sourceAttachments;
+        o.libraries = req.libraries;
+        o.skipLibraries = req.skipLibraries == null ? Set.of() : new java.util.HashSet<>(req.skipLibraries);
         return o;
     }
 
@@ -1549,7 +1695,19 @@ final class NavigationDataService {
         if (cf != null && op.equals("highlight") && !ClassFileService.hasAttachedSource(cf, o.attachments)) {
             return new NavDataResponse(req.id, List.of(), false);
         }
-        Units units = parse(files, o, req.uri, cf);
+        List<String> keys = new ArrayList<>();
+        if (req.searchKeys != null) {
+            for (String sk : req.searchKeys) {
+                keys.add(sk.substring(sk.indexOf('|') + 1));
+            }
+        }
+        Units units = parse(files, o, req.uri, cf, keys);
+        if (op.equals("referencesByKeys")) {
+            List<RawLocation> locs = referencesByKeys(units, req.searchKeys == null ? List.of() : req.searchKeys);
+            NavDataResponse r = new NavDataResponse(req.id, locs, false);
+            r.scannedLibraries = new ArrayList<>(units.scannedLibraries);
+            return r;
+        }
         if (!op.equals("highlight") && unresolvedSelection(units, req.line, req.character)) {
             // SelectionEngine (codeSelect) resolves the selected name even where
             // the compiler's recovery loses it (e.g. a Java 9 construct in a
@@ -1581,7 +1739,11 @@ final class NavigationDataService {
             case "highlight" -> OccurrencesFinders.highlights(units.target, req.line, req.character);
             default -> List.of();
         };
-        return new NavDataResponse(req.id, result == null ? List.of() : result, result == null);
+        NavDataResponse r = new NavDataResponse(req.id, result == null ? List.of() : result, result == null);
+        r.searchKeys = units.searched;
+        r.sourceElements = !units.searched.isEmpty() && units.searchedSourceOnly;
+        r.scannedLibraries = new ArrayList<>(units.scannedLibraries);
+        return r;
     }
 
     private static boolean unresolvedSelection(Units units, int line, int character) {

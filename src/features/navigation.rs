@@ -154,16 +154,36 @@ pub fn class_file_uri(ws: &Workspace, project: &str, desc: &ClassFileDesc) -> St
     } else {
         classfile::memento_root_path(&root, proj.map(|p| p.root.as_path()), &project_roots(ws))
     };
-    let mut attributes = Vec::new();
-    if desc.module.is_none() {
-        if let Some(p) = proj {
-            if p.kind == ProjectKind::Maven {
-                if let Some(lib) = p.libraries.iter().find(|l| l.path == root) {
-                    attributes = classfile::maven_attributes(&root, lib.is_test, &crate::project::maven::local_repository());
-                }
+    let attributes = match proj {
+        Some(p) if desc.module.is_some() => {
+            // JRE container library: JDT adds the javadoc location, then the
+            // container entry's own attributes.
+            let mut a = Vec::new();
+            if let Some(url) = classfile::jdk_javadoc_location(&root) {
+                a.push(("javadoc_location".to_owned(), url));
             }
+            a.extend(match p.kind {
+                ProjectKind::Maven => vec![("maven.pomderived".to_owned(), "true".to_owned())],
+                ProjectKind::Eclipse => classfile::eclipse_container_attributes(&p.root),
+                _ => Vec::new(),
+            });
+            a
         }
-    }
+        None if desc.module.is_some() => classfile::jdk_javadoc_location(&root)
+            .map(|url| vec![("javadoc_location".to_owned(), url)])
+            .unwrap_or_default(),
+        Some(p) => match p.kind {
+            ProjectKind::Maven => p
+                .libraries
+                .iter()
+                .find(|l| l.path == root)
+                .map(|lib| classfile::maven_attributes(&root, lib.is_test, &crate::project::maven::local_repository()))
+                .unwrap_or_default(),
+            ProjectKind::Eclipse => classfile::eclipse_library_attributes(&p.root, &root),
+            _ => Vec::new(),
+        },
+        None => Vec::new(),
+    };
     ClassFileRef {
         project: proj.map(|p| p.name.clone()).unwrap_or_else(|| DEFAULT_PROJECT_NAME.to_owned()),
         root_path,
@@ -242,6 +262,9 @@ async fn nav(d: &Dispatcher, uri: &Url, pos: Position, op: &str, include_declara
         include_decompiled: p.include_decompiled_sources,
         include_declaration,
         include_accessors: p.include_accessors,
+        libraries: None,
+        skip_libraries: Vec::new(),
+        search_keys: Vec::new(),
     };
     match d.send_request(req).await {
         Ok(BridgeResponse::NavData { locations, null_result, .. }) => {

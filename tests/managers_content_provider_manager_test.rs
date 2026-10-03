@@ -39,7 +39,6 @@ fn set_preferred(ws: &mut Workspace, ids: &[&str]) {
 }
 
 #[test]
-#[ignore = "needs Maven source download (preferences.setMavenDownloadSources): commons-lang3-3.18.0-sources.jar is not in the local repository, so WordUtils is FernFlower-decompiled without its Javadoc"]
 fn test_open_source_code() {
     let mut f = setup();
     let uri = f.source_available_uri.clone();
@@ -48,7 +47,6 @@ fn test_open_source_code() {
 }
 
 #[test]
-#[ignore = "needs Maven source download (preferences.setMavenDownloadSources): commons-lang3-3.18.0-sources.jar is not in the local repository, so WordUtils is FernFlower-decompiled without its Javadoc"]
 fn test_decompile_source_code() {
     let mut f = setup();
     let uri = f.source_available_uri.clone();

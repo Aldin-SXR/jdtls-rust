@@ -39,7 +39,6 @@ fn test_get_empty_definition() {
 }
 
 #[test]
-#[ignore = "needs Maven source download (preferences.setMavenDownloadSources): commons-lang3-3.18.0-sources.jar is not in the local repository, so StringUtils is shown FernFlower-decompiled and the position is not on an element of the attached source"]
 fn test_attached_source() {
     let mut ws = setup();
     test_class(&mut ws, "org.apache.commons.lang3.StringUtils", 20, 26);
@@ -100,7 +99,6 @@ fn test_method_in_anonymous_class2() {
 }
 
 #[test]
-#[ignore = "needs Maven source download (preferences.setMavenDownloadSources): commons-lang3-3.18.0-sources.jar is not in the local repository, so StringUtils is shown FernFlower-decompiled and (145,30) is not on an element of the attached source"]
 fn test_jdk_classes() {
     let mut ws = setup();
     // linkFilesToDefaultProject("singlefile/Single.java")
