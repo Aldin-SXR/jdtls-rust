@@ -25,8 +25,10 @@ public class BridgeProtocol {
         public String newName;
         public String importPrefix; // pre-computed import prefix from Rust (avoids race condition)
         public String source;   // for Format requests
-        public int tabSize;
-        public boolean insertSpaces;
+        public int formatKind;  // CodeFormatter kind | flags (Format)
+        public int length;      // region length (Format), UTF-16 units
+        public int indentationLevel;
+        public String lineSeparator;
         public List<BridgeDiagnostic> diagnostics;
         public String data;    // opaque data passed back for typeHierarchy supertypes/subtypes
     }
@@ -101,6 +103,13 @@ public class BridgeProtocol {
         }
     }
 
+    public static class FormatEditsResponse extends Response {
+        public List<BridgeFormatEdit> edits; // null when the formatter returned null
+        public FormatEditsResponse(long id, List<BridgeFormatEdit> edits) {
+            this.id = id; this.method = "formatEdits"; this.edits = edits;
+        }
+    }
+
     public static class OkResponse extends Response {
         public OkResponse(long id) { this.id = id; this.method = "ok"; }
     }
@@ -156,6 +165,12 @@ public class BridgeProtocol {
     public static class BridgeTextEdit {
         public int startLine, startChar, endLine, endChar;
         public String newText;
+    }
+
+    /** A formatter leaf edit: replace {@code length} chars at {@code offset}. */
+    public static class BridgeFormatEdit {
+        public int offset, length;
+        public String text;
     }
 
     public static class BridgeSignature {

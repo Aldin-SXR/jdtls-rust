@@ -15,6 +15,7 @@ use crate::analysis::syntax::{
 use crate::analysis::syntax::parser::JavaParser;
 use crate::config::Config;
 use crate::document_store::DocumentStore;
+use crate::features::formatting;
 use crate::handlers::text_document::pos_to_offset;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -206,6 +207,17 @@ impl JavaLanguageServer {
         *self.dispatcher.workspace.write().unwrap_or_else(|e| e.into_inner()) = ws;
     }
 
+    async fn format_env(&self) -> formatting::FormatEnv<'_> {
+        let cfg = self.config.read().await;
+        formatting::FormatEnv {
+            dispatcher: &self.dispatcher,
+            client: &self.client,
+            settings: cfg.format.clone(),
+            roots: self.roots.read().await.clone(),
+            extended_client_capabilities: cfg.extended_client_capabilities.clone(),
+        }
+    }
+
     fn request_compile(&self) {
         let next = (*self.compile_tx.borrow()).wrapping_add(1);
         let _ = self.compile_tx.send(next);
@@ -384,6 +396,8 @@ impl LanguageServer for JavaLanguageServer {
                         "jdtls-rust.refreshDiagnostics".to_owned(),
                         "java.project.refreshDiagnostics".to_owned(),
                         "java.project.rebuild".to_owned(),
+                        "java.project.getSettings".to_owned(),
+                        "java.edit.stringFormatting".to_owned(),
                     ],
                     work_done_progress_options: Default::default(),
                 }),
@@ -1135,58 +1149,19 @@ impl LanguageServer for JavaLanguageServer {
     // ── Formatting ─────────────────────────────────────────────────────────────
 
     async fn formatting(&self, params: DocumentFormattingParams) -> LspResult<Option<Vec<TextEdit>>> {
-        let uri = &params.text_document.uri;
-        let opts = &params.options;
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.format(uri, opts.tab_size as u32, opts.insert_spaces).await {
-            Ok(BridgeResponse::TextEdits { uri: response_uri, edits, .. }) => {
-                if response_uri != uri.as_str() {
-                    warn!("format response URI {response_uri} does not match request URI {uri}");
-                }
-                let text_edits: Vec<TextEdit> = edits.iter().map(|e| TextEdit {
-                    range: Range {
-                        start: Position { line: e.start_line, character: e.start_char },
-                        end: Position { line: e.end_line, character: e.end_char },
-                    },
-                    new_text: e.new_text.clone(),
-                }).collect();
-                Ok(if text_edits.is_empty() { None } else { Some(text_edits) })
-            }
-            _ => Ok(None),
-        }
+        let env = self.format_env().await;
+        Ok(Some(formatting::format(&env, &params.text_document.uri, &params.options, None).await))
     }
 
     async fn range_formatting(&self, params: DocumentRangeFormattingParams) -> LspResult<Option<Vec<TextEdit>>> {
-        // Delegate to full-file formatting for now; ECJ formatter can be extended later
-        self.formatting(DocumentFormattingParams {
-            text_document: params.text_document,
-            options: params.options,
-            work_done_progress_params: Default::default(),
-        }).await
+        let env = self.format_env().await;
+        Ok(Some(formatting::format(&env, &params.text_document.uri, &params.options, Some(params.range)).await))
     }
 
     async fn on_type_formatting(&self, params: DocumentOnTypeFormattingParams) -> LspResult<Option<Vec<TextEdit>>> {
-        let text_document = params.text_document_position.text_document.clone();
-        let uri = text_document.uri.clone();
-        let formatted = self.formatting(DocumentFormattingParams {
-            text_document,
-            options: params.options,
-            work_done_progress_params: Default::default(),
-        }).await?;
-        if formatted.as_ref().is_some_and(|edits| !edits.is_empty()) {
-            return Ok(formatted);
-        }
-
-        let state = match self.store.get(&uri) {
-            None => return Ok(formatted),
-            Some(state) => state,
-        };
-        let fallback = simple_on_type_formatting_fallback(
-            &state.content_string(),
-            params.text_document_position.position,
-        );
-        Ok(fallback.or(formatted))
+        let env = self.format_env().await;
+        let pos = &params.text_document_position;
+        Ok(Some(formatting::on_type_format(&env, &pos.text_document.uri, &params.options, pos.position, &params.ch).await))
     }
 
     // ── Rename ────────────────────────────────────────────────────────────────
@@ -1607,6 +1582,35 @@ impl LanguageServer for JavaLanguageServer {
                     .collect();
                 Ok(Some(Value::Array(uris)))
             }
+            "java.edit.stringFormatting" => {
+                // (content, options map or null, version)
+                let args = &params.arguments;
+                let content = args.first().and_then(Value::as_str).unwrap_or_default();
+                let options = args.get(1).and_then(Value::as_object).map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string())))
+                        .collect()
+                });
+                let version = args.get(2).and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or(v.as_i64().map(|n| n as i32)));
+                let Some(version) = version else {
+                    return Err(tower_lsp::jsonrpc::Error::invalid_params("version must be an int"));
+                };
+                let env = self.format_env().await;
+                Ok(Some(Value::String(formatting::string_formatting(&env, content, options, version).await)))
+            }
+            "java.project.getSettings" => {
+                // (uri, keys): JDT option keys only.
+                let uri = params.arguments.first().and_then(Value::as_str).and_then(|s| Url::parse(s).ok());
+                let keys: Vec<String> = params
+                    .arguments
+                    .get(1)
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default();
+                let Some(uri) = uri else { return Ok(None) };
+                let env = self.format_env().await;
+                Ok(Some(Value::Object(formatting::project_option_settings(&env, &uri, &keys).await)))
+            }
             other => {
                 warn!("Ignoring unsupported workspace/executeCommand request: {other}");
                 Ok(None)
@@ -1763,11 +1767,7 @@ fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
         config.classpath = classpath;
     }
 
-    if let Some(formatter_profile) = setting_string(settings, &["formatterProfile"])
-        .or_else(|| setting_string(settings, &["java", "formatterProfile"]))
-    {
-        config.formatter_profile = formatter_profile;
-    }
+    config.format.update_from(settings);
 
     if let Some(max_completions) = setting_usize(settings, &["maxCompletions"])
         .or_else(|| setting_usize(settings, &["java", "maxCompletions"]))
@@ -1993,46 +1993,6 @@ fn is_java_keyword(text: &str) -> bool {
             | "this" | "throw" | "throws" | "transient" | "try" | "void"
             | "volatile" | "while" | "record" | "sealed" | "permits" | "var"
     )
-}
-
-fn simple_on_type_formatting_fallback(content: &str, pos: Position) -> Option<Vec<TextEdit>> {
-    let line_index = pos.line as usize;
-    let lines: Vec<&str> = content.lines().collect();
-    let line = *lines.get(line_index)?;
-    let trimmed = line.trim_start();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut depth = 0usize;
-    for prior_line in &lines[..line_index] {
-        for ch in prior_line.chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-        }
-    }
-    let desired_depth = if trimmed.starts_with('}') {
-        depth.saturating_sub(1)
-    } else {
-        depth
-    };
-    let desired_indent = "    ".repeat(desired_depth);
-    let current_indent_len = line.len() - trimmed.len();
-    let current_indent = &line[..current_indent_len];
-    if current_indent == desired_indent {
-        return None;
-    }
-
-    Some(vec![TextEdit {
-        range: Range {
-            start: Position { line: pos.line, character: 0 },
-            end: Position { line: pos.line, character: utf16_len(line) as u32 },
-        },
-        new_text: format!("{desired_indent}{trimmed}"),
-    }])
 }
 
 /// Convert a UTF-16 column offset (as used in LSP positions) to a UTF-8 byte offset.

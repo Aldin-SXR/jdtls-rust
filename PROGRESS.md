@@ -27,7 +27,7 @@
 - [x] Goto-definition / goto-declaration (same-file AST)
 - [x] Find references + document highlight (same-file AST, scope-aware)
 - [x] Signature help (active parameter tracking, end-position based)
-- [x] Code formatting (google-java-format)
+- [x] Code formatting (Eclipse code formatter, jdt.ls FormatterHandler port)
 - [x] Code actions: add import quick-fix (scans jrt:/ for unresolved type names)
 - [x] Code actions: unused variable — remove all assignments (preferred), @SuppressWarnings (var + method scope), add final modifier
 - [x] Code actions: add @Override, add throws clause, wrap with try/catch

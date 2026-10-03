@@ -229,8 +229,9 @@ public class Main {
                 yield new TextEditsResponse(req.id, req.uri, edits);
             }
             case "format" -> {
-                List<BridgeTextEdit> edits = formatter.format(req.source, req.tabSize, req.insertSpaces);
-                yield new TextEditsResponse(req.id, req.uri, edits);
+                List<BridgeFormatEdit> edits = formatter.format(req.source, req.formatKind, req.offset,
+                    req.length, req.indentationLevel, req.lineSeparator, req.options);
+                yield new FormatEditsResponse(req.id, edits);
             }
             case "typeHierarchyPrepare" -> {
                 List<BridgeTypeHierarchyItem> items = navigation.prepareTypeHierarchy(
