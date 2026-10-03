@@ -32,6 +32,16 @@ pub enum BridgeRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         import_prefix: Option<String>,
     },
+    /// Resolved DOM + bindings of one unit (`AstBindingsService`).
+    AstBindings {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        uri: String,
+    },
     Hover {
         id: u64,
         files: HashMap<String, String>,
@@ -284,6 +294,12 @@ pub enum BridgeResponse {
         id: u64,
         calls: Vec<BridgeCallHierarchyOutgoingCall>,
     },
+    AstBindings {
+        id: u64,
+        strings: Vec<String>,
+        nodes: Vec<Vec<i64>>,
+        bindings: Vec<Vec<i64>>,
+    },
     Ok { id: u64 },
     Error {
         id: u64,
@@ -310,6 +326,7 @@ impl BridgeResponse {
             | BridgeResponse::CallHierarchyPrepare { id, .. }
             | BridgeResponse::CallHierarchyIncomingCalls { id, .. }
             | BridgeResponse::CallHierarchyOutgoingCalls { id, .. }
+            | BridgeResponse::AstBindings { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
         }

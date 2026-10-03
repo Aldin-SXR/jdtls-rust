@@ -2028,7 +2028,7 @@ fn ui_on_type_formatting_returns_edits() {
 
 // ─── Syntax-only: document symbols & goto-definition ─────────────────────────
 
-/// A class with a field and method → hierarchical document symbols returned.
+/// A class with a field and method → document symbols returned.
 /// (from jdtls DocumentSymbolHandlerTest#testDocumentSymbolsOnPlainFile)
 #[test]
 fn syntax_document_symbols_class_members() {
@@ -2047,21 +2047,16 @@ fn syntax_document_symbols_class_members() {
     let syms = c.document_symbols(&uri);
     assert!(!syms.is_empty(), "expected at least one document symbol, got none");
 
-    // Find the class symbol (may be at top level or nested)
-    fn find_sym<'a>(syms: &'a [Value], name: &str) -> Option<&'a Value> {
-        syms.iter().find(|s| s["name"].as_str() == Some(name))
+    // This client does not advertise `hierarchicalDocumentSymbolSupport`, so
+    // jdt.ls answers with flat SymbolInformations, methods labelled by
+    // `JavaElementLabels` (`someMethod()`).
+    fn find_sym<'a>(syms: &'a [Value], name: &str, container: &str) -> Option<&'a Value> {
+        syms.iter().find(|s| s["name"].as_str() == Some(name) && s["containerName"].as_str() == Some(container))
     }
 
-    let class_sym = find_sym(&syms, "E").expect("expected class symbol 'E'");
-    let children = class_sym["children"].as_array().cloned().unwrap_or_default();
-    assert!(
-        find_sym(&children, "someField").is_some(),
-        "expected 'someField' in class children, got: {children:?}"
-    );
-    assert!(
-        find_sym(&children, "someMethod").is_some(),
-        "expected 'someMethod' in class children, got: {children:?}"
-    );
+    assert!(find_sym(&syms, "E", "jdtls-test-syntax_symbols.java").is_some(), "expected class symbol 'E', got: {syms:?}");
+    assert!(find_sym(&syms, "someField", "E").is_some(), "expected 'someField' in class E, got: {syms:?}");
+    assert!(find_sym(&syms, "someMethod()", "E").is_some(), "expected 'someMethod()' in class E, got: {syms:?}");
 }
 
 /// Cursor on a method call → goto-definition jumps to the method declaration in the same file.
@@ -2979,6 +2974,40 @@ fn syntax_selection_ranges() {
     assert!(found_class, "expected ancestor selection range to cover class body");
 }
 
+/// Syntax-level handlers on a virtual (`untitled:`) document.
+#[test]
+fn virtual_document_syntax_handlers() {
+    let mut c = LspClient::spawn();
+    c.initialize();
+
+    let uri = "untitled:Virtual";
+    let src = indoc(r#"
+        public class Virtual {
+            /**
+             * Doc
+             */
+            public void foo() {
+                if (true) {
+                }
+            }
+        }
+    "#);
+    c.open(uri, &src);
+
+    let ranges = c.folding_ranges(uri);
+    assert!(ranges.iter().any(|r| r["startLine"] == 0 && r["endLine"] == 8), "class folding range, got {ranges:?}");
+    assert!(ranges.iter().any(|r| r["startLine"] == 1 && r["endLine"] == 3 && r["kind"] == "comment"), "javadoc folding range, got {ranges:?}");
+
+    let syms = c.document_symbols(uri);
+    assert!(syms.iter().any(|s| s["name"] == "foo()" && s["containerName"] == "Virtual"), "symbols: {syms:?}");
+
+    let sel = c.selection_ranges(uri, vec![(4, 17)]);
+    assert_eq!(sel[0]["range"]["start"], json!({ "line": 4, "character": 16 }), "selection: {sel:?}");
+
+    let data = c.semantic_tokens(uri);
+    assert!(data.chunks(5).any(|t| t[3] == 7), "expected a method token, got {data:?}");
+}
+
 /// Semantic tokens for a method declaration.
 /// (from jdtls SemanticTokensHandlerTest#testSemanticTokens_Methods)
 #[test]
@@ -2994,17 +3023,13 @@ fn ecj_semantic_tokens() {
     "#);
     c.open(&uri, &src);
 
-    // Tree-sitter tokens are available immediately
+    // Like jdt.ls, the server waits for the compiler before answering.
     let data = c.semantic_tokens(&uri);
     assert!(!data.is_empty(), "expected some semantic tokens");
 
     // The data is delta-encoded: [deltaLine, deltaStart, length, tokenType, tokenModifiers]
-    // "public" is at 0,0, length 6. type 15 (MODIFIER)
-    // "class" is at 0,7, length 5. type 14 (KEYWORD)
-    // "E" is at 0,13, length 1. type 2 (CLASS)
-    // ...
-    // "void" is at 1,11, length 4. type 14 (KEYWORD)
-    // "foo" is at 1,16, length 3. type 12 (METHOD)
+    // with the jdt.ls legend (`TokenType`): "public" and "class" are MODIFIER (11),
+    // "E" is CLASS (1), "foo" at 1,16, length 3, is METHOD (7).
 
     let mut found_foo = false;
     let mut curr_line = 0;
@@ -3022,11 +3047,11 @@ fn ecj_semantic_tokens() {
             curr_char += delta_start;
         }
 
-        if curr_line == 1 && curr_char == 16 && length == 3 && token_type == 12 {
+        if curr_line == 1 && curr_char == 16 && length == 3 && token_type == 7 {
             found_foo = true;
         }
     }
-    assert!(found_foo, "expected semantic token for method 'foo' at 1:16 (type 12)");
+    assert!(found_foo, "expected semantic token for method 'foo' at 1:16 (type 7)");
 }
 
 /// Goto implementation: interface method → class implementation.
