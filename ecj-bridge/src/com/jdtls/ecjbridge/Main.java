@@ -259,6 +259,7 @@ public class Main {
                     req.files, orDefault(req.sourceLevel), req.uri, req.offset);
                 yield new CallHierarchyOutgoingCallsResponse(req.id, calls);
             }
+            case "astBindings" -> AstBindingsService.handle(req);
             case "shutdown" -> new OkResponse(req.id);
             default -> new ErrorResponse(req.id, "Unknown method: " + req.method);
         };

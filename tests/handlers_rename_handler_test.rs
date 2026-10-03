@@ -844,6 +844,7 @@ fn test_rename_record_field() {
     let name = "java17";
     ws.import_projects(&[&format!("eclipse/{name}")]);
     // assertIsJavaProject(project)
+    let root = ws.project_root(name);
     let root_uri = ws.project_uri(name);
     let projects = ws.request("workspace/executeCommand", json!({ "command": "java.project.getAll", "arguments": [] }));
     assert!(

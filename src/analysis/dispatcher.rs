@@ -238,6 +238,12 @@ impl Dispatcher {
         }).await
     }
 
+    /// Resolved DOM and bindings of `uri` (data for semantic tokens).
+    pub async fn ast_bindings(&self, uri: &Url) -> Result<BridgeResponse> {
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
+        self.send(BridgeRequest::AstBindings { id: next_id(), files, classpath, source_level, options, uri: uri.to_string() }).await
+    }
+
     pub async fn navigate(&self, uri: &Url, offset: usize, kind: NavKind) -> Result<BridgeResponse> {
         let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::Navigate {
