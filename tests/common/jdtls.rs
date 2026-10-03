@@ -179,7 +179,9 @@ impl Workspace {
             roots: Vec::new(),
             client: None,
             settings: json!({ "java": {} }),
-            init_options: json!({}),
+            // `AbstractProjectsManagerBasedTest.initPreferenceManager(true)`:
+            // the client supports class file contents (jdt:// URIs).
+            init_options: json!({ "extendedClientCapabilities": { "classFileContentsSupport": true } }),
             capabilities: default_client_capabilities(),
             versions: BTreeMap::new(),
         }
@@ -339,6 +341,35 @@ impl Workspace {
             .min_by_key(|p| p.components().count())
             .unwrap_or_else(|| panic!("type {fqn} not found in project {project}"));
         Url::from_file_path(found).unwrap().to_string()
+    }
+
+    /// `ClassFileUtil.getURI(project, fqn)`: the URI of a source or binary
+    /// type (`java.util.Map$Entry` for member types), looked up by the server
+    /// like JDT's type-name search (case-insensitive exact match).  Binary
+    /// types get jdt.ls `jdt://contents/<jar>/<package>/<SourceFile>?<handle>`
+    /// URIs.  `project` is a project name (`jdt.ls-java-project` for the
+    /// default project).
+    pub fn class_file_uri(&mut self, project: &str, fqn: &str) -> String {
+        self.try_class_file_uri(project, fqn)
+            .unwrap_or_else(|| panic!("type {fqn} not found in project {project}"))
+    }
+
+    pub fn try_class_file_uri(&mut self, project: &str, fqn: &str) -> Option<String> {
+        let v = self.request(
+            "workspace/executeCommand",
+            json!({ "command": "jdtls-rust.classFileUri", "arguments": [project, fqn] }),
+        );
+        v.as_str().map(str::to_owned)
+    }
+
+    /// `workspace/didChangeConfiguration` with `settings` (also kept as the
+    /// initial settings when the server hasn't started yet).
+    pub fn update_settings(&mut self, settings: Value) {
+        self.settings = settings.clone();
+        if self.client.is_some() {
+            self.client().notify("workspace/didChangeConfiguration", json!({ "settings": settings }));
+            self.wait_idle();
+        }
     }
 
     /// Root directory of the project named `name` (Eclipse `.project` name,

@@ -14,6 +14,7 @@ use crate::analysis::syntax::{
 };
 use crate::analysis::syntax::parser::JavaParser;
 use crate::config::Config;
+use crate::features::navigation;
 use crate::document_store::DocumentStore;
 use crate::handlers::text_document::pos_to_offset;
 use serde_json::{json, Value};
@@ -188,6 +189,12 @@ impl JavaLanguageServer {
         });
     }
 
+    /// `java/classFileContents` (jdt.ls extension).
+    pub async fn class_file_contents(&self, params: Value) -> LspResult<String> {
+        let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
+        Ok(navigation::class_file_contents(&self.dispatcher, uri).await)
+    }
+
     // ── Utilities ─────────────────────────────────────────────────────────────
 
     /// (Re-)import all projects under the workspace roots and register their
@@ -238,6 +245,7 @@ impl LanguageServer for JavaLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
         *self.client_flavor.write().await = detect_client_flavor(params.client_info.as_ref());
         *self.workspace_folders.write().await = params.workspace_folders.clone().unwrap_or_default();
+        navigation::init_preferences(params.initialization_options.as_ref());
 
         // Parse initializationOptions
         if let Some(opts) = params.initialization_options {
@@ -381,6 +389,7 @@ impl LanguageServer for JavaLanguageServer {
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec![
                         "java.project.getAll".to_owned(),
+                        "jdtls-rust.classFileUri".to_owned(),
                         "jdtls-rust.refreshDiagnostics".to_owned(),
                         "java.project.refreshDiagnostics".to_owned(),
                         "java.project.rebuild".to_owned(),
@@ -473,6 +482,7 @@ impl LanguageServer for JavaLanguageServer {
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
+        navigation::update_settings(&params.settings);
         let restart_ecj = {
             let mut config = self.config.write().await;
             merge_config_settings(&mut config, &params.settings)
@@ -865,6 +875,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn goto_definition(&self, params: GotoDefinitionParams) -> LspResult<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
+        if let Some(locs) = navigation::definition(&self.dispatcher, uri, pos).await {
+            return Ok(Some(GotoDefinitionResponse::Array(locs)));
+        }
         let (offset, content, tree) = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => (
@@ -898,6 +911,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn goto_declaration(&self, params: GotoDeclarationParams) -> LspResult<Option<GotoDeclarationResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
+        if let Some(locs) = navigation::declaration(&self.dispatcher, uri, pos).await {
+            return Ok(Some(GotoDefinitionResponse::Array(locs)));
+        }
         let (offset, content, tree) = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => (
@@ -931,6 +947,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn goto_type_definition(&self, params: GotoTypeDefinitionParams) -> LspResult<Option<GotoTypeDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
+        if let Some(locs) = navigation::type_definition(&self.dispatcher, uri, pos).await {
+            return Ok(locs.map(GotoDefinitionResponse::Array));
+        }
         let offset = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
@@ -949,6 +968,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn goto_implementation(&self, params: GotoImplementationParams) -> LspResult<Option<GotoImplementationResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
+        if let Some(locs) = navigation::implementation(&self.dispatcher, uri, pos).await {
+            return Ok(Some(GotoDefinitionResponse::Array(locs)));
+        }
         let offset = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
@@ -969,6 +991,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn references(&self, params: ReferenceParams) -> LspResult<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
+        if let Some(locs) = navigation::references(&self.dispatcher, uri, pos, params.context.include_declaration).await {
+            return Ok(Some(locs));
+        }
         let (offset, content, tree) = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => (
@@ -1009,6 +1034,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn document_highlight(&self, params: DocumentHighlightParams) -> LspResult<Option<Vec<DocumentHighlight>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
+        if let Some(highlights) = navigation::document_highlight(&self.dispatcher, uri, pos).await {
+            return Ok(Some(highlights));
+        }
         let (offset, content, tree) = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => (
@@ -1594,6 +1622,12 @@ impl LanguageServer for JavaLanguageServer {
                     let _ = self.compile_tx.send(next);
                 }
                 Ok(None)
+            }
+            "jdtls-rust.classFileUri" => {
+                // Test support: `ClassFileUtil.getURI(project, fqn)`.
+                let arg = |i: usize| params.arguments.get(i).and_then(Value::as_str).unwrap_or("").to_owned();
+                let uri = navigation::type_uri(&self.dispatcher, &arg(0), &arg(1)).await;
+                Ok(Some(uri.map(Value::String).unwrap_or(Value::Null)))
             }
             "java.project.getAll" => {
                 // jdt.ls `ProjectCommand.getAllJavaProjects`: URIs of all

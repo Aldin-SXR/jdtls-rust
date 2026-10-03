@@ -29,6 +29,16 @@ public class BridgeProtocol {
         public boolean insertSpaces;
         public List<BridgeDiagnostic> diagnostics;
         public String data;    // opaque data passed back for typeHierarchy supertypes/subtypes
+        // navData / classFileContents / classFileInfo (NavigationDataService)
+        public String op;
+        public int line, character;
+        public ClassFileService.ClassFileDesc classFile;
+        public Map<String, String> sourceAttachments; // library path -> source attachment path
+        public boolean includeClassFiles;
+        public Boolean includeDecompiled;
+        public boolean includeDeclaration;
+        public Boolean includeAccessors;
+        public String fqn;
     }
 
     public static class BridgeRange {
