@@ -377,6 +377,15 @@ impl Workspace {
         panic!("project {name} not found");
     }
 
+    /// `File.toURI()` form of a directory, as returned by `java.project.getAll`.
+    pub fn project_uri(&self, name: &str) -> String {
+        let root = self.project_root(name);
+        let mut s = String::from("file:");
+        s.push_str(&root.to_string_lossy().replace(' ', "%20"));
+        s.push('/');
+        s
+    }
+
     pub fn path_uri(&self, rel: &str) -> String {
         Url::from_file_path(self.dir.join(rel)).unwrap().to_string()
     }
@@ -414,7 +423,11 @@ impl Workspace {
     pub fn diagnostics(&mut self, uri: &str) -> Vec<Value> {
         let c = self.client();
         c.notifications.retain(|m| !(m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri));
-        c.request("workspace/executeCommand", json!({ "command": "java.project.refreshDiagnostics", "arguments": [] }));
+        // jdt.ls `DiagnosticsCommand.refreshDiagnostics(uri, scope, syntaxOnly)`.
+        c.request(
+            "workspace/executeCommand",
+            json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] }),
+        );
         let msg = c
             .recv_until(Duration::from_secs(60), |m| {
                 m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri

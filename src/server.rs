@@ -1568,14 +1568,14 @@ impl LanguageServer for JavaLanguageServer {
                 Ok(None)
             }
             "java.project.getAll" => {
-                // jdt.ls `ProjectCommand.getAllJavaProjects`: URIs of all
-                // imported Java projects (excluding the default project).
+                // jdt.ls `ProjectCommand.getAllJavaProjects`: `File.toURI()` of
+                // every Java project folder, in workspace (name) order.
                 let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
-                let uris: Vec<Value> = ws
-                    .projects
+                let mut projects: Vec<&crate::project::Project> = ws.projects.iter().collect();
+                projects.sort_by(|a, b| a.name.cmp(&b.name));
+                let uris: Vec<Value> = projects
                     .iter()
-                    .filter_map(|p| Url::from_directory_path(&p.root).ok())
-                    .map(|u| Value::String(u.to_string().trim_end_matches('/').to_owned()))
+                    .map(|p| Value::String(crate::project::java_file_uri(&p.root, true)))
                     .collect();
                 Ok(Some(Value::Array(uris)))
             }
