@@ -29,6 +29,9 @@ public class BridgeProtocol {
         public boolean insertSpaces;
         public List<BridgeDiagnostic> diagnostics;
         public String data;    // opaque data passed back for typeHierarchy supertypes/subtypes
+        public List<String> uris;        // renameOccurrences: units to resolve
+        public List<String> names;       // renameOccurrences: identifiers of interest
+        public String packageName;       // renameOccurrences: package whose references to collect
     }
 
     public static class BridgeRange {
@@ -90,6 +93,26 @@ public class BridgeProtocol {
         public List<BridgeFileEdit> changes;
         public WorkspaceEditResponse(long id, List<BridgeFileEdit> changes) {
             this.id = id; this.method = "workspaceEdit"; this.changes = changes;
+        }
+    }
+
+    public static class RenameTargetResponse extends Response {
+        public RenameBindingService.Element select;
+        public RenameBindingService.Element prepare;
+        public String packageName;
+        public RenameTargetResponse(long id, RenameBindingService.TargetResult r) {
+            this.id = id; this.method = "renameTarget";
+            this.select = r.select; this.prepare = r.prepare; this.packageName = r.packageName;
+        }
+    }
+
+    public static class RenameOccurrencesResponse extends Response {
+        public List<RenameBindingService.FileOccurrences> files;
+        public List<RenameBindingService.MethodInfo> methods;
+        public List<List<String>> relations;
+        public RenameOccurrencesResponse(long id, RenameBindingService.OccurrencesResult r) {
+            this.id = id; this.method = "renameOccurrences";
+            this.files = r.files; this.methods = r.methods; this.relations = r.relations;
         }
     }
 

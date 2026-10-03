@@ -78,4 +78,11 @@ final class BridgeOptions {
     static void configureEnvironment(org.eclipse.jdt.core.dom.ASTParser parser, String[] classpath) {
         parser.setEnvironment(classpath, null, null, /* includeRunningVMBootclasspath */ true);
     }
+
+    /** As {@link #configureEnvironment(org.eclipse.jdt.core.dom.ASTParser, String[])}, plus UTF-8 source folders. */
+    static void configureEnvironment(org.eclipse.jdt.core.dom.ASTParser parser, String[] classpath, String[] sourcepath) {
+        String[] encodings = new String[sourcepath.length];
+        java.util.Arrays.fill(encodings, "UTF-8");
+        parser.setEnvironment(classpath, sourcepath, encodings, /* includeRunningVMBootclasspath */ true);
+    }
 }

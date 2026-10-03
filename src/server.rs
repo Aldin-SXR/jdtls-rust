@@ -128,6 +128,8 @@ pub struct JavaLanguageServer {
     compile_tx: watch::Sender<u64>,
     /// Workspace root folders used for project import.
     roots: Arc<RwLock<Vec<std::path::PathBuf>>>,
+    /// Client capabilities relevant to rename (resource operations).
+    rename_client: Arc<RwLock<crate::features::rename::RenameClient>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -155,6 +157,7 @@ impl JavaLanguageServer {
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             compile_tx,
             roots: Arc::new(RwLock::new(Vec::new())),
+            rename_client: Arc::new(RwLock::new(Default::default())),
         }
     }
 
@@ -238,6 +241,7 @@ impl LanguageServer for JavaLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
         *self.client_flavor.write().await = detect_client_flavor(params.client_info.as_ref());
         *self.workspace_folders.write().await = params.workspace_folders.clone().unwrap_or_default();
+        *self.rename_client.write().await = crate::features::rename::RenameClient::from_capabilities(&params.capabilities);
 
         // Parse initializationOptions
         if let Some(opts) = params.initialization_options {
@@ -1193,51 +1197,36 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn rename(&self, params: RenameParams) -> LspResult<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
-        let pos = params.text_document_position.position;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
+        let Some(text) = self.store.get(uri).map(|s| s.content_string()) else {
+            return Ok(Some(WorkspaceEdit { changes: Some(HashMap::new()), ..Default::default() }));
         };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.rename(uri, offset, params.new_name).await {
-            Ok(BridgeResponse::WorkspaceEdit { changes, .. }) => {
-                let mut lsp_changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-                for fe in &changes {
-                    if let Ok(u) = Url::parse(&fe.uri) {
-                        let edits: Vec<TextEdit> = fe.edits.iter().map(|e| TextEdit {
-                            range: Range {
-                                start: Position { line: e.start_line, character: e.start_char },
-                                end: Position { line: e.end_line, character: e.end_char },
-                            },
-                            new_text: e.new_text.clone(),
-                        }).collect();
-                        lsp_changes.entry(u).or_default().extend(edits);
-                    }
-                }
-                Ok(Some(WorkspaceEdit { changes: Some(lsp_changes), ..Default::default() }))
-            }
-            _ => Ok(None),
-        }
+        let client = *self.rename_client.read().await;
+        let enabled = crate::features::rename::rename_enabled(self.config.read().await.settings.as_ref());
+        crate::features::rename::rename(
+            &self.dispatcher,
+            uri,
+            &text,
+            params.text_document_position.position,
+            &params.new_name,
+            client,
+            enabled,
+        )
+        .await
+        .map(Some)
     }
 
     async fn prepare_rename(&self, params: TextDocumentPositionParams) -> LspResult<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
-        let state = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(state) => state,
+        let Some(text) = self.store.get(uri).map(|s| s.content_string()) else {
+            return Err(tower_lsp::jsonrpc::Error {
+                code: tower_lsp::jsonrpc::ErrorCode::InvalidRequest,
+                message: "Renaming this element is not supported.".into(),
+                data: None,
+            });
         };
-        let content = state.content_string();
-        drop(state);
-
-        let Some((range, placeholder)) = identifier_range_and_text_at(&content, params.position) else {
-            return Ok(None);
-        };
-        if is_java_keyword(&placeholder) {
-            return Ok(None);
-        }
-
-        Ok(Some(PrepareRenameResponse::RangeWithPlaceholder { range, placeholder }))
+        crate::features::rename::prepare_rename(&self.dispatcher, uri, &text, params.position)
+            .await
+            .map(|range| Some(PrepareRenameResponse::Range(range)))
     }
 
     async fn linked_editing_range(&self, params: LinkedEditingRangeParams) -> LspResult<Option<LinkedEditingRanges>> {
