@@ -32,7 +32,11 @@ fn folder_uri(dir: &std::path::Path) -> String {
 
 fn will_rename(ws: &mut Workspace, files: &[(&str, &str)]) -> Value {
     let files: Vec<Value> = files.iter().map(|(o, n)| json!({ "oldUri": o, "newUri": n })).collect();
-    ws.request("workspace/willRenameFiles", json!({ "files": files }))
+    let r = ws.request("workspace/willRenameFiles", json!({ "files": files }));
+    if std::env::var("PROBE").is_ok() {
+        println!("PROBE {r}");
+    }
+    r
 }
 
 fn document_changes(edit: &Value) -> Vec<Value> {
