@@ -155,7 +155,7 @@ pub fn compute_signature(e: &Element) -> Option<String> {
 }
 
 /// `JDTUtils.getConstantValue` formatting.
-fn constant_value(c: &Constant) -> String {
+pub(crate) fn constant_value(c: &Constant) -> String {
     match c.kind.as_str() {
         "string" => access::escaped_string_literal(&c.value),
         "char" => format!("'{}'", c.value),
@@ -198,18 +198,63 @@ fn link_target(env: &HoverEnv, loc: &Location) -> String {
     String::new()
 }
 
+/// A member's documentation before the final conversion: the Javadoc HTML,
+/// or a Markdown (`///`) comment rendered directly.
+enum MemberDoc {
+    Html(Option<String>),
+    Markdown(String),
+}
+
 /// `JavadocContentAccess2.getMarkdownContent(member)`
 fn member_markdown(e: &Element, env: &HoverEnv) -> Option<String> {
+    match member_doc(e, env) {
+        MemberDoc::Markdown(md) => Some(md),
+        MemberDoc::Html(html) => javadoc_to_markdown(html.as_deref()),
+    }
+}
+
+/// `JavadocContentAccess2.getPlainTextContent(member)` (completion item
+/// documentation for clients without Markdown support):
+/// `CoreJavadocContentAccessUtility.getHTMLContentReader(member, true, true)`,
+/// i.e. the comment text through `CoreJavaDoc2HTMLTextReader` (not the DOM
+/// based access), the attached Javadoc of a member without source, or the
+/// comment of the first overridden method that has one.
+fn member_plain_text(e: &Element) -> Option<String> {
+    use crate::javadoc::comment_reader::plain_text_content;
+    use crate::javadoc::converter::javadoc_to_plain_text;
+    if !e.has_source {
+        return javadoc_to_plain_text(e.attached_javadoc.as_deref());
+    }
+    if let Some(text) = e.javadoc.as_ref().and_then(|d| plain_text_content(&d.raw)) {
+        return Some(text);
+    }
+    if e.kind == "method" {
+        // findDocInHierarchy(method, true, true)
+        let start = e.inherit.as_ref().map(|i| i.start.as_str());
+        for t in e.inherit.iter().flat_map(|i| i.types.iter()) {
+            if Some(t.key.as_str()) == start {
+                continue;
+            }
+            let Some(o) = &t.overridden else { continue };
+            if let Some(text) = o.javadoc.as_ref().and_then(|d| plain_text_content(&d.raw)) {
+                return Some(text);
+            }
+        }
+    }
+    None
+}
+
+fn member_doc(e: &Element, env: &HoverEnv) -> MemberDoc {
     let ctx = e.doc_context.clone().unwrap_or_default();
     let link = |l: &Location| link_target(env, l);
     if let Some(doc) = &e.javadoc {
         if doc.raw.starts_with("///") {
-            return Some(MarkdownComment::new(doc, &link).render());
+            return MemberDoc::Markdown(MarkdownComment::new(doc, &link).render());
         }
     }
     if !e.has_source {
         // no source attachment: the attached Javadoc (getAttachedJavadoc)
-        return e.attached_javadoc.as_deref().and_then(|html| javadoc_to_markdown(Some(html)));
+        return MemberDoc::Html(e.attached_javadoc.clone());
     }
     let can_inherit = ctx.kind == "method" && !ctx.is_constructor;
     // handleDocRoot: the Javadoc base location of a binary member, else the
@@ -242,7 +287,7 @@ fn member_markdown(e: &Element, env: &HoverEnv) -> Option<String> {
         }
         None => None,
     };
-    javadoc_to_markdown(html.as_deref())
+    MemberDoc::Html(html)
 }
 
 /// `getMarkdownContent(packageFragment)`: package-info.java, package.html,
@@ -287,7 +332,7 @@ fn sanitize_package_javadoc(content: &str) -> String {
 }
 
 /// `JDTUtils.addValue` for annotation member default values (no links).
-fn annotation_value(v: &Value) -> String {
+pub(crate) fn annotation_value(v: &Value) -> String {
     let kind = v["kind"].as_str().unwrap_or("");
     let value = v["value"].as_str().unwrap_or("");
     match kind {
@@ -463,6 +508,55 @@ pub async fn handle(
         images,
     };
     Some(Some(hover(&status, element.as_ref(), &env)))
+}
+
+/// Completion item documentation (`CompletionResolveHandler`): the
+/// `JavadocContentAccess2.getMarkdownContent` / `getPlainTextContent` of the
+/// member whose hover element the bridge returned (`memberElement`).
+pub async fn completion_documentation(
+    dispatcher: &crate::analysis::dispatcher::Dispatcher,
+    config: &crate::config::Config,
+    project: &str,
+    element: &Element,
+    markdown: bool,
+) -> Option<String> {
+    let ws = dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut e = element.clone();
+    let images = extract_jar_images(dispatcher, &ws, project, &e).await;
+    if !e.has_source && matches!(e.kind.as_str(), "type" | "field") {
+        e.attached_javadoc = attached_javadoc(dispatcher, &ws, project, &e).await;
+    }
+    let class_file_uri = |desc: &ClassFileDesc| -> String { crate::features::navigation::class_file_uri(&ws, project, desc) };
+    let project_name = |uri: &str| -> String {
+        url::Url::parse(uri)
+            .ok()
+            .and_then(|u| ws.project_for_uri(&u).map(|p| p.name.clone()))
+            .unwrap_or_else(|| crate::project::DEFAULT_PROJECT_NAME.to_owned())
+    };
+    let source_folder = |uri: &str| -> Option<PathBuf> {
+        let u = url::Url::parse(uri).ok()?;
+        let path = u.to_file_path().ok()?;
+        let project = ws.project_for_uri(&u)?;
+        project.source_folder_for(&path).map(|sf| sf.path.clone())
+    };
+    let env = HoverEnv {
+        class_file_support: config.extended_capability("classFileContentsSupport"),
+        completion_markdown: markdown,
+        project_name: &project_name,
+        source_folder: &source_folder,
+        class_file_uri: &class_file_uri,
+        images,
+    };
+    match e.kind.as_str() {
+        "type" | "method" | "field" | "typeParameter" => {
+            if markdown {
+                member_markdown(&e, &env)
+            } else {
+                member_plain_text(&e)
+            }
+        }
+        _ => None,
+    }
 }
 
 /// `javadoc_location` of a library of `project` (`CoreJavaDocLocations.getJavadocBaseLocation`).

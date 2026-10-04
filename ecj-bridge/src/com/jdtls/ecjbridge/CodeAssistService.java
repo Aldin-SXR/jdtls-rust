@@ -161,6 +161,18 @@ final class CodeAssistService {
                         new java.util.HashSet<>(jsonStrings(q, "testUris")), jsonStrings(q, "favorites"),
                         jsonStrings(q, "typeFilters"), q.has("visibleElements") && q.get("visibleElements").getAsBoolean(),
                         q.has("unitPackage") && !q.get("unitPackage").isJsonNull() ? q.get("unitPackage").getAsString() : null);
+            case "memberElement": {
+                // completion item documentation: the hover element of the member
+                if (q.has("sourceAttachments") && q.get("sourceAttachments").isJsonObject()) {
+                    Map<String, String> a = new java.util.HashMap<>();
+                    for (Map.Entry<String, com.google.gson.JsonElement> e : q.getAsJsonObject("sourceAttachments").entrySet()) {
+                        a.put(e.getKey(), e.getValue().getAsString());
+                    }
+                    req.sourceAttachments = a;
+                }
+                String name = q.has("name") && !q.get("name").isJsonNull() ? q.get("name").getAsString() : null;
+                return HoverService.memberInfo(req, q.get("type").getAsString(), name, jsonStrings(q, "params"));
+            }
             default:
                 return CodeAssistOps.handle(op, q, files, classpath, level, req.uri, req.offset);
         }

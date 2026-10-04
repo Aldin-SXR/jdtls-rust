@@ -19,6 +19,41 @@ public final class BridgeDomResolver {
     private BridgeDomResolver() {}
 
     /**
+     * The type named {@code qualifiedName} (dotted; member types after their
+     * enclosing type) as seen from {@code cu}'s lookup environment, i.e.
+     * {@code IJavaProject.findType} without the Java model. Null when the
+     * unit has no bindings or the type does not exist.
+     */
+    public static ITypeBinding findType(CompilationUnit cu, String qualifiedName) {
+        BindingResolver resolver = cu.getAST().getBindingResolver();
+        org.eclipse.jdt.internal.compiler.lookup.LookupEnvironment env;
+        try {
+            env = resolver.lookupEnvironment();
+        } catch (RuntimeException e) {
+            return null;
+        }
+        if (env == null || qualifiedName == null || qualifiedName.isEmpty()) return null;
+        String[] parts = qualifiedName.split("\\.");
+        for (int i = parts.length; i >= 1; i--) {
+            char[][] compound = new char[i][];
+            for (int j = 0; j < i; j++) compound[j] = parts[j].toCharArray();
+            org.eclipse.jdt.internal.compiler.lookup.ReferenceBinding rb;
+            try {
+                rb = env.getType(compound);
+            } catch (RuntimeException e) {
+                rb = null;
+            }
+            if (rb == null || !rb.isValidBinding()) continue;
+            for (int j = i; j < parts.length && rb != null; j++) {
+                rb = rb.getMemberType(parts[j].toCharArray());
+            }
+            if (rb == null || !rb.isValidBinding()) return null;
+            return resolver.getTypeBinding(rb);
+        }
+        return null;
+    }
+
+    /**
      * Parses and resolves {@code unit}.  Returns {@code null} when the compiler
      * aborted (caller falls back to a binding-less parse).
      */

@@ -14,7 +14,6 @@ pub mod handler;
 pub mod imports;
 pub mod item;
 pub mod javadoc_proposal;
-pub mod javadoc_text;
 pub mod naming;
 pub mod prefs;
 pub mod proposal;

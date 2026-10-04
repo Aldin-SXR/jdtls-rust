@@ -10,18 +10,13 @@ use super::requestor::{supported_kind, DATA_FIELD_PROPOSAL_ID, DATA_FIELD_REQUES
 use super::signature as sig;
 use super::snippets::{beautify_document, evaluate, set_text_edit};
 use super::Env;
-use serde::Deserialize;
+use crate::features::hover::{self, Element};
 use serde_json::{json, Value};
 use tower_lsp::lsp_types::{Documentation, MarkupContent, MarkupKind, Url};
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-struct MemberDoc {
-    found: bool,
-    javadoc: Option<String>,
-    constant_value: Option<String>,
-    default_value: Option<String>,
-}
+/// `CompletionResolveHandler.VALUE` / `DEFAULT`
+const VALUE: &str = "Value: ";
+const DEFAULT: &str = "Default: ";
 
 fn data_str(data: &Value, key: &str) -> Option<String> {
     data.get(key).and_then(|v| v.as_str().map(str::to_owned).or_else(|| v.as_i64().map(|n| n.to_string())))
@@ -94,42 +89,49 @@ pub async fn resolve(env: &Env, mut item: Item) -> Item {
             proposal = r.clone();
         }
     }
-    let query = member_query(&proposal);
-    let Some(mut query) = query else { return item };
-    query["op"] = json!("memberDoc");
-    query["markdown"] = json!(client.documentation_markdown);
-    let tests = handler::test_uris(env, &ctx);
-    query["testUris"] = json!(tests);
-    let doc: MemberDoc = match env.dispatcher.code_assist(&ctx, uri.as_str(), response.offset, query).await {
-        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+    let Some(mut query) = member_query(&proposal) else { return item };
+    query["op"] = json!("memberElement");
+    let ws = env.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+    query["sourceAttachments"] = json!(crate::features::navigation::source_attachments(&ws));
+    let project = ws
+        .project_for_uri(&uri)
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| crate::project::DEFAULT_PROJECT_NAME.to_owned());
+    drop(ws);
+    let answer = match env.dispatcher.code_assist(&ctx, uri.as_str(), response.offset, query).await {
+        Ok(v) => v,
         Err(_) => return item,
     };
-    if !doc.found {
+    // member == null || !member.exists()
+    if answer["status"] != "ok" {
         return item;
     }
+    let Ok(element) = serde_json::from_value::<Element>(answer["element"].clone()) else { return item };
     let markdown = client.documentation_markdown;
-    let mut javadoc = doc.javadoc.as_deref().and_then(|raw| {
-        if markdown {
-            super::javadoc_text::markdown(raw)
-        } else {
-            super::javadoc_text::plain_text(raw)
-        }
-    });
+    let mut javadoc = {
+        let config = env.config.read().await;
+        hover::completion_documentation(&env.dispatcher, &config, &project, &element, markdown).await
+    };
+    // JDTUtils.getConstantValue
     if proposal.kind == kind::FIELD_REF {
-        if let Some(v) = &doc.constant_value {
+        let constant = element.field.as_ref().filter(|f| f.static_final && !f.is_enum_constant).and_then(|f| f.constant.as_ref());
+        if let Some(c) = constant {
+            let v = hover::constant_value(c);
             javadoc = Some(if markdown {
-                format!("{}\n\nValue: {v}", javadoc.unwrap_or_default())
+                format!("{}\n\n{VALUE}{v}", javadoc.unwrap_or_default())
             } else {
-                format!("{}Value: {v}", javadoc.unwrap_or_default())
+                format!("{}{VALUE}{v}", javadoc.unwrap_or_default())
             });
         }
     }
+    // JDTUtils.getAnnotationMemberDefaultValue
     if proposal.kind == kind::METHOD_REF || proposal.kind == kind::ANNOTATION_ATTRIBUTE_REF {
-        if let Some(v) = &doc.default_value {
+        if let Some(dv) = &element.default_value {
+            let v = hover::annotation_value(dv);
             javadoc = Some(if markdown {
-                format!("{}\n\nDefault: {v}", javadoc.unwrap_or_default())
+                format!("{}\n\n{DEFAULT}{v}", javadoc.unwrap_or_default())
             } else {
-                format!("{}Default: {v}", javadoc.unwrap_or_default())
+                format!("{}{DEFAULT}{v}", javadoc.unwrap_or_default())
             });
         }
     }
@@ -151,8 +153,9 @@ fn member_query(p: &Proposal) -> Option<Value> {
         return Some(json!({ "type": fqn }));
     }
     if p.kind == kind::MODULE_REF || p.kind == kind::MODULE_DECLARATION {
-        let name = p.declaration_signature.clone().filter(|d| !d.is_empty()).or_else(|| p.completion.clone())?;
-        return Some(json!({ "module": name }));
+        // IJavaProject.findModule + module Javadoc: not supported by the
+        // bridge's hover element data yet.
+        return None;
     }
     let decl = p.declaration_signature.as_deref()?;
     let type_name = sig::strip_signature_to_fqn(decl).unwrap_or_else(|_| decl.to_owned());
@@ -170,13 +173,6 @@ fn member_query(p: &Proposal) -> Option<Value> {
             }
         }
     }
-    Some(json!({
-        "type": type_name,
-        "name": name,
-        "params": params,
-        "hasBinding": have_binding,
-        "field": p.kind == kind::FIELD_REF,
-        "constant": p.kind == kind::FIELD_REF,
-        "annotationDefault": p.kind == kind::METHOD_REF || p.kind == kind::ANNOTATION_ATTRIBUTE_REF,
-    }))
+    let _ = have_binding;
+    Some(json!({ "type": type_name, "name": name, "params": params }))
 }
