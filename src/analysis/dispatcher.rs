@@ -88,6 +88,12 @@ impl Dispatcher {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    /// Send a raw bridge request (used by feature modules that build their
+    /// own requests, e.g. `features::navigation`).
+    pub async fn send_request(&self, req: BridgeRequest) -> Result<BridgeResponse> {
+        self.send(req).await
+    }
+
     async fn send(&self, req: BridgeRequest) -> Result<BridgeResponse> {
         let guard = self.ecj.read().await;
         let ecj = guard.as_ref().ok_or_else(|| anyhow!("ecj-bridge not started"))?;
@@ -102,6 +108,14 @@ impl Dispatcher {
         let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
         let project = uri.and_then(|u| ws.project_for_uri(u)).map(|p| p.name.clone());
         self.context_for_project(&ws, project.as_deref(), uri.is_none()).await
+    }
+
+    /// Context for the workspace project named `name` (the default project
+    /// when no such project exists).
+    pub async fn context_for_project_name(&self, name: &str) -> RequestContext {
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let project = ws.project(name).map(|p| p.name.clone());
+        self.context_for_project(&ws, project.as_deref(), false).await
     }
 
     /// Contexts of the other projects whose closure includes the project

@@ -9,6 +9,7 @@ pub mod formatting;
 pub mod inlay_hint_filter;
 pub mod inlay_hints;
 pub mod java_model;
+pub mod navigation;
 pub mod rename;
 pub mod scanner;
 pub mod selection_range;
