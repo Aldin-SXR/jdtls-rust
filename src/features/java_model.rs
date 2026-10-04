@@ -89,6 +89,8 @@ pub struct FieldDecl {
     pub enum_constant: bool,
     pub record_component: bool,
     pub type_label: Option<String>,
+    /// Signature.toString rendering, retaining package qualification.
+    pub type_signature: Option<String>,
     pub children: Vec<TypeDecl>,
 }
 
@@ -140,25 +142,41 @@ impl TypeRef {
     /// `JavaElementLabels` rendering of the (unresolved) type signature:
     /// simple name of the erasure, type arguments of the last segment, dims.
     fn label(&self) -> String {
+        self.render(false)
+    }
+
+    fn signature(&self) -> String {
+        self.render(true)
+    }
+
+    fn render(&self, qualified: bool) -> String {
         let mut s = String::new();
-        if let Some((name, args)) = self.segments.last() {
+        let first = if qualified {
+            0
+        } else {
+            self.segments.len().saturating_sub(1)
+        };
+        for (i, (name, args)) in self.segments.iter().enumerate().skip(first) {
+            if i > first {
+                s.push('.');
+            }
             s.push_str(name);
             if !args.is_empty() {
                 s.push('<');
                 for (i, a) in args.iter().enumerate() {
                     if i > 0 {
-                        s.push_str(", ");
+                        s.push_str(if qualified { "," } else { ", " });
                     }
                     match a {
-                        TypeArg::Type(t) => s.push_str(&t.label()),
+                        TypeArg::Type(t) => s.push_str(&t.render(qualified)),
                         TypeArg::Wildcard(None) => s.push('?'),
                         TypeArg::Wildcard(Some((true, t))) => {
                             s.push_str("? extends ");
-                            s.push_str(&t.label());
+                            s.push_str(&t.render(qualified));
                         }
                         TypeArg::Wildcard(Some((false, t))) => {
                             s.push_str("? super ");
-                            s.push_str(&t.label());
+                            s.push_str(&t.render(qualified));
                         }
                     }
                 }
@@ -444,6 +462,7 @@ impl<'a> Parser<'a> {
                     enum_constant: false,
                     record_component: true,
                     type_label: Some(p.label),
+                    type_signature: Some(p.signature),
                     children: Vec::new(),
                 }));
             }
@@ -681,6 +700,9 @@ impl<'a> Parser<'a> {
                         name_range,
                         source: (self.start_of(first), self.end_of(j - 1)),
                         label,
+                        signature: format!(
+                            "{}{}", t.signature(), if varargs { "[]" } else { "" }
+                        ),
                         varargs,
                     });
                 }
@@ -857,6 +879,7 @@ impl<'a> Parser<'a> {
                 enum_constant: false,
                 record_component: false,
                 type_label: Some(ft.label()),
+                type_signature: Some(ft.signature()),
                 children,
             });
             if self.is(self.pos, ",") {
@@ -934,6 +957,7 @@ impl<'a> Parser<'a> {
                 enum_constant: true,
                 record_component: false,
                 type_label: None,
+                type_signature: None,
                 children,
             }));
             if self.is(self.pos, ",") {
@@ -1025,6 +1049,7 @@ struct Param {
     name_range: Span,
     source: Span,
     label: String,
+    signature: String,
     varargs: bool,
 }
 

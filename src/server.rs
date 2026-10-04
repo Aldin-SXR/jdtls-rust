@@ -415,6 +415,26 @@ impl JavaLanguageServer {
         let _ = self.compile_tx.send(next);
     }
 
+    pub async fn resolve_unimplemented_accessors(
+        &self,
+        params: crate::features::accessors::AccessorParams,
+    ) -> LspResult<Vec<crate::features::accessors::AccessorField>> {
+        Ok(crate::features::accessors::resolve(&self.dispatcher, params).await)
+    }
+
+    pub async fn generate_accessors(
+        &self,
+        params: crate::features::accessors::GenerateAccessorsParams,
+    ) -> LspResult<Option<WorkspaceEdit>> {
+        let format = self.format_env().await;
+        let env = crate::correction::edit::Env {
+            dispatcher: &self.dispatcher,
+            format: &format,
+            lifecycle: &self.lifecycle,
+        };
+        Ok(crate::features::accessors::generate(&env, params).await)
+    }
+
     /// The `lms-monaco` client keeps the original diagnostics pipeline:
     /// every document compiled with full diagnostics, republished after
     /// each change.

@@ -1,6 +1,7 @@
 //! Rust ports of jdt.ls request handlers, built on bridge data where JDT
 //! bindings are needed.  `server.rs` only delegates here.
 
+pub mod accessors;
 pub mod call_hierarchy;
 pub mod client_caps;
 pub mod code_lens;

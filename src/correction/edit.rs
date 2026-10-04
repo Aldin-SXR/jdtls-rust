@@ -68,13 +68,14 @@ pub async fn cu_tree(env: &Env<'_>, cu: &mut CuChange) -> anyhow::Result<EditTre
 
 /// `ChangeUtil.convertToWorkspaceEdit(proposal.getChange())`.
 pub async fn to_workspace_edit(env: &Env<'_>, change: &mut Change) -> anyhow::Result<WorkspaceEdit> {
+    let changes_only = matches!(change, Change::Lazy(l) if l.changes_only());
     let mut cus: Vec<CuChange> = match change {
         Change::Cu(cus) => std::mem::take(cus),
         Change::Lazy(l) => l.compute(env).await?,
         Change::WorkspaceEdit(we) => return Ok(we.clone()),
         Change::None => return Ok(WorkspaceEdit::default()),
     };
-    let resource_ops = crate::features::client_caps::resource_operations();
+    let resource_ops = !changes_only && crate::features::client_caps::resource_operations();
     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
     let mut document_changes: Vec<TextDocumentEdit> = Vec::new();
     let mut order: Vec<Url> = Vec::new();

@@ -43,6 +43,14 @@ async fn main() {
             "java/classFileContents",
             JavaLanguageServer::class_file_contents,
         )
+        .custom_method(
+            "java/resolveUnimplementedAccessors",
+            JavaLanguageServer::resolve_unimplemented_accessors,
+        )
+        .custom_method(
+            "java/generateAccessors",
+            JavaLanguageServer::generate_accessors,
+        )
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
         .custom_method("java/buildWorkspace", JavaLanguageServer::build_workspace)
         .custom_method("java/buildProjects", JavaLanguageServer::build_projects)

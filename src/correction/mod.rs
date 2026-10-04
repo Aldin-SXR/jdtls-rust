@@ -157,6 +157,8 @@ impl CuChange {
 /// e.g. the generated serial version id).
 #[tower_lsp::async_trait]
 pub trait LazyChange: Send + Sync {
+    /// SourceAssistProcessor converts text edits to WorkspaceEdit.changes.
+    fn changes_only(&self) -> bool { false }
     async fn compute(&self, env: &edit::Env<'_>) -> anyhow::Result<Vec<CuChange>>;
 }
 

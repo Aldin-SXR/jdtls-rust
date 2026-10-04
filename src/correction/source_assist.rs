@@ -64,6 +64,8 @@ pub async fn source_actions(
             out.push((entry, resolve.then_some(proposal)));
         }
     }
+    let first = next_proposal + out.iter().filter(|(_, p)| p.is_some()).count();
+    out.extend(crate::features::accessors::actions::actions(env, req, first).await);
     out
 }
 

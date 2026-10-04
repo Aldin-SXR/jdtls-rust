@@ -2927,7 +2927,8 @@ fn ecj_code_action_getter_setter() {
         "expected 'Generate Getter for age' at line 0, got: {titles:?}"
     );
 
-    // Also verify from the field line itself (line 1)
+    // Also verify from the field line itself (line 1). The default showAt=line
+    // preference offers the named quick assist on the modifier too.
     let actions2 = c.code_actions(&uri, 1, 4, &[]);
     let titles2: Vec<&str> = actions2.iter()
         .filter_map(|a| a["title"].as_str().or_else(|| a["right"]["title"].as_str()))
@@ -2936,6 +2937,13 @@ fn ecj_code_action_getter_setter() {
     assert!(
         titles2.iter().any(|t| t.contains("Getter") && t.contains("age")),
         "expected 'Generate Getter for age' at line 1, got: {titles2:?}"
+    );
+
+    let actions3 = c.code_actions(&uri, 1, 16, &[]);
+    assert!(
+        actions3.iter().any(|a| a["title"] == "Generate Getter for 'age'"
+            && a["kind"] == "quickassist"),
+        "expected the getter quick assist on the field name, got: {actions3:?}"
     );
 }
 
