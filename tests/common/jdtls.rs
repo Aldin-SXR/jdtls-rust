@@ -48,6 +48,9 @@ pub struct LspClient {
     /// Canned results for server→client requests, by method
     /// (e.g. `workspace/executeClientCommand`).
     pub request_results: BTreeMap<String, Value>,
+    /// Every server→client request received (e.g. `client/registerCapability`,
+    /// `workspace/applyEdit`), in arrival order.
+    pub server_requests: Vec<Value>,
 }
 
 fn read_message(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Value> {
@@ -106,7 +109,7 @@ impl LspClient {
                 }
             }
         });
-        Self { child, stdin, rx, next_id: 1, notifications: Vec::new(), request_results: BTreeMap::new() }
+        Self { child, stdin, rx, next_id: 1, notifications: Vec::new(), request_results: BTreeMap::new(), server_requests: Vec::new() }
     }
 
     pub fn send(&mut self, msg: &Value) {
@@ -121,6 +124,7 @@ impl LspClient {
 
     /// Handle a server→client request (respond with `null`/defaults).
     fn answer_server_request(&mut self, msg: &Value) {
+        self.server_requests.push(msg.clone());
         let id = msg["id"].clone();
         let canned = msg["method"].as_str().and_then(|m| self.request_results.get(m)).cloned();
         let result = match msg["method"].as_str() {
@@ -160,16 +164,53 @@ impl LspClient {
     }
 
     pub fn request(&mut self, method: &str, params: Value) -> Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
-        let resp = self
-            .recv_until(Duration::from_secs(90), |m| m["id"] == json!(id) && m.get("method").is_none())
-            .unwrap_or_else(|| panic!("timed out waiting for {method}"));
+        let resp = self.request_response(method, params);
         if let Some(err) = resp.get("error") {
             panic!("{method} failed: {err}");
         }
         resp["result"].clone()
+    }
+
+    /// Send a request and return the whole response message (`result` or
+    /// `error`), for tests that assert on response errors.
+    pub fn request_response(&mut self, method: &str, params: Value) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
+        self.recv_until(Duration::from_secs(90), |m| m["id"] == json!(id) && m.get("method").is_none())
+            .unwrap_or_else(|| panic!("timed out waiting for {method}"))
+    }
+
+    /// Wait until no message has arrived for `quiet` (at most `max`),
+    /// buffering notifications and answering server requests meanwhile.
+    pub fn settle(&mut self, quiet: Duration, max: Duration) {
+        let deadline = Instant::now() + max;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            let Ok(msg) = self.rx.recv_timeout(quiet.min(remaining)) else { return };
+            if msg.get("method").is_some() && msg.get("id").is_some() {
+                self.answer_server_request(&msg);
+            } else if msg.get("method").is_some() {
+                self.notifications.push(msg);
+            }
+        }
+    }
+
+    /// Remove and return the buffered notifications named `method`.
+    pub fn take_notifications(&mut self, method: &str) -> Vec<Value> {
+        let (taken, kept) = std::mem::take(&mut self.notifications).into_iter().partition(|m| m["method"] == method);
+        self.notifications = kept;
+        taken
+    }
+
+    /// Remove and return the recorded server→client requests named `method`.
+    pub fn take_server_requests(&mut self, method: &str) -> Vec<Value> {
+        let (taken, kept) = std::mem::take(&mut self.server_requests).into_iter().partition(|m| m["method"] == method);
+        self.server_requests = kept;
+        taken
     }
 }
 
@@ -193,6 +234,8 @@ pub struct Workspace {
     pub settings: Value,
     pub init_options: Value,
     pub capabilities: Value,
+    /// The `initialize` result, once the server has started.
+    pub initialize_result: Value,
     versions: BTreeMap<String, i32>,
 }
 
@@ -211,6 +254,7 @@ impl Workspace {
             // the client supports class file contents (jdt:// URIs).
             init_options: json!({ "extendedClientCapabilities": { "classFileContentsSupport": true } }),
             capabilities: default_client_capabilities(),
+            initialize_result: Value::Null,
             versions: BTreeMap::new(),
         }
     }
@@ -332,7 +376,7 @@ impl Workspace {
                 init["javaHome"] = json!(java_home());
             }
             init["settings"] = self.settings.clone();
-            c.request(
+            self.initialize_result = c.request(
                 "initialize",
                 json!({
                     "processId": null,
@@ -507,6 +551,88 @@ impl Workspace {
             })
             .unwrap_or_else(|| panic!("no diagnostics for {uri}"));
         msg["params"]["diagnostics"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// Wait for the server to go quiet (no message for `QUIET`), then return
+    /// the `publishDiagnostics` params received for Java documents since the
+    /// last call.  jdt.ls publishes asynchronously (debounced validation
+    /// jobs), so tests compare what was published after each step, like the
+    /// upstream `clientRequests.get("publishDiagnostics")`.  Project-level
+    /// reports (project folder and build-file URIs, from the workspace
+    /// diagnostics handler) are not document reports and are left out.
+    pub fn published_diagnostics(&mut self) -> Vec<Value> {
+        self.published_diagnostics_min(0)
+    }
+
+    /// [`Self::published_diagnostics`], first waiting (up to a minute) until
+    /// at least `min` document reports have arrived.
+    pub fn published_diagnostics_min(&mut self, min: usize) -> Vec<Value> {
+        let is_doc_report = |m: &Value| {
+            m["method"] == "textDocument/publishDiagnostics"
+                && m["params"]["uri"].as_str().is_some_and(|u| u.ends_with(".java"))
+        };
+        let c = self.client();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while c.notifications.iter().filter(|m| is_doc_report(m)).count() < min && Instant::now() < deadline {
+            c.settle(Duration::from_millis(200), Duration::from_millis(200));
+        }
+        c.settle(Duration::from_millis(3000), Duration::from_secs(60));
+        let (taken, kept): (Vec<Value>, Vec<Value>) =
+            std::mem::take(&mut c.notifications).into_iter().partition(|m| m["method"] == "textDocument/publishDiagnostics");
+        c.notifications = kept;
+        taken.into_iter().filter(|m| is_doc_report(m)).map(|m| m["params"].clone()).collect()
+    }
+
+    pub fn save(&mut self, uri: &str, text: Option<&str>) {
+        let mut params = json!({ "textDocument": { "uri": uri } });
+        if let Some(t) = text {
+            params["text"] = json!(t);
+        }
+        self.client().notify("textDocument/didSave", params);
+    }
+
+    /// `didChange` with a ranged (incremental) content change.
+    pub fn change_range(&mut self, uri: &str, range: Value, text: &str) {
+        let v = self.versions.entry(uri.to_owned()).or_insert(1);
+        *v += 1;
+        let v = *v;
+        self.client().notify(
+            "textDocument/didChange",
+            json!({ "textDocument": { "uri": uri, "version": v }, "contentChanges": [{ "range": range, "text": text }] }),
+        );
+    }
+
+    /// `didOpen` with an explicit version.
+    pub fn open_version(&mut self, uri: &str, text: &str, version: i32) {
+        self.versions.insert(uri.to_owned(), version);
+        self.client().notify(
+            "textDocument/didOpen",
+            json!({ "textDocument": { "uri": uri, "languageId": "java", "version": version, "text": text } }),
+        );
+    }
+
+    /// `didChange` (full content) with an explicit version.
+    pub fn change_version(&mut self, uri: &str, text: &str, version: i32) {
+        self.versions.insert(uri.to_owned(), version);
+        self.client().notify(
+            "textDocument/didChange",
+            json!({ "textDocument": { "uri": uri, "version": version }, "contentChanges": [{ "text": text }] }),
+        );
+    }
+
+    /// Tell the server about a file change on disk (`workspace/didChangeWatchedFiles`,
+    /// 1 = created, 2 = changed, 3 = deleted).
+    pub fn notify_file_changed(&mut self, path: &Path, typ: u32) {
+        self.client();
+        self.file_changed(path, typ);
+    }
+
+    /// A directory outside every workspace root (files there belong to the
+    /// default project).
+    pub fn external_dir(&self) -> PathBuf {
+        let d = self.dir.parent().unwrap().join("external");
+        std::fs::create_dir_all(&d).unwrap();
+        d
     }
 
     /// Current file content on disk.

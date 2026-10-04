@@ -179,6 +179,17 @@ impl LspClient {
         // Wait for initialize response
         self.recv_until(|m| m["id"] == id);
         self.send_raw(&json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+        // jdt.ls reports only syntax errors for files outside every project
+        // (these tests' documents) until the client asks for all of them,
+        // like vscode-java's "Report all errors" (`DiagnosticsCommand`).
+        let id = self.next_id();
+        self.send_raw(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "workspace/executeCommand",
+            "params": { "command": "java.project.refreshDiagnostics", "arguments": [null, "anyNonProjectFile", false] }
+        }));
+        self.recv_until(|m| m["id"] == id);
     }
 
     fn open(&mut self, uri: &str, text: &str) {
@@ -330,6 +341,14 @@ impl LspClient {
         end_character: u32,
         diags: &[Value],
     ) -> Vec<Value> {
+        // Send the diagnostics on the requested lines, like an editor does
+        // (not, e.g., the non-project-file warning on line 0).
+        let line = |p: &Value| p["line"].as_u64().unwrap_or(0);
+        let diags: Vec<&Value> = diags
+            .iter()
+            .filter(|d| line(&d["range"]["start"]) <= end_line as u64 && line(&d["range"]["end"]) >= start_line as u64)
+            .collect();
+        let _ = (start_character, end_character);
         let id = self.next_id();
         self.send_raw(&json!({
             "jsonrpc": "2.0",
@@ -3538,9 +3557,11 @@ fn ecj_code_action_remove_unused_thrown() {
         return;
     };
 
+    // ("The declared exception IOException is not actually thrown by ..."; the
+    // non-project-file warning names the file, which contains "thrown".)
     if diags.iter().all(|d| {
         let msg = d["message"].as_str().unwrap_or("");
-        !msg.to_lowercase().contains("declared") && !msg.to_lowercase().contains("thrown")
+        !msg.to_lowercase().contains("declared exception")
     }) {
         eprintln!("SKIP ecj_code_action_remove_unused_thrown — no unused-thrown diagnostic");
         return;
@@ -3992,8 +4013,9 @@ fn ecj_annotation_processing_generates_missing_type() {
         return;
     };
 
+    // Only jdt.ls's warning for a file outside every project remains.
     assert!(
-        diags.is_empty(),
+        diags.iter().all(|d| d["message"].as_str().is_some_and(|m| m.ends_with("is a non-project file, only JDK classes are added to its build path"))),
         "expected annotation processing to generate HelloGenerated, got diagnostics: {diags:?}"
     );
 }

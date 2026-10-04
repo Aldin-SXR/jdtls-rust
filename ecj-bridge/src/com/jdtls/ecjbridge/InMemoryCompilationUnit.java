@@ -15,10 +15,20 @@ public class InMemoryCompilationUnit implements ICompilationUnit {
     private final String source;
     private final char[] fileName;
 
+    /** Expected package (JDT package fragment), or null for no check. */
+    private final char[][] packageName;
+
     public InMemoryCompilationUnit(String uri, String source) {
+        this(uri, source, null);
+    }
+
+    public InMemoryCompilationUnit(String uri, String source, String expectedPackage) {
         this.uri = uri;
         this.source = source;
         this.fileName = uriToFileName(uri);
+        this.packageName = expectedPackage == null ? null
+                : expectedPackage.isEmpty() ? org.eclipse.jdt.core.compiler.CharOperation.NO_CHAR_CHAR
+                : org.eclipse.jdt.core.compiler.CharOperation.splitOn('.', expectedPackage.toCharArray());
     }
 
     @Override
@@ -45,9 +55,8 @@ public class InMemoryCompilationUnit implements ICompilationUnit {
 
     @Override
     public char[][] getPackageName() {
-        // Parse package statement from source to derive package name.
-        // ECJ will re-parse it anyway; returning null is fine.
-        return null;
+        // null: no expected package (ECJ then takes the declared one).
+        return packageName;
     }
 
     @Override

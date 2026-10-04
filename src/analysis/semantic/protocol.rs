@@ -16,6 +16,15 @@ pub enum BridgeRequest {
         source_level: String,
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         options: BTreeMap<String, String>,
+        /// Units to compile; the other `files` are only looked up on demand
+        /// (all of them when absent).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        uris: Option<Vec<String>>,
+        /// Package each unit must declare (its package fragment), checked by
+        /// ECJ (`PackageIsNotExpectedPackage`); units without an entry
+        /// aren't checked.
+        #[serde(skip_serializing_if = "HashMap::is_empty")]
+        expected_packages: HashMap<String, String>,
     },
     Complete {
         id: u64,

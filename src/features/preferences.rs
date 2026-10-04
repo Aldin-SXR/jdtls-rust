@@ -126,3 +126,39 @@ pub fn class_file_contents_supported() -> bool {
 pub fn symbol_tags_supported() -> bool {
     super::client_caps::symbol_tags()
 }
+
+/// `Preferences.getMavenUserSettings` from a settings object
+/// (`java.configuration.maven.userSettings`, `~/` expanded like
+/// `ResourceUtils.expandPath`).
+pub fn maven_user_settings_from(settings: &Value) -> Option<String> {
+    let v = settings.get("java.configuration.maven.userSettings").cloned().or_else(|| {
+        lookup(settings, &["java", "configuration", "maven", "userSettings"])
+    })?;
+    v.as_str().map(crate::features::formatting::options::expand_path)
+}
+
+/// `Preferences.getMavenUserSettings`.
+pub fn maven_user_settings() -> Option<String> {
+    let guard = SETTINGS.read().unwrap_or_else(|e| e.into_inner());
+    maven_user_settings_from(guard.as_ref()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Port of `InitHandlerTest.testMavenSettings`.
+    #[test]
+    fn test_maven_settings() {
+        let test = format!("{}test", std::path::MAIN_SEPARATOR);
+        let mut initialization_options = json!({ "java.configuration.maven.userSettings": format!("~{test}") });
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(Some(format!("{home}{test}")), maven_user_settings_from(&initialization_options));
+        initialization_options["java.configuration.maven.userSettings"] = Value::Null;
+        assert_eq!(None, maven_user_settings_from(&initialization_options));
+        let tilde_test = "~test";
+        initialization_options["java.configuration.maven.userSettings"] = json!(tilde_test);
+        assert_eq!(Some(tilde_test.to_owned()), maven_user_settings_from(&initialization_options));
+    }
+}

@@ -36,6 +36,12 @@ public class InMemoryNameEnvironment implements INameEnvironment {
 
     /** URI string → Java source code for all open files */
     private final Map<String, String> sourceFiles;
+    private Map<String, String> expectedPackages;
+
+    /** Expected package per source URI (see {@link InMemoryCompilationUnit}). */
+    public void setExpectedPackages(Map<String, String> expectedPackages) {
+        this.expectedPackages = expectedPackages;
+    }
 
     /** Binary class name (e.g. "com/example/Foo") → bytecode, built as we compile */
     private final Map<String, byte[]> compiledClasses = new ConcurrentHashMap<>();
@@ -171,7 +177,8 @@ public class InMemoryNameEnvironment implements INameEnvironment {
         for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
             String uriStr = entry.getKey();
             if (uriStr.replace('\\', '/').endsWith(binaryName + ".java")) {
-                return new InMemoryCompilationUnit(uriStr, entry.getValue());
+                return new InMemoryCompilationUnit(uriStr, entry.getValue(),
+                        expectedPackages == null ? null : expectedPackages.get(uriStr));
             }
         }
         return null;
