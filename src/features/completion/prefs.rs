@@ -39,7 +39,7 @@ pub struct Prefs {
     pub signature_help: bool,
 }
 
-const FAVORITES_DEFAULT: &[&str] = &[
+pub(crate) const FAVORITES_DEFAULT: &[&str] = &[
     "org.junit.Assert.*",
     "org.junit.Assume.*",
     "org.junit.jupiter.api.Assertions.*",

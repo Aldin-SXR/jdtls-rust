@@ -16,18 +16,19 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 646 | 31.0% |
-| Passing | 599 | 28.7% |
+| Ported | 668 | 32.0% |
+| Passing | 621 | 29.8% |
 | Ported but `#[ignore]`d | 47 | 2.3% |
-| Not ported yet | 1,441 | 69.0% |
+| Not ported yet | 1,419 | 68.0% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 858 passed,
-0 failed and 48 ignored across 53 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 889 passed,
+0 failed and 48 ignored across 55 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
 `tests/completion_regressions.rs`, 6 tests;
-`tests/project_download_regressions.rs`, 2 tests) and unit
+`tests/project_download_regressions.rs`, 2 tests;
+`tests/paste_regressions.rs`, 9 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -36,7 +37,7 @@ those duplicate runs are excluded from the upstream-port counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 467 | 448 | 51% |
+| handlers | 871 | 489 | 470 | 54% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 132 | 104 | 49% |
@@ -76,6 +77,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/NavigateToDeclarationHandlerTest | `handlers_navigate_to_declaration_handler_test` | 5 | 5 | 0 | pass |
 | handlers/NavigateToDefinitionHandlerTest | `handlers_navigate_to_definition_handler_test` | 11 | 8 | 3 | pass, except rtstubs/Kotlin |
 | handlers/NavigateToTypeDefinitionHandlerTest | `handlers_navigate_to_type_definition_handler_test` | 7 | 6 | 1 | pass, except rtstubs |
+| handlers/PasteEventHandlerTest | `handlers_paste_event_handler_test` | 22 | 22 | 0 | 22/22 |
 | handlers/PrepareRenameHandlerTest | `handlers_prepare_rename_handler_test` | 15 | 15 | 0 | 15/15 |
 | handlers/ReferencesHandlerTest | `handlers_references_handler_test` | 7 | 6 | 1 | pass |
 | handlers/RenameHandlerTest | `handlers_rename_handler_test` | 22 | 22 | 0 | 20/22; jdt.ls NPEs on JDK 25 (record field) and has no Lombok jar |
@@ -96,7 +98,6 @@ those duplicate runs are excluded from the upstream-port counts.
 | javadoc/JavaDocImageExtractionTest | `javadoc_java_doc_image_extraction_test`, plus a unit test in `src/javadoc/path_handler.rs` | 6 | 6 | 0 | pass |
 | javadoc/JavadocContentTest | `javadoc_javadoc_content_test` | 5 | 5 | 0 | pass |
 | managers/ContentProviderManagerTest | `managers_content_provider_manager_test` | 21 | 3 | 18 | pass |
-
 | managers/BasicFileDetectorTest | `managers_basic_file_detector_test` | 12 | 12 | 0 | n/a (unit ports) |
 | managers/EclipseBuildSupportTest | `managers_eclipse_build_support_test` | 1 | 1 | 0 | 1/1 |
 | managers/EclipseProjectImporterTest | `managers_eclipse_project_importer_test` | 15 | 11 | 4 | 8/8 active LSP; 3 unit ports |
@@ -122,7 +123,6 @@ ignored test keeps its upstream assertions unchanged.
 | Direct completion-requestor state access | 1 | `test_signature_help_for_selected_completion_proposal` selects the first raw proposal directly, whose ordering differs from LSP items; the public selection flow is implemented and oracle verified separately |
 | The upstream test assumes a Java 10 JDK | 1 | `test_hover_on_java10var` |
 | Needs code-action/quick-fix parity | 2 | lifecycle `test_unimplemented_methods` and `test_remove_dead_code_after_if` |
-
 | Requires an installed JavaSE-1.8 or Java 26 VM | 4 | Eclipse `test_forbidden_reference`, `test_preview_features_disabled_by_default`; invisible `test_preview_features_enabled_by_default`; Maven `test_java26_project` |
 | Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
 | Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
@@ -257,7 +257,7 @@ computed in Rust from method/type bindings, including interface default methods.
 
 This adds 57 upstream ports (55 active passes); the 6 regression cases and 8 new
 unit tests are excluded from the upstream count. Completion is still incomplete:
-99 CompletionHandlerTest cases, plus the dedicated lazy-resolve, chain and postfix
+42 CompletionHandlerTest cases, plus the dedicated lazy-resolve, chain and postfix
 classes, remain unported. The old postfix helper remains available during bridge
 startup; the JDT completion path does not yet include that provider.
 
@@ -351,3 +351,38 @@ Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
 `project_download_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.
+
+## Paste integration evidence
+
+All 22 `PasteEventHandlerTest` methods are ported with their original source,
+selections, copied text and assertions, and pass against Rust and jdt.ls 1.58.0.
+The fixture uses upstream's verbatim `fakejdk/21/rtstubs.jar`, preserving its
+import-search candidates. The LSP helper JSON-encodes the paste model like the
+editor, opens the working copy and finishes workspace jobs before the request.
+
+* `java.edit.handlePasteEvent` escapes quotes, backslashes and control characters
+  inside string literals, keeps Unicode text and literal escape sequences, and
+  splits actual newlines with the source's EOL and requested indentation.
+  Text blocks, comments and selections touching a literal's boundaries are excluded.
+* Missing-import analysis uses an isolated pasted-source snapshot. Rust collects
+  references from JDT's data-only DOM, searches project sources and libraries,
+  checks visibility/type kinds and resolves ambiguity using existing or copied
+  imports. The Rust ImportRewrite retains existing imports, applies configured
+  groups/thresholds and returns the original copied text with its workspace edit.
+* Static favorites use raw ECJ completion proposals from the upstream invoker's
+  dummy compilation unit. The preference timing matches the oracle: organize
+  imports sees the previous manager value when configuration replaces preferences.
+* `java.project.resolveText` suggests a filename from the first class/interface,
+  matches source package fragments, extends the longest package prefix and skips
+  existing filenames. It does not create files. Enums, annotations and records
+  preserve the upstream `Untitled` filename behavior.
+* `paste_regressions`: 9 Rust passes; 8 oracle-compatible passes. These cover
+  UTF-16 positions, selection boundaries, import preservation, static favorites,
+  file destinations/collisions and unchanged buffers. The remaining Rust-only
+  regression covers untitled, in-memory and nonexistent-file documents, including
+  untitled buffers without a `.java` filename.
+
+This adds 22 passing upstream ports; the nine regressions are excluded from that
+count. Dedicated organize-import tests, module-import selection, complete static
+favorite ordering and class-file copied-import coverage still require further
+parity verification. The wider parity goal remains incomplete.

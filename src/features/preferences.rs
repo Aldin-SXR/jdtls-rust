@@ -9,11 +9,29 @@ use std::sync::RwLock;
 use tower_lsp::lsp_types::InitializeParams;
 
 static SETTINGS: RwLock<Option<Value>> = RwLock::new(None);
+static ORGANIZE_IMPORT_FAVORITES: RwLock<Vec<String>> = RwLock::new(Vec::new());
 static CLASS_FILE_CONTENTS: RwLock<bool> = RwLock::new(false);
 
 pub fn init(params: &InitializeParams) {
     let opts = params.initialization_options.as_ref();
     let settings = opts.and_then(|o| o.get("settings")).cloned();
+    // Preferences.setJavaCompletionFavoriteMembers writes the preference
+    // manager's current value while updateFrom is still constructing its
+    // replacement. OrganizeImportsOperation reads that JavaManipulation
+    // preference, rather than the replacement's favorite-members field.
+    *ORGANIZE_IMPORT_FAVORITES.write().unwrap_or_else(|e| e.into_inner()) =
+        if settings
+            .as_ref()
+            .and_then(|s| lookup(s, &["java", "completion", "favoriteStaticMembers"]))
+            .is_some()
+        {
+            super::completion::prefs::FAVORITES_DEFAULT
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
     *SETTINGS.write().unwrap_or_else(|e| e.into_inner()) = settings;
     // `ClientPreferences.isClassFileContentSupported`
     let class_files = opts
@@ -26,9 +44,20 @@ pub fn init(params: &InitializeParams) {
 
 /// `workspace/didChangeConfiguration`.
 pub fn update(change: &Value) {
+    if lookup(change, &["java", "completion", "favoriteStaticMembers"]).is_some() {
+        *ORGANIZE_IMPORT_FAVORITES.write().unwrap_or_else(|e| e.into_inner()) =
+            super::completion::prefs::Prefs::load().favorite_members;
+    }
     let mut guard = SETTINGS.write().unwrap_or_else(|e| e.into_inner());
     let current = guard.get_or_insert_with(|| Value::Object(Default::default()));
     merge(current, change);
+}
+
+pub fn organize_import_favorites() -> Vec<String> {
+    ORGANIZE_IMPORT_FAVORITES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 fn merge(into: &mut Value, from: &Value) {

@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Url;
 
 /// Central dispatcher: owns the ECJ process and the document store.
+#[derive(Clone)]
 pub struct RequestContext {
     pub files: HashMap<String, String>,
     pub classpath: Vec<String>,

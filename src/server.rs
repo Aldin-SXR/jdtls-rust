@@ -2070,6 +2070,38 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<Value>> {
         match params.command.as_str() {
+            "java.edit.handlePasteEvent" => {
+                let request = params
+                    .arguments
+                    .first()
+                    .and_then(json_model)
+                    .and_then(|v| serde_json::from_value(v).ok());
+                let Some(request) = request else {
+                    return Err(tower_lsp::jsonrpc::Error::invalid_params("Invalid paste event"));
+                };
+                Ok(crate::features::paste::handle(&self.dispatcher, request)
+                    .await
+                    .map(|edit| serde_json::to_value(edit).expect("serializable paste edit")))
+            }
+            "java.project.resolveText" => {
+                let path = params
+                    .arguments
+                    .first()
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let content = params
+                    .arguments
+                    .get(1)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let ws = self
+                    .dispatcher
+                    .workspace
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                Ok(crate::features::paste::file_paste(&ws, path, content).map(Value::String))
+            }
             "java.completion.onDidSelect" => {
                 let request_id = params
                     .arguments
