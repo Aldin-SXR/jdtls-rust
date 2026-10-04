@@ -1029,7 +1029,6 @@ fn test_string_literal(ws: &mut Workspace, cu: &str, line: u32, character: u32) 
 }
 
 #[test]
-#[ignore = "needs junit:junit:4.13.1 for maven/classpathtest; it is not in the local Maven repository and the importer does not download dependencies"]
 fn test_signature_help_assert_equals() {
     let mut ws = setup();
     ws.import_projects(&["maven/classpathtest"]);

@@ -5,8 +5,8 @@
 
 use super::detect::FileDetector;
 use super::{
-    compliance_options, normalize_java_version, project_prefs, source_attachment, ImportSettings, Library, Project,
-    ProjectKind, SourceFolder,
+    compliance_options, normalize_java_version, project_prefs, source_attachment, ClasspathEntry,
+    EntryKind, ImportSettings, Project, ProjectKind, Workspace,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -45,6 +45,7 @@ pub struct RawPom {
     source_dir: Option<String>,
     test_source_dir: Option<String>,
     compiler: BTreeMap<String, String>,
+    compiler_args: Vec<String>,
     extra_sources: Vec<(String, bool)>,
 }
 
@@ -62,6 +63,7 @@ pub struct Model {
     pub source_dir: String,
     pub test_source_dir: String,
     pub compiler: BTreeMap<String, String>,
+    pub compiler_args: Vec<String>,
     pub extra_sources: Vec<(String, bool)>,
 }
 
@@ -85,7 +87,12 @@ fn parse_dep(node: roxmltree::Node) -> Dep {
             .children()
             .filter(|n| n.has_tag_name("exclusions"))
             .flat_map(|n| n.children().filter(|e| e.has_tag_name("exclusion")))
-            .map(|e| (child_text(e, "groupId").unwrap_or_default(), child_text(e, "artifactId").unwrap_or_default()))
+            .map(|e| {
+                (
+                    child_text(e, "groupId").unwrap_or_default(),
+                    child_text(e, "artifactId").unwrap_or_default(),
+                )
+            })
             .collect(),
     }
 }
@@ -112,11 +119,19 @@ pub fn parse_pom(text: &str) -> Option<RawPom> {
             }
             "properties" => {
                 for p in n.children().filter(|c| c.is_element()) {
-                    pom.properties
-                        .insert(p.tag_name().name().to_owned(), p.text().unwrap_or("").trim().to_owned());
+                    pom.properties.insert(
+                        p.tag_name().name().to_owned(),
+                        p.text().unwrap_or("").trim().to_owned(),
+                    );
                 }
             }
-            "dependencies" => pom.deps = n.children().filter(|c| c.has_tag_name("dependency")).map(parse_dep).collect(),
+            "dependencies" => {
+                pom.deps = n
+                    .children()
+                    .filter(|c| c.has_tag_name("dependency"))
+                    .map(parse_dep)
+                    .collect()
+            }
             "dependencyManagement" => {
                 pom.dep_mgmt = n
                     .descendants()
@@ -135,6 +150,21 @@ pub fn parse_pom(text: &str) -> Option<RawPom> {
             _ => {}
         }
     }
+    // m2e LocalProjectScanner visits modules from every profile, including
+    // inactive profiles, when importing the module tree.
+    for module in root
+        .children()
+        .filter(|n| n.has_tag_name("profiles"))
+        .flat_map(|n| n.children().filter(|n| n.has_tag_name("profile")))
+        .flat_map(|n| n.children().filter(|n| n.has_tag_name("modules")))
+        .flat_map(|n| n.children().filter(|n| n.has_tag_name("module")))
+    {
+        if let Some(module) = module.text().map(str::trim) {
+            if !pom.modules.iter().any(|m| m == module) {
+                pom.modules.push(module.to_owned());
+            }
+        }
+    }
     Some(pom)
 }
 
@@ -149,17 +179,35 @@ fn parse_build(build: roxmltree::Node, pom: &mut RawPom) {
         let aid = child_text(plugin, "artifactId").unwrap_or_default();
         if aid == "maven-compiler-plugin" {
             if let Some(cfg) = plugin.children().find(|c| c.has_tag_name("configuration")) {
-                for key in ["source", "target", "release"] {
+                for key in [
+                    "source",
+                    "target",
+                    "release",
+                    "compilerArgument",
+                    "enablePreview",
+                    "parameters",
+                    "compilerId",
+                ] {
                     if let Some(v) = child_text(cfg, key) {
                         pom.compiler.entry(key.to_owned()).or_insert(v);
+                    }
+                }
+                if let Some(args) = cfg.children().find(|c| c.has_tag_name("compilerArgs")) {
+                    if pom.compiler_args.is_empty() {
+                        pom.compiler_args = args
+                            .children()
+                            .filter(|c| c.is_element())
+                            .filter_map(|c| c.text().map(|t| t.trim().to_owned()))
+                            .collect();
                     }
                 }
             }
         } else if aid == "build-helper-maven-plugin" {
             for exec in plugin.descendants().filter(|e| e.has_tag_name("execution")) {
-                let goal_test = exec
-                    .descendants()
-                    .any(|g| g.has_tag_name("goal") && g.text().is_some_and(|t| t.trim() == "add-test-source"));
+                let goal_test = exec.descendants().any(|g| {
+                    g.has_tag_name("goal")
+                        && g.text().is_some_and(|t| t.trim() == "add-test-source")
+                });
                 for src in exec
                     .descendants()
                     .filter(|s| s.has_tag_name("sources"))
@@ -178,11 +226,48 @@ fn parse_build(build: roxmltree::Node, pom: &mut RawPom) {
 pub struct Resolver {
     pub local_repo: PathBuf,
     cache: HashMap<PathBuf, Option<Model>>,
+    settings: MavenSettings,
 }
 
 impl Resolver {
     pub fn new() -> Self {
-        Self { local_repo: local_repository(), cache: HashMap::new() }
+        Self {
+            local_repo: local_repository(),
+            cache: HashMap::new(),
+            settings: MavenSettings::default(),
+        }
+    }
+
+    pub fn with_settings(settings: &MavenSettings) -> Self {
+        Self {
+            local_repo: local_repository(),
+            cache: HashMap::new(),
+            settings: settings.clone(),
+        }
+    }
+
+    /// Download `group:artifact:version[:classifier]@ext` into the local
+    /// repository (see `download`).
+    pub fn download_artifact(
+        &self,
+        g: &str,
+        a: &str,
+        v: &str,
+        classifier: Option<&str>,
+        ext: &str,
+    ) -> Option<PathBuf> {
+        if self.settings.offline {
+            return None;
+        }
+        super::download::fetch(
+            &self.local_repo,
+            &super::download::default_repositories(),
+            g,
+            a,
+            v,
+            classifier,
+            ext,
+        )
     }
 
     pub fn repo_pom(&self, g: &str, a: &str, v: &str) -> PathBuf {
@@ -199,7 +284,13 @@ impl Resolver {
         p
     }
 
-    pub fn artifact_jar(&self, g: &str, a: &str, v: &str, classifier: Option<&str>) -> Option<PathBuf> {
+    pub fn artifact_jar(
+        &self,
+        g: &str,
+        a: &str,
+        v: &str,
+        classifier: Option<&str>,
+    ) -> Option<PathBuf> {
         let dir = self.repo_dir(g, a, v);
         let name = match classifier {
             Some(c) if !c.is_empty() => format!("{a}-{v}-{c}.jar"),
@@ -218,7 +309,9 @@ impl Resolver {
                 .map(|e| e.path())
                 .filter(|p| {
                     let n = p.file_name().unwrap_or_default().to_string_lossy();
-                    n.starts_with(&format!("{a}-{base}-")) && n.ends_with(".jar") && !n.ends_with("-sources.jar")
+                    n.starts_with(&format!("{a}-{base}-"))
+                        && n.ends_with(".jar")
+                        && !n.ends_with("-sources.jar")
                 })
                 .collect();
             cands.sort();
@@ -244,7 +337,10 @@ impl Resolver {
         let raw = parse_pom(&std::fs::read_to_string(path).ok()?)?;
         let parent_model = raw.parent.as_ref().and_then(|p| {
             let dir = path.parent()?;
-            let rel = p.relative_path.clone().unwrap_or_else(|| "../pom.xml".to_owned());
+            let rel = p
+                .relative_path
+                .clone()
+                .unwrap_or_else(|| "../pom.xml".to_owned());
             let mut candidate = dir.join(&rel);
             if candidate.is_dir() {
                 candidate = candidate.join("pom.xml");
@@ -276,17 +372,28 @@ impl Resolver {
             .or_else(|| raw.parent.as_ref().map(|p| p.version.clone()))
             .unwrap_or_default();
         m.packaging = raw.packaging.clone().unwrap_or_else(|| "jar".to_owned());
-        m.source_dir = raw.source_dir.clone().unwrap_or_else(|| "src/main/java".to_owned());
-        m.test_source_dir = raw.test_source_dir.clone().unwrap_or_else(|| "src/test/java".to_owned());
+        m.source_dir = raw
+            .source_dir
+            .clone()
+            .unwrap_or_else(|| "src/main/java".to_owned());
+        m.test_source_dir = raw
+            .test_source_dir
+            .clone()
+            .unwrap_or_else(|| "src/test/java".to_owned());
         for (k, v) in &raw.properties {
             m.properties.insert(k.clone(), v.clone());
         }
         for (k, v) in &raw.compiler {
             m.compiler.insert(k.clone(), v.clone());
         }
+        if !raw.compiler_args.is_empty() {
+            m.compiler_args = raw.compiler_args.clone();
+        }
         if let Some(p) = &raw.parent {
-            m.properties.insert("project.parent.version".into(), p.version.clone());
-            m.properties.insert("project.parent.groupId".into(), p.group.clone());
+            m.properties
+                .insert("project.parent.version".into(), p.version.clone());
+            m.properties
+                .insert("project.parent.groupId".into(), p.group.clone());
         }
         let builtins = [
             ("project.version", m.version.clone()),
@@ -295,8 +402,20 @@ impl Resolver {
             ("project.groupId", m.group.clone()),
             ("pom.groupId", m.group.clone()),
             ("project.artifactId", m.artifact.clone()),
-            ("project.basedir", path.parent().unwrap_or(Path::new("")).to_string_lossy().into_owned()),
-            ("basedir", path.parent().unwrap_or(Path::new("")).to_string_lossy().into_owned()),
+            (
+                "project.basedir",
+                path.parent()
+                    .unwrap_or(Path::new(""))
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            (
+                "basedir",
+                path.parent()
+                    .unwrap_or(Path::new(""))
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         ];
         for (k, v) in builtins {
             m.properties.insert(k.to_owned(), v);
@@ -341,15 +460,27 @@ impl Resolver {
         // Inherited dependencies come after the child's own.
         let inherited: Vec<Dep> = parent_model.map(|p| p.deps).unwrap_or_default();
         for d in inherited {
-            if !deps.iter().any(|x| x.group == d.group && x.artifact == d.artifact) {
+            if !deps
+                .iter()
+                .any(|x| x.group == d.group && x.artifact == d.artifact)
+            {
                 deps.push(d);
             }
         }
         m.deps = deps;
         m.source_dir = interp(&m.source_dir);
         m.test_source_dir = interp(&m.test_source_dir);
-        m.compiler = m.compiler.iter().map(|(k, v)| (k.clone(), interp(v))).collect();
-        m.extra_sources = m.extra_sources.iter().map(|(s, t)| (interp(s), *t)).collect();
+        m.compiler = m
+            .compiler
+            .iter()
+            .map(|(k, v)| (k.clone(), interp(v)))
+            .collect();
+        m.compiler_args = m.compiler_args.iter().map(|a| interp(a)).collect();
+        m.extra_sources = m
+            .extra_sources
+            .iter()
+            .map(|(s, t)| (interp(s), *t))
+            .collect();
         Some(m)
     }
 
@@ -364,10 +495,16 @@ impl Resolver {
             queue.push_back((d.clone(), scope, d.exclusions.clone()));
         }
         while let Some((dep, scope, exclusions)) = queue.pop_front() {
-            if !seen.insert((dep.group.clone(), dep.artifact.clone(), dep.classifier.clone())) {
+            if !seen.insert((
+                dep.group.clone(),
+                dep.artifact.clone(),
+                dep.classifier.clone(),
+            )) {
                 continue;
             }
-            let Some(version) = dep.version.clone() else { continue };
+            let Some(version) = dep.version.clone() else {
+                continue;
+            };
             out.push((dep.clone(), scope.clone()));
             if scope == "system" {
                 continue;
@@ -387,7 +524,8 @@ impl Resolver {
                 }
                 let mut td = td;
                 // The root's dependencyManagement wins for transitive deps.
-                if let Some(managed) = model.dep_mgmt.get(&(td.group.clone(), td.artifact.clone())) {
+                if let Some(managed) = model.dep_mgmt.get(&(td.group.clone(), td.artifact.clone()))
+                {
                     if managed.version.is_some() {
                         td.version = managed.version.clone();
                     }
@@ -479,124 +617,537 @@ pub fn local_repository() -> PathBuf {
     home.join(".m2").join("repository")
 }
 
-pub fn import(root: &Path, settings: &ImportSettings, claimed: &[PathBuf]) -> Vec<Project> {
-    let mut detector = FileDetector::new(root, &["pom.xml"])
-        .include_nested(false)
-        .add_exclusions(["**/target"])
-        .add_exclusions(&settings.exclusions);
-    for c in claimed {
-        detector = detector.add_exclusions([c.to_string_lossy().replace('\\', "\\\\")]);
+/// `sanitizeJavaVersion`: "5".."8" become "1.5".."1.8"; "1.9"+ lose the "1.".
+pub fn sanitize_java_version(v: &str) -> String {
+    match v {
+        "5" | "6" | "7" | "8" => format!("1.{v}"),
+        _ => {
+            if let Some(sub) = v.strip_prefix("1.") {
+                if sub.parse::<u32>().is_ok_and(|n| n > 8) {
+                    return sub.to_owned();
+                }
+            }
+            v.to_owned()
+        }
     }
-    let roots: Vec<PathBuf> = detector
-        .scan()
-        .into_iter()
-        .filter(|d| !claimed.iter().any(|c| d.starts_with(c)))
+}
+
+/// Highest Java version JDT 3.44 knows (`JavaCore.getAllVersions()`).
+pub const HIGHEST_JAVA_VERSION: u32 = 26;
+
+/// `getCompilerLevel` with the supported versions: a version above the
+/// highest known one becomes the highest; an unknown one is dropped.
+fn supported_level(v: &str) -> Option<String> {
+    let v = v.trim();
+    let major: Option<u32> = match v.strip_prefix("1.") {
+        Some(m) => m.parse().ok(),
+        None => v.parse().ok(),
+    };
+    match major {
+        Some(m) if m > HIGHEST_JAVA_VERSION => Some(HIGHEST_JAVA_VERSION.to_string()),
+        Some(m) if (1..=HIGHEST_JAVA_VERSION).contains(&m) => Some(v.to_owned()),
+        _ => None,
+    }
+}
+
+/// `(release, source, target)` as m2e reads them from the
+/// maven-compiler-plugin execution.
+pub fn compiler_parameters(model: &Model) -> (Option<String>, Option<String>, Option<String>) {
+    let param = |k: &str, prop: &str| -> Option<String> {
+        model
+            .compiler
+            .get(k)
+            .cloned()
+            .or_else(|| model.properties.get(prop).cloned())
+            .map(|v| interpolate(&v, &model.properties))
+            .filter(|v| !v.trim().is_empty() && !v.contains("${"))
+    };
+    let release = param("release", "maven.compiler.release").and_then(|r| supported_level(&r));
+    let source = param("source", "maven.compiler.source")
+        .map(|v| sanitize_java_version(v.trim()))
+        .and_then(|v| supported_level(&v));
+    let target = param("target", "maven.compiler.target")
+        .map(|v| sanitize_java_version(v.trim()))
+        .and_then(|v| supported_level(&v));
+    (release, source, target)
+}
+
+/// m2e's effective `(source, target)` (the release wins; the default level is 1.8).
+pub fn compiler_levels(model: &Model) -> (String, String) {
+    let (release, source, target) = compiler_parameters(model);
+    match release {
+        Some(r) => {
+            let r = sanitize_java_version(&r);
+            (r.clone(), r)
+        }
+        None => {
+            let source = sanitize_java_version(&source.unwrap_or_else(|| "1.8".to_owned()));
+            let target = sanitize_java_version(&target.unwrap_or_else(|| "1.8".to_owned()));
+            (source, target)
+        }
+    }
+}
+
+/// `AbstractJavaProjectConfigurator.addJavaProjectOptions`, on top of the
+/// project's existing `.settings` options.
+pub fn compiler_options(model: &Model, dir: &Path, _vm: Option<&str>) -> BTreeMap<String, String> {
+    let mut options = project_prefs(dir);
+    let (release, _, _) = compiler_parameters(model);
+    let (source, target) = compiler_levels(model);
+    let args = &model.compiler_args;
+    let argument = model
+        .compiler
+        .get("compilerArgument")
+        .cloned()
+        .unwrap_or_default();
+    let enable_preview = args.iter().any(|a| a == "--enable-preview")
+        || argument.contains("--enable-preview")
+        || model
+            .compiler
+            .get("enablePreview")
+            .or_else(|| model.properties.get("maven.compiler.enablePreview"))
+            .is_some_and(|v| v.trim() == "true");
+    let parameters = model
+        .compiler
+        .get("parameters")
+        .or_else(|| model.properties.get("maven.compiler.parameters"))
+        .is_some_and(|v| v.trim() == "true")
+        || args.iter().any(|a| a == "-parameters")
+        || argument.contains("-parameters");
+    for a in args {
+        let (err, settings) = if let Some(s) = a.strip_prefix("-warn:") {
+            (false, s)
+        } else if let Some(s) = a.strip_prefix("-err:") {
+            (true, s)
+        } else {
+            continue;
+        };
+        for cli in settings.split(',') {
+            if cli.len() < 2 {
+                continue;
+            }
+            let severity = if cli.starts_with('-') {
+                "ignore"
+            } else if err {
+                "error"
+            } else {
+                "warning"
+            };
+            let name = if cli.chars().next().is_some_and(|c| c.is_alphabetic()) {
+                cli
+            } else {
+                &cli[1..]
+            };
+            if name == "serial" {
+                options.insert(
+                    "org.eclipse.jdt.core.compiler.problem.missingSerialVersion".to_owned(),
+                    severity.to_owned(),
+                );
+            }
+        }
+    }
+    options.insert(super::SOURCE.to_owned(), source.clone());
+    options.insert(super::COMPLIANCE.to_owned(), source);
+    options.insert(super::TARGET.to_owned(), target);
+    options.insert(
+        super::RELEASE.to_owned(),
+        if release.is_some() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+        .to_owned(),
+    );
+    if parameters {
+        options.insert(
+            "org.eclipse.jdt.core.compiler.codegen.methodParameters".to_owned(),
+            "generate".to_owned(),
+        );
+    }
+    options
+        .entry("org.eclipse.jdt.core.compiler.problem.forbiddenReference".to_owned())
+        .or_insert_with(|| "warning".to_owned());
+    options.insert(
+        super::ENABLE_PREVIEW.to_owned(),
+        if enable_preview {
+            "enabled"
+        } else {
+            "disabled"
+        }
+        .to_owned(),
+    );
+    options
+        .entry(super::REPORT_PREVIEW.to_owned())
+        .or_insert_with(|| "ignore".to_owned());
+    options
+}
+
+/// Maven preferences (`java.import.maven.*`, `java.maven.*`).
+#[derive(Debug, Clone, Default)]
+pub struct MavenSettings {
+    /// `java.import.maven.offline.enabled`.
+    pub offline: bool,
+    /// `java.maven.downloadSources`.
+    pub download_sources: bool,
+    /// `java.maven.updateSnapshots`.
+    pub update_snapshots: bool,
+    /// `java.configuration.maven.userSettings`.
+    pub user_settings: Option<PathBuf>,
+    /// `java.configuration.maven.globalSettings`.
+    pub global_settings: Option<PathBuf>,
+}
+
+/// `pom.xml`.
+pub const POM_FILE: &str = "pom.xml";
+
+/// `MavenProjectImporter.applies` + `importToWorkspace` for `root`.
+pub fn import(
+    root: &Path,
+    settings: &ImportSettings,
+    ws: &Workspace,
+    configs: Option<&[PathBuf]>,
+) -> Vec<Project> {
+    let non_maven: Vec<&Path> = ws
+        .projects
+        .iter()
+        .filter(|p| !p.has_nature(super::MAVEN_NATURE))
+        .map(|p| p.location.as_path())
+        .collect();
+    let roots: Vec<PathBuf> = match configs {
+        Some(files) => files
+            .iter()
+            .filter(|f| f.file_name().is_some_and(|n| n == POM_FILE))
+            .filter_map(|f| f.parent().map(Path::to_path_buf))
+            .filter(|d| !non_maven.contains(&d.as_path()))
+            .collect(),
+        None => {
+            let mut detector = FileDetector::new(root, &[POM_FILE])
+                .include_nested(false)
+                .add_exclusions(["**/target"])
+                .add_exclusions(&settings.exclusions);
+            for p in &non_maven {
+                detector = detector.add_exclusions([super::detect::path_pattern(p)]);
+            }
+            detector.scan()
+        }
+    };
+    // Already-imported Maven projects are kept as they are.
+    let existing: Vec<&Path> = ws
+        .projects
+        .iter()
+        .filter(|p| p.has_nature(super::MAVEN_NATURE))
+        .map(|p| p.location.as_path())
         .collect();
 
-    let mut resolver = Resolver::new();
-    // Collect every pom (root poms + their module trees).
+    let mut resolver = Resolver::with_settings(&settings.maven);
+    // LocalProjectScanner: every root pom plus its module tree.
     let mut pom_dirs: Vec<(PathBuf, Model)> = Vec::new();
     let mut seen = HashSet::new();
-    let mut stack: Vec<PathBuf> = roots.iter().map(|d| super::canonicalize_lenient(d)).collect();
+    let mut stack: Vec<PathBuf> = roots
+        .iter()
+        .rev()
+        .map(|d| super::canonicalize_lenient(d))
+        .collect();
     while let Some(dir) = stack.pop() {
         if !seen.insert(dir.clone()) {
             continue;
         }
-        let pom = dir.join("pom.xml");
-        let Some(model) = resolver.model(&pom) else { continue };
+        let pom = dir.join(POM_FILE);
+        let Some(model) = resolver.model(&pom) else {
+            continue;
+        };
         for module in model.modules.iter().rev() {
             let mdir = dir.join(module);
-            let mdir = if mdir.is_file() { mdir.parent().map(Path::to_path_buf).unwrap_or(mdir) } else { mdir };
+            let mdir = if mdir.is_file() {
+                mdir.parent().map(Path::to_path_buf).unwrap_or(mdir)
+            } else {
+                mdir
+            };
             stack.push(super::canonicalize_lenient(&mdir));
+        }
+        if existing.contains(&dir.as_path()) {
+            continue;
         }
         pom_dirs.push((dir, model));
     }
-    pom_dirs.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let workspace_gas: HashMap<(String, String), String> = pom_dirs
+    let mut artifact_ids = HashSet::new();
+    for (_, m) in &pom_dirs {
+        artifact_ids.insert(m.artifact.clone());
+    }
+    let duplicate_template = pom_dirs.len() > artifact_ids.len();
+
+    let mut workspace_gas: HashMap<(String, String), String> = HashMap::new();
+    for p in ws
+        .projects
         .iter()
-        .map(|(_, m)| ((m.group.clone(), m.artifact.clone()), m.artifact.clone()))
-        .collect();
+        .filter(|p| p.has_nature(super::MAVEN_NATURE))
+    {
+        if let Some(m) = resolver.model(&p.location.join(POM_FILE)) {
+            workspace_gas.insert((m.group.clone(), m.artifact.clone()), p.name.clone());
+        }
+    }
+    for (_, m) in &pom_dirs {
+        let name = if duplicate_template {
+            format!("{}-{}", m.group, m.artifact)
+        } else {
+            m.artifact.clone()
+        };
+        workspace_gas.insert((m.group.clone(), m.artifact.clone()), name);
+    }
 
     pom_dirs
         .into_iter()
-        .map(|(dir, model)| to_project(&dir, &model, &mut resolver, &workspace_gas))
+        .map(|(dir, model)| {
+            let name = workspace_gas[&(model.group.clone(), model.artifact.clone())].clone();
+            to_project(&dir, &name, &model, &mut resolver, &workspace_gas, settings)
+        })
         .collect()
+}
+
+fn source_entry(
+    project: &Project,
+    location: &Path,
+    output: Option<&Path>,
+    test: bool,
+    resources: bool,
+) -> ClasspathEntry {
+    let mut e = ClasspathEntry::new(EntryKind::Source, project.full_path(location));
+    e.location = Some(location.to_path_buf());
+    e.output = output.map(Path::to_path_buf);
+    if resources {
+        e.exclusions = vec!["**".to_owned()];
+    }
+    e.attributes
+        .push(("maven.pomderived".into(), "true".into()));
+    e.attributes.push(("optional".into(), "true".into()));
+    if test {
+        e.attributes.push(("test".into(), "true".into()));
+    }
+    e
+}
+
+fn apt_entry(
+    project: &Project,
+    location: &Path,
+    output: Option<&Path>,
+    test: bool,
+) -> ClasspathEntry {
+    let mut e = ClasspathEntry::new(EntryKind::Source, project.full_path(location));
+    e.location = Some(location.to_path_buf());
+    e.output = output.map(Path::to_path_buf);
+    e.attributes = vec![
+        ("ignore_optional_problems".into(), "true".into()),
+        ("m2e-apt".into(), "true".into()),
+        ("maven.pomderived".into(), "true".into()),
+        ("optional".into(), "true".into()),
+    ];
+    if test {
+        e.attributes.push(("test".into(), "true".into()));
+    }
+    e
 }
 
 fn to_project(
     dir: &Path,
+    name: &str,
     model: &Model,
     resolver: &mut Resolver,
     workspace: &HashMap<(String, String), String>,
+    settings: &ImportSettings,
 ) -> Project {
-    let mut source_folders = Vec::new();
-    let mut push_src = |rel: &str, is_test: bool| {
-        let p = if Path::new(rel).is_absolute() { PathBuf::from(rel) } else { dir.join(rel) };
-        if p.is_dir() && !source_folders.iter().any(|s: &SourceFolder| s.path == p) {
-            source_folders.push(SourceFolder { path: p, is_test });
+    let mut project = Project::new(name, dir, ProjectKind::Maven);
+    project.build_files = vec![dir.join(POM_FILE)];
+    if model.packaging == "pom" {
+        project.natures = vec![super::MAVEN_NATURE.to_owned()];
+        return project;
+    }
+    project.natures = vec![
+        super::JAVA_NATURE.to_owned(),
+        super::MAVEN_NATURE.to_owned(),
+    ];
+    let abs = |rel: &str| {
+        if Path::new(rel).is_absolute() {
+            PathBuf::from(rel)
+        } else {
+            dir.join(rel)
         }
     };
-    if model.packaging != "pom" {
-        push_src(&model.source_dir, false);
-        for (s, t) in model.extra_sources.iter().filter(|(_, t)| !t) {
-            push_src(s, *t);
-        }
-        push_src(&model.test_source_dir, true);
-        for (s, t) in model.extra_sources.iter().filter(|(_, t)| *t) {
-            push_src(s, *t);
-        }
-    }
+    let classes = dir.join("target/classes");
+    let test_classes = dir.join("target/test-classes");
+    project.output = Some(classes.clone());
 
-    let mut libraries = Vec::new();
-    let mut project_deps = Vec::new();
+    let mut sources: Vec<ClasspathEntry> = Vec::new();
+    let mut push = |e: ClasspathEntry| {
+        if !sources.iter().any(|s| s.path == e.path) {
+            sources.push(e);
+        }
+    };
+    push(source_entry(
+        &project,
+        &abs(&model.source_dir),
+        Some(&classes),
+        false,
+        false,
+    ));
+    for (s, t) in model.extra_sources.iter().filter(|(_, t)| !t) {
+        push(source_entry(&project, &abs(s), Some(&classes), *t, false));
+    }
+    push(source_entry(
+        &project,
+        &abs("src/main/resources"),
+        Some(&classes),
+        false,
+        true,
+    ));
+    push(source_entry(
+        &project,
+        &abs(&model.test_source_dir),
+        Some(&test_classes),
+        true,
+        false,
+    ));
+    for (s, t) in model.extra_sources.iter().filter(|(_, t)| *t) {
+        push(source_entry(
+            &project,
+            &abs(s),
+            Some(&test_classes),
+            *t,
+            false,
+        ));
+    }
+    push(source_entry(
+        &project,
+        &abs("src/test/resources"),
+        Some(&test_classes),
+        true,
+        true,
+    ));
+    push(apt_entry(
+        &project,
+        &abs("target/generated-sources/annotations"),
+        None,
+        false,
+    ));
+    push(apt_entry(
+        &project,
+        &abs("target/generated-test-sources/test-annotations"),
+        Some(&test_classes),
+        true,
+    ));
+    project.classpath = sources;
+
+    let target = compiler_levels(model).1;
+    // `addJREClasspathContainer`: the execution environment of the target
+    // level when a compatible VM exists, else the workspace default JRE.
+    let compatible = settings
+        .vm_version
+        .as_deref()
+        .is_none_or(|vm| super::compare_java_versions(&target, vm) != std::cmp::Ordering::Greater);
+    let jre_path = if compatible {
+        format!(
+            "{}/org.eclipse.jdt.internal.debug.ui.launcher.StandardVMType/JavaSE-{target}",
+            super::JRE_CONTAINER
+        )
+    } else {
+        super::JRE_CONTAINER.to_owned()
+    };
+    let mut jre = ClasspathEntry::new(EntryKind::Container, jre_path);
+    jre.attributes
+        .push(("maven.pomderived".into(), "true".into()));
+    project.classpath.push(jre);
+
+    let mut container = ClasspathEntry::new(EntryKind::Container, super::MAVEN_CONTAINER);
+    container
+        .attributes
+        .push(("maven.pomderived".into(), "true".into()));
     for (dep, scope) in resolver.resolve(model) {
-        if let Some(name) = workspace.get(&(dep.group.clone(), dep.artifact.clone())) {
-            if name != &model.artifact && !project_deps.contains(name) {
-                project_deps.push(name.clone());
+        if let Some(pname) = workspace.get(&(dep.group.clone(), dep.artifact.clone())) {
+            let path = format!("/{pname}");
+            if pname != name
+                && !container
+                    .children
+                    .iter()
+                    .any(|c| c.kind == EntryKind::Project && c.path == path)
+            {
+                let mut e = ClasspathEntry::new(EntryKind::Project, path);
+                if scope == "test" {
+                    e.attributes.push(("test".into(), "true".into()));
+                }
+                e.attributes
+                    .push(("maven.pomderived".into(), "true".into()));
+                container.children.push(e);
             }
             continue;
         }
         if dep.typ.as_deref().is_some_and(|t| t == "pom") {
             continue;
         }
-        let Some(v) = dep.version.as_deref() else { continue };
-        let classifier = dep.classifier.as_deref().or(if dep.typ.as_deref() == Some("test-jar") { Some("tests") } else { None });
-        if let Some(jar) = resolver.artifact_jar(&dep.group, &dep.artifact, v, classifier) {
-            let source = source_attachment(&jar);
-            libraries.push(Library { path: jar, source, is_test: scope == "test" });
+        let Some(v) = dep.version.as_deref() else {
+            continue;
+        };
+        let classifier = dep
+            .classifier
+            .as_deref()
+            .or(if dep.typ.as_deref() == Some("test-jar") {
+                Some("tests")
+            } else {
+                None
+            });
+        let jar = match resolver.artifact_jar(&dep.group, &dep.artifact, v, classifier) {
+            Some(j) => Some(j),
+            None => resolver.download_artifact(&dep.group, &dep.artifact, v, classifier, "jar"),
+        };
+        let Some(jar) = jar else { continue };
+        let mut source = source_attachment(&jar);
+        if source.is_none() && settings.maven.download_sources {
+            source =
+                resolver.download_artifact(&dep.group, &dep.artifact, v, Some("sources"), "jar");
         }
+        let mut e = ClasspathEntry::new(EntryKind::Library, jar.to_string_lossy().into_owned());
+        let javadoc = jar.with_file_name(format!("{}-{v}-javadoc.jar", dep.artifact));
+        if javadoc.is_file() {
+            e.attributes.push((
+                "javadoc_location".into(),
+                format!("jar:file:{}!/", javadoc.to_string_lossy()),
+            ));
+        }
+        e.attributes
+            .push(("maven.groupId".into(), dep.group.clone()));
+        e.attributes
+            .push(("maven.artifactId".into(), dep.artifact.clone()));
+        e.attributes.push(("maven.version".into(), v.to_owned()));
+        if let Some(c) = classifier {
+            e.attributes.push(("maven.classifier".into(), c.to_owned()));
+        }
+        e.attributes.push(("maven.scope".into(), scope.clone()));
+        if scope == "test" {
+            e.attributes.push(("test".into(), "true".into()));
+        }
+        e.attributes
+            .push(("maven.pomderived".into(), "true".into()));
+        e.location = Some(jar);
+        e.source_attachment = source;
+        container.children.push(e);
     }
+    project.classpath.push(container);
 
-    let version = ["release", "source"]
-        .iter()
-        .find_map(|k| model.compiler.get(*k).cloned())
-        .or_else(|| model.properties.get("maven.compiler.release").cloned())
-        .or_else(|| model.properties.get("maven.compiler.source").cloned())
-        .and_then(|v| normalize_java_version(&v))
-        .unwrap_or_else(|| "1.8".to_owned());
-    // m2e overrides any compliance in the prefs file with the POM's.
-    let mut options = project_prefs(dir);
-    options.extend(compliance_options(&version));
-
-    let mut project = Project {
-        name: model.artifact.clone(),
-        root: dir.to_path_buf(),
-        kind: ProjectKind::Maven,
-        source_folders,
-        libraries,
-        project_deps,
-        options,
-    };
-    // m2e retains explicitly added raw library entries alongside its Maven
-    // container. Their sourcepath is authoritative, including no attachment.
+    let options = compiler_options(model, dir, settings.vm_version.as_deref());
+    project.options = options;
+    // Explicit raw libraries retained by m2e have authoritative attachments.
     if let Ok(xml) = std::fs::read_to_string(dir.join(".classpath")) {
         let mut raw = project.clone();
-        raw.libraries.clear();
+        raw.classpath.clear();
         super::eclipse::apply_classpath(&mut raw, &xml);
-        for lib in raw.libraries {
-            project.libraries.retain(|existing| existing.path != lib.path);
-            project.libraries.push(lib);
+        for entry in raw
+            .classpath
+            .into_iter()
+            .filter(|e| e.kind == EntryKind::Library)
+        {
+            for container in &mut project.classpath {
+                container.children.retain(|e| e.location != entry.location);
+            }
+            project.classpath.push(entry);
         }
     }
     project

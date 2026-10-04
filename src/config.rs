@@ -2,6 +2,9 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// The jdt.ls workspace directory (`-data <dir>` on the command line).
+pub static DATA_DIR: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
+
 /// Parsed from LSP `initializationOptions`.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -25,6 +28,14 @@ pub struct Config {
 
     /// `initializationOptions.workspaceFolders` (URIs).
     pub workspace_folders: Option<Vec<String>>,
+
+    /// `initializationOptions.triggerFiles` (URIs): files whose folder gets an
+    /// invisible project (`Preferences.setTriggerFiles`).
+    pub trigger_files: Option<Vec<String>>,
+
+    /// `initializationOptions.projectConfigurations` (URIs of build files to
+    /// import instead of scanning the roots).
+    pub project_configurations: Option<Vec<String>>,
 
     /// jdt.ls `Preferences.getRootPaths()`: `workspaceFolders` from the
     /// initialization options, else `rootUri`/`rootPath` (`BaseInitHandler`).
@@ -87,11 +98,7 @@ impl Config {
 
     /// Resolve the `java` binary to use when spawning ecj-bridge.
     pub fn java_binary(&self) -> String {
-        if let Some(bin) = self
-            .java_home
-            .as_deref()
-            .and_then(java_binary_from_home)
-        {
+        if let Some(bin) = self.java_home.as_deref().and_then(java_binary_from_home) {
             return bin;
         }
 

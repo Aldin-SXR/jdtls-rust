@@ -55,6 +55,12 @@ public class CompilationService {
             List<String> roots,
             Map<String, String> expectedPackages) {
 
+        return compile(sourceFiles, classpath, sourceLevel, roots, expectedPackages, null);
+    }
+
+    public List<BridgeDiagnostic> compile(Map<String, String> sourceFiles, List<String> classpath,
+            String sourceLevel, List<String> roots, Map<String, String> expectedPackages,
+            Map<String, String> generatedSourceOutput) {
         InMemoryNameEnvironment nameEnv = new InMemoryNameEnvironment(sourceFiles, classpath);
         nameEnv.setExpectedPackages(expectedPackages);
         List<BridgeDiagnostic> diagnostics = new ArrayList<>();
@@ -153,6 +159,15 @@ public class CompilationService {
         } finally {
             nameEnv.cleanup();
             if (aptSession != null) {
+                if (generatedSourceOutput != null) {
+                    try (Stream<Path> files = Files.walk(aptSession.generatedSources)) {
+                        for (Path path : files.filter(p -> p.toString().endsWith(".java")).toList()) {
+                            generatedSourceOutput.put(aptSession.generatedSources.relativize(path).toString().replace('\\', '/'), Files.readString(path));
+                        }
+                    } catch (IOException e) {
+                        LOG.warning("Cannot read annotation processor output: " + e.getMessage());
+                    }
+                }
                 aptSession.cleanup();
             }
         }

@@ -48,6 +48,7 @@ public class BridgeProtocol {
         public List<String> skipLibraries; // navData references: library roots already searched
         public List<String> searchKeys;    // navData referencesByKeys: "<includeDeclaration>|<binding key>"
         public List<String> uris;        // renameOccurrences: units to resolve; compile: units to compile
+        public boolean collectGeneratedSources;
         public Map<String, String> expectedPackages; // compile: package each unit must declare
         public List<String> names;       // renameOccurrences: identifiers of interest
         public String packageName;       // renameOccurrences: package whose references to collect
@@ -95,6 +96,7 @@ public class BridgeProtocol {
     }
 
     public static class DiagnosticsResponse extends Response {
+        public Map<String, String> generatedSources;
         public List<BridgeDiagnostic> items;
         public DiagnosticsResponse(long id, List<BridgeDiagnostic> items) {
             this.id = id; this.method = "diagnostics"; this.items = items;

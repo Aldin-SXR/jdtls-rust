@@ -187,7 +187,6 @@ fn test_search_return_max_results() {
 }
 
 #[test]
-#[ignore = "needs io.projectreactor:reactor-core:3.3.0.RELEASE in the local Maven repository (and upstream's 119 matches)"]
 fn test_empty_names() {
     let mut ws = setup();
     ws.import_projects(&["maven/reactor"]);

@@ -4,7 +4,7 @@ How far jdtls-rust is from eclipse.jdt.ls parity, measured against the upstream 
 suite. For how the port is done, see [PORTING.md](PORTING.md).
 
 * **Branch:** `jdtls-parity`, including the verified lifecycle/init/file-event,
-  binary-editor, initial correction and completion integrations. `main` is unchanged.
+  binary-editor, initial correction, completion and project-manager integrations. `main` is unchanged.
 * **Reference:** eclipse.jdt.ls 1.58.0. The upstream checkout is 1.58.0-SNAPSHOT
   (2026-04-10), and the oracle in `.oracle/` is the 1.58.0 release.
 * **Last updated:** 2026-10-04.
@@ -16,27 +16,30 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 535 | 25.6% |
-| Passing | 496 | 23.8% |
-| Ported but `#[ignore]`d | 39 | 1.9% |
-| Not ported yet | 1,552 | 74.4% |
+| Ported | 646 | 31.0% |
+| Passing | 599 | 28.7% |
+| Ported but `#[ignore]`d | 47 | 2.3% |
+| Not ported yet | 1,441 | 69.0% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 695 passed,
-0 failed and 40 ignored across 42 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 858 passed,
+0 failed and 48 ignored across 53 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
-`tests/completion_regressions.rs`, 6 tests) and unit
-tests that aren't ports.
+`tests/completion_regressions.rs`, 6 tests;
+`tests/project_download_regressions.rs`, 2 tests) and unit
+tests that aren't ports. Five project-manager targets also compile the project
+module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
+those duplicate runs are excluded from the upstream-port counts.
 
 ## By upstream area
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 467 | 446 | 51% |
+| handlers | 871 | 467 | 448 | 51% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
-| managers | 211 | 21 | 3 | 1% |
+| managers | 211 | 132 | 104 | 49% |
 | correction | 604 | 8 | 8 | 1% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
@@ -78,11 +81,11 @@ tests that aren't ports.
 | handlers/RenameHandlerTest | `handlers_rename_handler_test` | 22 | 22 | 0 | 20/22; jdt.ls NPEs on JDK 25 (record field) and has no Lombok jar |
 | handlers/SelectionRangeHandlerTest | `handlers_selection_range_handler_test` | 5 | 5 | 0 | 5/5 |
 | handlers/SemanticTokensHandlerTest | `handlers_semantic_tokens_handler_test` | 11 | 11 | 0 | 11/11 |
-| handlers/SignatureHelpHandlerTest | `handlers_signature_help_handler_test` | 56 | 54 | 2 | 53/54; `test_signature_help_erasure_type`, where jdt.ls returns no doc |
+| handlers/SignatureHelpHandlerTest | `handlers_signature_help_handler_test` | 56 | 55 | 1 | 54/55; `test_signature_help_erasure_type`, where jdt.ls returns no doc |
 | handlers/TypeHierarchyHandlerTest | `handlers_type_hierarchy_handler_test` | 4 | 4 | 0 | 4/4 |
 | handlers/WorkspaceDiagnosticsHandlerTest | `handlers_workspace_diagnostics_handler_test` | 2 | 2 | 0 | 2/2 (package deletion and diagnostic filtering) |
 | handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` | 1 | 1 | 0 | 1/1 (unknown-command error) |
-| handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 15 | 4 | 15/15 |
+| handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 16 | 3 | 16/16 |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -94,6 +97,17 @@ tests that aren't ports.
 | javadoc/JavadocContentTest | `javadoc_javadoc_content_test` | 5 | 5 | 0 | pass |
 | managers/ContentProviderManagerTest | `managers_content_provider_manager_test` | 21 | 3 | 18 | pass |
 
+| managers/BasicFileDetectorTest | `managers_basic_file_detector_test` | 12 | 12 | 0 | n/a (unit ports) |
+| managers/EclipseBuildSupportTest | `managers_eclipse_build_support_test` | 1 | 1 | 0 | 1/1 |
+| managers/EclipseProjectImporterTest | `managers_eclipse_project_importer_test` | 15 | 11 | 4 | 8/8 active LSP; 3 unit ports |
+| managers/InvisibleProjectBuildSupportTest | `managers_invisible_project_build_support_test` | 4 | 4 | 0 | 2/2 active LSP; 2 preference unit ports |
+| managers/InvisibleProjectImporterTest | `managers_invisible_project_importer_test` | 27 | 26 | 1 | active cases pass; helper assertions use the Rust port |
+| managers/InvisibleProjectPreferenceChangeListenerTest | `managers_invisible_project_preference_change_listener_test` | 6 | 6 | 0 | 6/6 |
+| managers/MavenProjectImporterTest | `managers_maven_project_importer_test` | 32 | 31 | 1 | 29/29 active LSP; 2 unit ports |
+| managers/MultiRootTest | `managers_multi_root_test` | 2 | 2 | 0 | 2/2 |
+| managers/ProjectsManagerTest | `managers_projects_manager_test` | 11 | 7 | 4 | 7/7 active; Gradle and internal initialization cases ignored |
+| managers/StandardProjectManagerTest | `managers_standard_project_manager_test` | 1 | 1 | 0 | n/a (unit port) |
+
 ## Ignored tests
 
 Every ignore names its reason in the test file (`#[ignore = "..."]`), and every
@@ -103,12 +117,17 @@ ignored test keeps its upstream assertions unchanged.
 |---|---:|---|
 | Upstream's fake test JDK (`rtstubs.jar`, no sources); we run a real JDK with `lib/src.zip` | 22 | `test_get_code_lens_symbols_for_class`, `outgoing_calls_src`; 9 ContentProviderManagerTest tests; `test_disassembled_source` and `test_source_version` (definition and type definition); `test_implementation_from_binary_type_with_class_content_support`; `test_references_in_jre`; `test_workspace_search`, `test_camel_case_fuzzy_search` and `test_workspace_search_with_class_content_support`; `test_hover_javadoc_link_plain`; completion `test_completion_import_static` and `test_snippet_interface_method` |
 | Upstream test-plugin internals with no LSP equivalent (FakeContentProvider, null URIs, decompiler line mappings) | 9 | ContentProviderManagerTest |
-| Missing local artifacts (no download yet) | 2 | `test_signature_help_assert_equals` (junit 4.13.1); `test_empty_names` (reactor-core 3.3.0) |
 | Lombok not supported | 1 | `test_lombok_show_generated_code_symbols` |
 | Kotlin not supported | 1 | `test_kotlin` |
 | Direct completion-requestor state access | 1 | `test_signature_help_for_selected_completion_proposal` selects the first raw proposal directly, whose ordering differs from LSP items; the public selection flow is implemented and oracle verified separately |
 | The upstream test assumes a Java 10 JDK | 1 | `test_hover_on_java10var` |
 | Needs code-action/quick-fix parity | 2 | lifecycle `test_unimplemented_methods` and `test_remove_dead_code_after_if` |
+
+| Requires an installed JavaSE-1.8 or Java 26 VM | 4 | Eclipse `test_forbidden_reference`, `test_preview_features_disabled_by_default`; invisible `test_preview_features_enabled_by_default`; Maven `test_java26_project` |
+| Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
+| Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
+| Direct empty-root initialization has no equivalent public LSP call | 1 | ProjectsManager `test_create_default_project` |
+| Gradle model/update parity and a compatible Gradle VM | 3 | ProjectsManager `test_sending_ok_project_status`, `test_sending_warning_project_status`, `test_reload_gradle_project_marker` |
 
 ## Lifecycle/init integration evidence
 
@@ -242,6 +261,37 @@ unit tests are excluded from the upstream count. Completion is still incomplete:
 classes, remain unported. The old postfix helper remains available during bridge
 startup; the JDT completion path does not yet include that provider.
 
+## Project-manager integration evidence
+
+The saved project-import branch is integrated with 111 substantive upstream ports:
+101 passing and 10 ignored. The active LSP cases run against both Rust and jdt.ls
+1.58.0; detector, naming, duplicate-import and preference helpers are unit ports.
+Maven downloads also activate two existing handler ports without changing their
+assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matches.
+
+* The Rust model retains raw Eclipse classpaths, natures, container children,
+  outputs, source exclusions, attachments and project/build-file markers. Explicit
+  Eclipse library source attachments remain authoritative, including their absence.
+* Maven imports discover modules from all profiles, resolve parent models and
+  transitive dependencies, download missing artifacts and sources, and retain import
+  timestamps across restarts. Import progress is sent after initialization, when
+  tower-lsp permits custom notifications.
+* Invisible projects infer source roots from trigger files and later opens, follow
+  referenced-library and preference changes, and refresh diagnostics and watchers.
+  Workspace-folder/configuration changes preserve the verified document lifecycle.
+* ECJ returns generated annotation-processor source data; Rust writes it into the
+  project's generated-source folder. The AutoValue fixture and existing annotation
+  processing regression both pass.
+* Project/build-file marker reporting shares the existing saved-file build pipeline.
+  Project configuration notifications are ordered before later requests. Local HTTP
+  regressions cover artifact fallback, cache reuse, complete concurrent writes and
+  preservation of origin records.
+* Six empty placeholders and five incomplete test bodies are excluded, rather than
+  counted as ignored ports. Unported cases include classpath-job scheduling/merging,
+  explicit invalid-project cleanup and unmanaged-jar SHA-1 source discovery/hover.
+* Gradle still reads build scripts heuristically; Tooling API/Buildship model parity
+  is unfinished. Passing project-selection tests do not establish Gradle parity.
+
 ## Known differences from jdt.ls
 
 * **JDT build.** The bridge now uses Maven JDT/ECJ 3.46.0. Its Core build is
@@ -264,42 +314,40 @@ startup; the JDT completion path does not yet include that provider.
   a package rename covers only the selected source folder; the "type already exists"
   check and textual or comment matches aren't implemented.
 * **Signature help fallback path** (no AST context) is approximate; no test covers it.
-* **Downloads:** missing Maven artifacts and `-sources.jar` files aren't downloaded.
-  The project-import branch adds this.
+* **Downloads:** Maven artifact and source downloads are implemented. Custom repository
+  and mirror handling, complete Maven model parity and unmanaged-jar source discovery
+  remain unfinished.
 * **Lombok** is not supported in any feature.
 
-## Not merged yet
+## Saved work branches
 
-These branches hold work in progress that was interrupted by API session limits. Each
-was saved as a WIP commit and has not been verified in the integrated branch.
-
-| Branch | Area | Ahead of `jdtls-parity` | State |
-|---|---|---|---|
-| `worktree-agent-a1e31779b8b46b008` (`af6a7a8`) | Project import: Eclipse and Maven importers to match m2e and jdt.ls, Maven downloads, a Gradle decision | 4 commits, about 7k lines | stopped while starting MavenProjectImporterTest |
+The project-import WIP branch `worktree-agent-a1e31779b8b46b008` (`af6a7a8`)
+is now integrated and verified. No saved WIP branch remains unmerged.
 
 ## Largest remaining work
 
 | Work | Upstream tests | Share of suite |
 |---|---:|---:|
-| Quick fixes and assists (`correction`) | 604 | 29% |
-| Remaining completion (CompletionHandlerTest 99, LazyResolve 20, Chain 12, Postfix 29) | 160 | 8% |
-| Project managers | 211 | 10% |
+| Remaining quick fixes and assists (`correction`) | 596 | 29% |
+| Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
+| Remaining project managers | 79 | 4% |
 | Refactoring | 119 | 6% |
-| Remaining handlers: code actions, code generation, organize imports, paste, save actions, workspace markers and other lifecycle/init cases | about 239 | 11% |
-| Core utilities, preferences, commands and the rest | about 220 | 11% |
+| Remaining handlers outside completion: code actions, generation, imports, paste, save actions, markers and lifecycle/init | 301 | 14% |
+| Core utilities, preferences, commands and the rest | 243 | 12% |
 
 ## Updating this file
 
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
 Add the ports that live as unit tests in `src/` (InlayHintFilterManagerTest 7,
 JavaDoc2Markdown 19, JavaDoc2PlainText 2, JavaDocImageExtraction 1, InitHandler 2).
 Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
-`correction_regressions.rs` and `completion_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
+`correction_regressions.rs`, `completion_regressions.rs` and
+`project_download_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.

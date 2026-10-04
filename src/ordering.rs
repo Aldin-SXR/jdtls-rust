@@ -18,7 +18,10 @@ use tower_service::Service;
 fn is_sync_notification(method: &str) -> bool {
     matches!(
         method,
-        "textDocument/didOpen"
+        "initialized"
+            | "java/projectConfigurationUpdate"
+            | "java/projectConfigurationsUpdate"
+            | "textDocument/didOpen"
             | "textDocument/didChange"
             | "textDocument/didClose"
             | "textDocument/didSave"
@@ -39,7 +42,10 @@ pub struct Ordered<S> {
 
 impl<S> Ordered<S> {
     pub fn new(inner: S) -> Self {
-        Self { inner, pending: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            inner,
+            pending: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
@@ -68,7 +74,10 @@ where
         };
         let done = if sync {
             let (tx, rx) = watch::channel(false);
-            self.pending.lock().unwrap_or_else(|e| e.into_inner()).push(rx);
+            self.pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(rx);
             Some(tx)
         } else {
             None

@@ -7,7 +7,11 @@ use std::collections::{BTreeMap, HashMap};
 // ─── Requests (Rust → Java) ─────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-#[serde(tag = "method", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "method",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum BridgeRequest {
     Compile {
         id: u64,
@@ -25,6 +29,8 @@ pub enum BridgeRequest {
         /// aren't checked.
         #[serde(skip_serializing_if = "HashMap::is_empty")]
         expected_packages: HashMap<String, String>,
+        /// Return annotation processor output to the workspace builder.
+        collect_generated_sources: bool,
     },
     Complete {
         id: u64,
@@ -378,7 +384,9 @@ pub enum BridgeRequest {
         options: BTreeMap<String, String>,
         names: Vec<String>,
     },
-    Shutdown { id: u64 },
+    Shutdown {
+        id: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,11 +409,17 @@ pub struct BridgeRange {
 // ─── Responses (Java → Rust) ─────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "method", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "method",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum BridgeResponse {
     Diagnostics {
         id: u64,
         items: Vec<BridgeDiagnostic>,
+        #[serde(default)]
+        generated_sources: BTreeMap<String, String>,
     },
     Completions {
         id: u64,
@@ -548,7 +562,9 @@ pub enum BridgeResponse {
         nodes: Vec<Vec<i64>>,
         bindings: Vec<Vec<i64>>,
     },
-    Ok { id: u64 },
+    Ok {
+        id: u64,
+    },
     Error {
         id: u64,
         message: String,

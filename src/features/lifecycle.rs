@@ -89,17 +89,33 @@ pub enum UnitKind {
 
 /// Dotted package of `file` relative to source folder `root`.
 fn folder_package(root: &Path, file: &Path) -> String {
-    let Some(dir) = file.parent() else { return String::new() };
-    let Ok(rel) = dir.strip_prefix(root) else { return String::new() };
-    rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join(".")
+    let Some(dir) = file.parent() else {
+        return String::new();
+    };
+    let Ok(rel) = dir.strip_prefix(root) else {
+        return String::new();
+    };
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 pub fn classify(ws: &Workspace, uri: &Url) -> UnitKind {
-    let Some(path) = crate::project::uri_to_path(uri) else { return UnitKind::Default };
-    let Some(project) = ws.project_for_path(&path) else { return UnitKind::Default };
+    let Some(path) = crate::project::uri_to_path(uri) else {
+        return UnitKind::Default;
+    };
+    let Some(project) = ws.project_for_path(&path) else {
+        return UnitKind::Default;
+    };
     match project.source_folder_for(&path) {
-        Some(sf) => UnitKind::OnClasspath { project: project.name.clone(), package: folder_package(&sf.path, &path) },
-        None => UnitKind::NotOnClasspath { project: project.name.clone() },
+        Some(sf) => UnitKind::OnClasspath {
+            project: project.name.clone(),
+            package: folder_package(&sf.path, &path),
+        },
+        None => UnitKind::NotOnClasspath {
+            project: project.name.clone(),
+        },
     }
 }
 
@@ -114,15 +130,24 @@ pub fn is_java_like(uri: &Url) -> bool {
     if name.ends_with(".java") {
         return true;
     }
-    file_associations().iter().any(|ext| name.ends_with(&format!(".{ext}")))
+    file_associations()
+        .iter()
+        .any(|ext| name.ends_with(&format!(".{ext}")))
 }
 
 /// `Preferences.getFilesAssociations`: the `*.ext` keys of
 /// `java.associations` mapped to `java`.
 pub fn file_associations() -> Vec<String> {
-    let Some(Value::Object(map)) = crate::features::preferences::get("java.associations") else { return Vec::new() };
+    let Some(Value::Object(map)) = crate::features::preferences::get("java.associations") else {
+        return Vec::new();
+    };
     map.iter()
-        .filter(|(k, v)| v.as_str() == Some("java") && k.starts_with("*.") && k.len() > 2 && !k[2..].contains(['*', '?', '/', '[']))
+        .filter(|(k, v)| {
+            v.as_str() == Some("java")
+                && k.starts_with("*.")
+                && k.len() > 2
+                && !k[2..].contains(['*', '?', '/', '['])
+        })
         .map(|(k, _)| k[2..].to_owned())
         .collect()
 }
@@ -152,7 +177,11 @@ pub struct Lifecycle {
 }
 
 impl Lifecycle {
-    pub fn new(client: Client, store: Arc<DocumentStore>, dispatcher: Arc<Dispatcher>) -> Arc<Self> {
+    pub fn new(
+        client: Client,
+        store: Arc<DocumentStore>,
+        dispatcher: Arc<Dispatcher>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             client,
             store,
@@ -169,7 +198,11 @@ impl Lifecycle {
     }
 
     fn workspace(&self) -> Workspace {
-        self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.dispatcher
+            .workspace
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Start the debounced validation job (`validationTimer` +
@@ -217,7 +250,9 @@ impl Lifecycle {
             // Upstream snapshots toValidate before adding the other working
             // copies. They remain queued until the next validation trigger.
             let copy = std::mem::take(&mut st.to_validate);
-            if crate::features::preferences::get_bool("java.edit.validateAllOpenBuffersOnChanges").unwrap_or(true) {
+            if crate::features::preferences::get_bool("java.edit.validateAllOpenBuffersOnChanges")
+                .unwrap_or(true)
+            {
                 for u in self.store.open_uris() {
                     if is_java_like(&u) && !copy.contains(&u) && !st.to_validate.contains(&u) {
                         st.to_validate.push(u);
@@ -237,7 +272,10 @@ impl Lifecycle {
     /// (`DiagnosticsState.isOnlySyntaxReported`).
     pub fn is_only_syntax_reported(&self, uri: &Url) -> bool {
         let st = self.state();
-        st.error_levels.get(uri).copied().unwrap_or(st.global_syntax_only.unwrap_or(true))
+        st.error_levels
+            .get(uri)
+            .copied()
+            .unwrap_or(st.global_syntax_only.unwrap_or(true))
     }
 
     /// Reconcile `uri` (its open buffer, or its saved content when closed)
@@ -245,7 +283,9 @@ impl Lifecycle {
     pub async fn publish_unit(&self, uri: &Url) {
         if let Some(diags) = self.reconcile(uri).await {
             if !matches_diagnostic_filter(uri) {
-                self.client.publish_diagnostics(uri.clone(), diags, None).await;
+                self.client
+                    .publish_diagnostics(uri.clone(), diags, None)
+                    .await;
             }
         }
     }
@@ -265,13 +305,23 @@ impl Lifecycle {
         let file_name = crate::classfile::percent_decode(&file_name);
 
         let (mut ctx, project_name, expected) = match &kind {
-            UnitKind::OnClasspath { project, package } => {
-                (self.dispatcher.context_for(Some(uri)).await, Some(project.clone()), Some(package.clone()))
-            }
-            UnitKind::NotOnClasspath { project } => (self.dispatcher.context_for(Some(uri)).await, Some(project.clone()), None),
+            UnitKind::OnClasspath { project, package } => (
+                self.dispatcher.context_for(Some(uri)).await,
+                Some(project.clone()),
+                Some(package.clone()),
+            ),
+            UnitKind::NotOnClasspath { project } => (
+                self.dispatcher.context_for(Some(uri)).await,
+                Some(project.clone()),
+                None,
+            ),
             UnitKind::Default => {
                 let linked = self.linked_package(uri, &content);
-                (self.dispatcher.context_for(Some(uri)).await, None, Some(linked))
+                (
+                    self.dispatcher.context_for(Some(uri)).await,
+                    None,
+                    Some(linked),
+                )
             }
         };
         ctx.files.insert(key.clone(), content.clone());
@@ -279,7 +329,11 @@ impl Lifecycle {
         if let Some(p) = expected {
             expected_packages.insert(key.clone(), p);
         }
-        let items = match self.dispatcher.compile_units(ctx, Some(vec![key.clone()]), expected_packages).await {
+        let items = match self
+            .dispatcher
+            .compile_units(ctx, Some(vec![key.clone()]), expected_packages)
+            .await
+        {
             Ok(items) => items,
             Err(e) => {
                 tracing::warn!("reconcile {uri}: {e}");
@@ -331,7 +385,13 @@ impl Lifecycle {
         }
         let doc = diag_conv::Doc16::new(&content);
         let tag_support = crate::features::client_caps::diagnostic_tags();
-        Some(problems.iter().filter_map(|d| diag_conv::to_lsp(d, Some(&doc), tag_support)).map(|(_, d)| d).collect())
+        Some(
+            problems
+                .iter()
+                .filter_map(|d| diag_conv::to_lsp(d, Some(&doc), tag_support))
+                .map(|(_, d)| d)
+                .collect(),
+        )
     }
 
     // ── Default-project package links ───────────────────────────────────────
@@ -343,9 +403,14 @@ impl Lifecycle {
         if let Some(p) = self.state().linked_packages.get(uri) {
             return p.clone();
         }
-        let disk = uri.to_file_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
+        let disk = uri
+            .to_file_path()
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok());
         let pkg = crate::project::invisible::declared_package(disk.as_deref().unwrap_or(content));
-        self.state().linked_packages.insert(uri.clone(), pkg.clone());
+        self.state()
+            .linked_packages
+            .insert(uri.clone(), pkg.clone());
         pkg
     }
 
@@ -365,7 +430,10 @@ impl Lifecycle {
         let folder = uri
             .to_file_path()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.to_string_lossy().replace(['/', '\\'], ".")))
+            .and_then(|p| {
+                p.parent()
+                    .map(|d| d.to_string_lossy().replace(['/', '\\'], "."))
+            })
             .unwrap_or_default();
         if folder.ends_with(&linked) {
             return false;
@@ -377,11 +445,10 @@ impl Lifecycle {
     // ── Document events ─────────────────────────────────────────────────────
 
     /// `didOpen` (the document is already in the store).
-    pub async fn did_open(&self, uri: &Url, roots: &[PathBuf]) {
+    pub async fn did_open(&self, uri: &Url, _roots: &[PathBuf]) {
         if !is_java_like(uri) {
             return;
         }
-        self.load_invisible_project(uri, roots).await;
         self.register_new_file(uri);
         if let Some(text) = self.store.get(uri).map(|s| s.content_string()) {
             self.linked_package(uri, &text);
@@ -394,7 +461,11 @@ impl Lifecycle {
     /// (created after the import) becomes a workspace file
     /// (`handleOpen` refreshes the new resource).
     fn register_new_file(&self, uri: &Url) {
-        if matches!(classify(&self.workspace(), uri), UnitKind::OnClasspath { .. }) && !self.store.is_workspace_file(uri) {
+        if matches!(
+            classify(&self.workspace(), uri),
+            UnitKind::OnClasspath { .. }
+        ) && !self.store.is_workspace_file(uri)
+        {
             self.store.add_workspace_file(uri.clone());
         }
     }
@@ -422,7 +493,9 @@ impl Lifecycle {
         if !matches!(kind, UnitKind::OnClasspath { .. }) || !exists {
             // Syntax-mode units and deleted files: clear their problems.
             if !matches_diagnostic_filter(uri) {
-                self.client.publish_diagnostics(uri.clone(), Vec::new(), None).await;
+                self.client
+                    .publish_diagnostics(uri.clone(), Vec::new(), None)
+                    .await;
             }
         } else {
             let disk = path.and_then(|p| std::fs::read_to_string(p).ok());
@@ -452,17 +525,24 @@ impl Lifecycle {
         }
         self.register_new_file(uri);
         self.store.invalidate_disk(uri);
-        if let Some(project) = self.workspace().project_for_uri(uri).map(|p| p.name.clone()) {
+        if let Some(project) = self
+            .workspace()
+            .project_for_uri(uri)
+            .map(|p| p.name.clone())
+        {
             self.build(Some(&[project])).await;
         }
         if rename_file_to_type_enabled() {
-            self.handle_file_rename_for_type_declaration(uri, apply_edit_supported).await;
+            self.handle_file_rename_for_type_declaration(uri, apply_edit_supported)
+                .await;
         }
     }
 
     /// `BaseDocumentLifeCycleHandler.handleFileRenameForTypeDeclaration`.
     async fn handle_file_rename_for_type_declaration(&self, uri: &Url, apply_edit_supported: bool) {
-        let Some(content) = crate::features::source_text(&self.store, uri) else { return };
+        let Some(content) = crate::features::source_text(&self.store, uri) else {
+            return;
+        };
         let kind = classify(&self.workspace(), uri);
         let mut ctx = self.dispatcher.context_for(Some(uri)).await;
         ctx.files.insert(uri.to_string(), content.clone());
@@ -470,18 +550,35 @@ impl Lifecycle {
         if let UnitKind::OnClasspath { package, .. } = &kind {
             expected.insert(uri.to_string(), package.clone());
         }
-        let Ok(items) = self.dispatcher.compile_units(ctx, Some(vec![uri.to_string()]), expected).await else { return };
+        let Ok(items) = self
+            .dispatcher
+            .compile_units(ctx, Some(vec![uri.to_string()]), expected)
+            .await
+        else {
+            return;
+        };
         let problem = items.iter().find(|d| {
-            d.uri == uri.as_str() && d.code.as_deref().and_then(|c| c.parse::<u32>().ok()) == Some(PUBLIC_CLASS_MUST_MATCH_FILE_NAME)
+            d.uri == uri.as_str()
+                && d.code.as_deref().and_then(|c| c.parse::<u32>().ok())
+                    == Some(PUBLIC_CLASS_MUST_MATCH_FILE_NAME)
         });
         let Some(problem) = problem else { return };
         if public_top_level_type_count(&content) != 1 {
             return;
         }
         // "The public type {1} must be defined in its own file"
-        let Some(new_name) = problem.message.strip_prefix("The public type ").and_then(|r| r.split(' ').next()) else { return };
+        let Some(new_name) = problem
+            .message
+            .strip_prefix("The public type ")
+            .and_then(|r| r.split(' ').next())
+        else {
+            return;
+        };
         let old_name = uri.path().rsplit('/').next().unwrap_or("").to_owned();
-        let extension = old_name.rfind('.').filter(|&i| i > 0).map_or(".java".to_owned(), |i| old_name[i..].to_owned());
+        let extension = old_name
+            .rfind('.')
+            .filter(|&i| i > 0)
+            .map_or(".java".to_owned(), |i| old_name[i..].to_owned());
         let document_uri = uri.to_string();
         let new_uri = document_uri.replace(&old_name, &format!("{new_name}{extension}"));
         if apply_edit_supported {
@@ -512,19 +609,49 @@ impl Lifecycle {
             Some(names) => ws
                 .projects
                 .iter()
-                .filter(|p| names.contains(&p.name) || ws.project_closure(p).iter().any(|c| names.contains(&c.name)))
+                .filter(|p| {
+                    names.contains(&p.name)
+                        || ws
+                            .project_closure(p)
+                            .iter()
+                            .any(|c| names.contains(&c.name))
+                })
                 .collect(),
         };
         targets.retain(|p| p.kind != ProjectKind::Default);
         let disk = self.store.disk_contents();
         let mut built: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
         let mut built_files: HashSet<Url> = HashSet::new();
+        let mut marker_workspace = ws.clone();
+        marker_workspace
+            .projects
+            .retain(|p| targets.iter().any(|t| t.name == p.name));
+        for (uri, values) in
+            crate::features::project_commands::project_marker_diagnostics(&marker_workspace)
+        {
+            if let Ok(uri) = Url::parse(&uri) {
+                let diagnostics: Vec<Diagnostic> = values
+                    .into_iter()
+                    .filter_map(|v| serde_json::from_value(v).ok())
+                    .collect();
+                built_files.insert(uri.clone());
+                built.insert(uri, diagnostics);
+            }
+        }
         for project in &targets {
-            let ctx = self.dispatcher.context_with_files(&ws, Some(&project.name), false, disk.clone()).await;
+            if !project.is_java() || project.has_build_path_errors() {
+                continue;
+            }
+            let ctx = self
+                .dispatcher
+                .context_with_files(&ws, Some(&project.name), false, disk.clone())
+                .await;
             let mut roots = Vec::new();
             let mut expected = HashMap::new();
             for f in project.java_files() {
-                let Ok(u) = Url::from_file_path(&f) else { continue };
+                let Ok(u) = Url::from_file_path(&f) else {
+                    continue;
+                };
                 if !ctx.files.contains_key(u.as_str()) {
                     continue;
                 }
@@ -538,11 +665,39 @@ impl Lifecycle {
                 continue;
             }
             let own: HashSet<String> = roots.iter().cloned().collect();
-            match self.dispatcher.compile_units(ctx, Some(roots), expected).await {
-                Ok(items) => {
+            match self.dispatcher.build_units(ctx, roots, expected).await {
+                Ok((items, generated_sources)) => {
+                    if let Some(folder) = project
+                        .classpath
+                        .iter()
+                        .find(|e| e.attribute("m2e-apt") == Some("true") && !e.is_test())
+                        .and_then(|e| e.location.as_ref())
+                    {
+                        for (relative, source) in generated_sources {
+                            let relative = std::path::Path::new(&relative);
+                            if relative
+                                .components()
+                                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                            {
+                                continue;
+                            }
+                            let path = folder.join(relative);
+                            if let Some(parent) = path.parent() {
+                                if let Err(e) = std::fs::create_dir_all(parent)
+                                    .and_then(|_| std::fs::write(&path, source))
+                                {
+                                    tracing::warn!("generated source {}: {e}", path.display());
+                                }
+                            }
+                        }
+                    }
                     for d in items.into_iter().filter(|d| own.contains(&d.uri)) {
                         let doc = disk.get(&d.uri).map(|text| diag_conv::Doc16::new(text));
-                        if let Some((u, diag)) = diag_conv::to_lsp(&d, doc.as_ref(), crate::features::client_caps::diagnostic_tags()) {
+                        if let Some((u, diag)) = diag_conv::to_lsp(
+                            &d,
+                            doc.as_ref(),
+                            crate::features::client_caps::diagnostic_tags(),
+                        ) {
                             built.entry(u).or_default().push(diag);
                         }
                     }
@@ -560,7 +715,10 @@ impl Lifecycle {
                 .markers
                 .keys()
                 .filter(|u| !built_files.contains(*u))
-                .filter(|u| ws.project_for_uri(u).map_or(true, |p| target_names.contains(p.name.as_str())))
+                .filter(|u| {
+                    ws.project_for_uri(u)
+                        .map_or(true, |p| target_names.contains(p.name.as_str()))
+                })
                 .cloned()
                 .collect();
             for u in stale {
@@ -590,8 +748,12 @@ impl Lifecycle {
         let st = self.state();
         st.markers
             .iter()
-            .filter(|(u, _)| ws.project_for_uri(u).is_some_and(|p| target_names.contains(p.name.as_str())))
-            .map(|(_, d)| d.iter().filter(|x| x.severity == Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR)).count())
+            .filter(|(u, _)| built_files.contains(*u))
+            .map(|(_, d)| {
+                d.iter()
+                    .filter(|x| x.severity == Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR))
+                    .count()
+            })
             .sum()
     }
 
@@ -601,9 +763,19 @@ impl Lifecycle {
         let ws = self.workspace();
         let mut names: Vec<String> = Vec::new();
         for u in uris {
-            let Some(path) = Url::parse(u).ok().and_then(|u| crate::project::uri_to_path(&u)) else { continue };
+            let Some(path) = Url::parse(u)
+                .ok()
+                .and_then(|u| crate::project::uri_to_path(&u))
+            else {
+                continue;
+            };
             let path = crate::project::canonicalize_lenient(&path);
-            if let Some(p) = ws.projects.iter().find(|p| p.root == path).or_else(|| ws.project_for_path(&path)) {
+            if let Some(p) = ws
+                .projects
+                .iter()
+                .find(|p| p.root == path)
+                .or_else(|| ws.project_for_path(&path))
+            {
                 if !names.contains(&p.name) {
                     names.push(p.name.clone());
                 }
@@ -630,7 +802,9 @@ impl Lifecycle {
                 // The file left its project: clear it.
                 let had_markers = self.state().markers.remove(u).is_some();
                 if had_markers {
-                    self.client.publish_diagnostics(u.clone(), Vec::new(), None).await;
+                    self.client
+                        .publish_diagnostics(u.clone(), Vec::new(), None)
+                        .await;
                 }
             }
         }
@@ -647,7 +821,12 @@ impl Lifecycle {
     // ── java.project.refreshDiagnostics ─────────────────────────────────────
 
     /// `DiagnosticsCommand.refreshDiagnostics(uri, scope, syntaxOnly)`.
-    pub async fn refresh_diagnostics(&self, uri: Option<&str>, scope: Option<&str>, syntax_only: bool) {
+    pub async fn refresh_diagnostics(
+        &self,
+        uri: Option<&str>,
+        scope: Option<&str>,
+        syntax_only: bool,
+    ) {
         let target = uri.and_then(|u| Url::parse(u).ok());
         let refresh_all = match scope {
             Some("thisFile") => {
@@ -675,39 +854,6 @@ impl Lifecycle {
             self.publish_unit(&t).await;
         }
     }
-
-    // ── Invisible projects ──────────────────────────────────────────────────
-
-    /// `InvisibleProjectImporter.loadInvisibleProject`: a file under a root
-    /// folder that no project owns creates the folder's invisible project.
-    async fn load_invisible_project(&self, uri: &Url, roots: &[PathBuf]) {
-        let Ok(path) = uri.to_file_path() else { return };
-        if self.workspace().project_for_path(&path).is_some() {
-            return;
-        }
-        let Some(root) = roots.iter().find(|r| path.starts_with(r)) else { return };
-        let root = root.clone();
-        // `ProjectUtils.getVisibleProjects(rootPath)`: a root holding build
-        // projects gets no invisible project.
-        if self.workspace().projects.iter().any(|p| p.kind != ProjectKind::Invisible && p.root.starts_with(&root)) {
-            return;
-        }
-        let settings = crate::project::ImportSettings::jdtls_defaults();
-        let Some(project) = tokio::task::spawn_blocking(move || crate::project::invisible::import(&root, &settings)).await.ok().flatten() else {
-            return;
-        };
-        let files: Vec<Url> = project.java_files().iter().filter_map(|f| Url::from_file_path(f).ok()).collect();
-        {
-            let mut ws = self.dispatcher.workspace.write().unwrap_or_else(|e| e.into_inner());
-            if ws.project(&project.name).is_some() {
-                return;
-            }
-            ws.projects.push(project);
-        }
-        for f in files {
-            self.store.add_workspace_file(f);
-        }
-    }
 }
 
 /// `BuildWorkspaceStatus` ordinals.
@@ -717,7 +863,11 @@ pub const BUILD_CANCELLED: u32 = 3;
 
 /// The status of a build that left `errors` error markers.
 pub fn build_status(errors: usize) -> u32 {
-    if errors == 0 { BUILD_SUCCEED } else { BUILD_WITH_ERROR }
+    if errors == 0 {
+        BUILD_SUCCEED
+    } else {
+        BUILD_WITH_ERROR
+    }
 }
 
 /// `java.cleanup.actions` (or the deprecated `java.cleanup.actionsOnSave`)
@@ -725,14 +875,21 @@ pub fn build_status(errors: usize) -> u32 {
 fn rename_file_to_type_enabled() -> bool {
     let list = |key: &str| -> Vec<String> {
         crate::features::preferences::get(key)
-            .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()))
+            .and_then(|v| {
+                v.as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_owned))
+                        .collect()
+                })
+            })
             .unwrap_or_default()
     };
     let mut actions = list("java.cleanup.actions");
     if actions.is_empty() {
         actions = list("java.cleanup.actionsOnSave");
     }
-    crate::features::preferences::get_bool("java.saveActions.cleanup").unwrap_or(false) && actions.iter().any(|a| a == "renameFileToType")
+    crate::features::preferences::get_bool("java.saveActions.cleanup").unwrap_or(false)
+        && actions.iter().any(|a| a == "renameFileToType")
 }
 
 /// Public top-level types of `content` (`cu.getTypes()` with `public`).
@@ -741,27 +898,45 @@ fn public_top_level_type_count(content: &str) -> usize {
     if parser.set_language(&tree_sitter_java::language()).is_err() {
         return 0;
     }
-    let Some(tree) = parser.parse(content, None) else { return 0 };
+    let Some(tree) = parser.parse(content, None) else {
+        return 0;
+    };
     let root = tree.root_node();
     let mut cursor = root.walk();
     root.children(&mut cursor)
-        .filter(|n| n.kind().ends_with("_declaration") && n.kind() != "package_declaration" && n.kind() != "import_declaration")
+        .filter(|n| {
+            n.kind().ends_with("_declaration")
+                && n.kind() != "package_declaration"
+                && n.kind() != "import_declaration"
+        })
         .filter(|n| {
             let mut c = n.walk();
             let modifiers = n.children(&mut c).find(|ch| ch.kind() == "modifiers");
-            modifiers.is_some_and(|m| m.utf8_text(content.as_bytes()).unwrap_or("").split_whitespace().any(|w| w == "public"))
+            modifiers.is_some_and(|m| {
+                m.utf8_text(content.as_bytes())
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .any(|w| w == "public")
+            })
         })
         .count()
 }
 
 /// `BaseDiagnosticsHandler.matchesDiagnosticFilter` (`java.diagnostic.filter`).
 pub fn matches_diagnostic_filter(uri: &Url) -> bool {
-    let Some(filters) = crate::features::preferences::get("java.diagnostic.filter") else { return false };
-    let Some(filters) = filters.as_array() else { return false };
-    let Some(path) = crate::project::uri_to_path(uri) else { return false };
+    let Some(filters) = crate::features::preferences::get("java.diagnostic.filter") else {
+        return false;
+    };
+    let Some(filters) = filters.as_array() else {
+        return false;
+    };
+    let Some(path) = crate::project::uri_to_path(uri) else {
+        return false;
+    };
     let path = path.to_string_lossy().replace('\\', "/");
     filters.iter().filter_map(Value::as_str).any(|f| {
-        crate::project::detect::glob_to_regex(f).is_some_and(|re| re.is_match(&path) || re.is_match(path.trim_start_matches('/')))
+        crate::project::detect::glob_to_regex(f)
+            .is_some_and(|re| re.is_match(&path) || re.is_match(path.trim_start_matches('/')))
     })
 }
 
@@ -778,19 +953,34 @@ mod tests {
         assert!(!is_syntax_like_error(67_108_964, true));
         // Package mismatch only counts in the default project.
         assert!(is_syntax_like_error(PACKAGE_IS_NOT_EXPECTED_PACKAGE, true));
-        assert!(!is_syntax_like_error(PACKAGE_IS_NOT_EXPECTED_PACKAGE, false));
+        assert!(!is_syntax_like_error(
+            PACKAGE_IS_NOT_EXPECTED_PACKAGE,
+            false
+        ));
     }
 
     #[test]
     fn counts_public_top_level_types() {
-        assert_eq!(1, public_top_level_type_count("package a;\npublic interface Foo {}\nclass Bar {}\n"));
-        assert_eq!(3, public_top_level_type_count("public class A {}\npublic class B {}\npublic class C {}"));
+        assert_eq!(
+            1,
+            public_top_level_type_count("package a;\npublic interface Foo {}\nclass Bar {}\n")
+        );
+        assert_eq!(
+            3,
+            public_top_level_type_count("public class A {}\npublic class B {}\npublic class C {}")
+        );
         assert_eq!(0, public_top_level_type_count("class A {}"));
     }
 
     #[test]
     fn folder_packages() {
-        assert_eq!("a.b", folder_package(Path::new("/p/src"), Path::new("/p/src/a/b/X.java")));
-        assert_eq!("", folder_package(Path::new("/p/src"), Path::new("/p/src/X.java")));
+        assert_eq!(
+            "a.b",
+            folder_package(Path::new("/p/src"), Path::new("/p/src/a/b/X.java"))
+        );
+        assert_eq!(
+            "",
+            folder_package(Path::new("/p/src"), Path::new("/p/src/X.java"))
+        );
     }
 }

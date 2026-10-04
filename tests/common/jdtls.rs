@@ -42,7 +42,7 @@ pub struct LspClient {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<Value>,
-    next_id: u64,
+    pub(crate) next_id: u64,
     /// Notifications received while waiting for something else.
     pub notifications: Vec<Value>,
     /// Canned results for server→client requests, by method
@@ -58,7 +58,10 @@ fn read_message(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Value> {
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "closed"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "closed",
+            ));
         }
         let line = line.trim();
         if line.is_empty() {
@@ -70,7 +73,8 @@ fn read_message(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Value> {
     }
     let mut body = vec![0u8; len];
     reader.read_exact(&mut body)?;
-    serde_json::from_slice(&body).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    serde_json::from_slice(&body)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 impl LspClient {
@@ -88,23 +92,35 @@ impl LspClient {
     fn spawn_in_with_java_options(data_dir: Option<&Path>, java_options: &[String]) -> Self {
         let mut cmd = if is_oracle() {
             let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/oracle-jdtls.sh");
-            let data = data_dir
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| std::env::temp_dir().join(format!("jdtls-oracle-{}", std::process::id())));
+            let data = data_dir.map(Path::to_path_buf).unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("jdtls-oracle-{}", std::process::id()))
+            });
             let mut c = Command::new(script);
             c.arg(data);
             c
         } else {
-            Command::new(env!("CARGO_BIN_EXE_jdtls-rust"))
+            let mut c = Command::new(env!("CARGO_BIN_EXE_jdtls-rust"));
+            // Like jdt.ls: `-data <workspace>` is the server's metadata area.
+            if let Some(d) = data_dir {
+                c.arg("-data").arg(d.join("workspace"));
+            }
+            c
         };
         if is_oracle() && !java_options.is_empty() {
             let existing = std::env::var("JAVA_TOOL_OPTIONS").unwrap_or_default();
-            cmd.env("JAVA_TOOL_OPTIONS", format!("{existing} {}", java_options.join(" ")));
+            cmd.env(
+                "JAVA_TOOL_OPTIONS",
+                format!("{existing} {}", java_options.join(" ")),
+            );
         }
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(if std::env::var("JDTLS_TEST_STDERR").is_ok() { Stdio::inherit() } else { Stdio::null() })
+            .stderr(if std::env::var("JDTLS_TEST_STDERR").is_ok() {
+                Stdio::inherit()
+            } else {
+                Stdio::null()
+            })
             .spawn()
             .expect("spawn jdtls-rust");
         let stdin = child.stdin.take().unwrap();
@@ -117,7 +133,15 @@ impl LspClient {
                 }
             }
         });
-        Self { child, stdin, rx, next_id: 1, notifications: Vec::new(), request_results: BTreeMap::new(), server_requests: Vec::new() }
+        Self {
+            child,
+            stdin,
+            rx,
+            next_id: 1,
+            notifications: Vec::new(),
+            request_results: BTreeMap::new(),
+            server_requests: Vec::new(),
+        }
     }
 
     pub fn send(&mut self, msg: &Value) {
@@ -134,7 +158,10 @@ impl LspClient {
     fn answer_server_request(&mut self, msg: &Value) {
         self.server_requests.push(msg.clone());
         let id = msg["id"].clone();
-        let canned = msg["method"].as_str().and_then(|m| self.request_results.get(m)).cloned();
+        let canned = msg["method"]
+            .as_str()
+            .and_then(|m| self.request_results.get(m))
+            .cloned();
         let result = match msg["method"].as_str() {
             _ if canned.is_some() => canned.unwrap(),
             Some("workspace/configuration") => {
@@ -146,7 +173,11 @@ impl LspClient {
         self.send(&json!({ "jsonrpc": "2.0", "id": id, "result": result }));
     }
 
-    pub fn recv_until(&mut self, timeout: Duration, mut pred: impl FnMut(&Value) -> bool) -> Option<Value> {
+    pub fn recv_until(
+        &mut self,
+        timeout: Duration,
+        mut pred: impl FnMut(&Value) -> bool,
+    ) -> Option<Value> {
         // Check buffered notifications first.
         if let Some(i) = self.notifications.iter().position(|m| pred(m)) {
             return Some(self.notifications.remove(i));
@@ -185,8 +216,10 @@ impl LspClient {
         let id = self.next_id;
         self.next_id += 1;
         self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
-        self.recv_until(Duration::from_secs(90), |m| m["id"] == json!(id) && m.get("method").is_none())
-            .unwrap_or_else(|| panic!("timed out waiting for {method}"))
+        self.recv_until(Duration::from_secs(90), |m| {
+            m["id"] == json!(id) && m.get("method").is_none()
+        })
+        .unwrap_or_else(|| panic!("timed out waiting for {method}"))
     }
 
     /// Wait until no message has arrived for `quiet` (at most `max`),
@@ -198,7 +231,9 @@ impl LspClient {
             if remaining.is_zero() {
                 return;
             }
-            let Ok(msg) = self.rx.recv_timeout(quiet.min(remaining)) else { return };
+            let Ok(msg) = self.rx.recv_timeout(quiet.min(remaining)) else {
+                return;
+            };
             if msg.get("method").is_some() && msg.get("id").is_some() {
                 self.answer_server_request(&msg);
             } else if msg.get("method").is_some() {
@@ -209,14 +244,18 @@ impl LspClient {
 
     /// Remove and return the buffered notifications named `method`.
     pub fn take_notifications(&mut self, method: &str) -> Vec<Value> {
-        let (taken, kept) = std::mem::take(&mut self.notifications).into_iter().partition(|m| m["method"] == method);
+        let (taken, kept) = std::mem::take(&mut self.notifications)
+            .into_iter()
+            .partition(|m| m["method"] == method);
         self.notifications = kept;
         taken
     }
 
     /// Remove and return the recorded server→client requests named `method`.
     pub fn take_server_requests(&mut self, method: &str) -> Vec<Value> {
-        let (taken, kept) = std::mem::take(&mut self.server_requests).into_iter().partition(|m| m["method"] == method);
+        let (taken, kept) = std::mem::take(&mut self.server_requests)
+            .into_iter()
+            .partition(|m| m["method"] == method);
         self.server_requests = kept;
         taken
     }
@@ -237,8 +276,8 @@ impl Drop for LspClient {
 pub struct Workspace {
     _tmp: tempfile::TempDir,
     pub dir: PathBuf,
-    roots: Vec<PathBuf>,
-    client: Option<LspClient>,
+    pub(crate) roots: Vec<PathBuf>,
+    pub(crate) client: Option<LspClient>,
     pub settings: Value,
     pub init_options: Value,
     pub capabilities: Value,
@@ -251,7 +290,10 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new() -> Self {
-        let tmp = tempfile::Builder::new().prefix("jdtls-ws").tempdir().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("jdtls-ws")
+            .tempdir()
+            .unwrap();
         let dir = tmp.path().canonicalize().unwrap().join("workingProjects");
         std::fs::create_dir_all(&dir).unwrap();
         Self {
@@ -285,7 +327,7 @@ impl Workspace {
         self
     }
 
-    fn add_root(&mut self, root: PathBuf) {
+    pub(crate) fn add_root(&mut self, root: PathBuf) {
         if self.roots.contains(&root) {
             return;
         }
@@ -333,7 +375,10 @@ impl Workspace {
         std::fs::create_dir_all(&settings).unwrap();
         let mut text = String::from("eclipse.preferences.version=1\n");
         for (k, v) in options {
-            text.push_str(&format!("{k}={}\n", v.replace('\\', "\\\\").replace('\n', "\\n")));
+            text.push_str(&format!(
+                "{k}={}\n",
+                v.replace('\\', "\\\\").replace('\n', "\\n")
+            ));
         }
         let prefs = settings.join("org.eclipse.jdt.core.prefs");
         std::fs::write(&prefs, text).unwrap();
@@ -344,7 +389,14 @@ impl Workspace {
 
     /// `IPackageFragment.createCompilationUnit`: write a source file into
     /// `<project>/<source folder>/<package path>/<name>` and tell the server.
-    pub fn create_cu(&mut self, project_root: &Path, src: &str, package: &str, name: &str, content: &str) -> String {
+    pub fn create_cu(
+        &mut self,
+        project_root: &Path,
+        src: &str,
+        package: &str,
+        name: &str,
+        content: &str,
+    ) -> String {
         let mut path = project_root.join(src);
         for seg in package.split('.').filter(|s| !s.is_empty()) {
             path.push(seg);
@@ -363,21 +415,29 @@ impl Workspace {
     fn file_changed(&mut self, path: &Path, typ: u32) {
         let uri = Url::from_file_path(path).unwrap().to_string();
         let c = self.client.as_mut().unwrap();
-        c.notify("workspace/didChangeWatchedFiles", json!({ "changes": [{ "uri": uri, "type": typ }] }));
+        c.notify(
+            "workspace/didChangeWatchedFiles",
+            json!({ "changes": [{ "uri": uri, "type": typ }] }),
+        );
         self.wait_idle();
     }
 
     /// Round-trip a cheap request so preceding notifications are processed.
     pub fn wait_idle(&mut self) {
-        let c = self.client.as_mut().unwrap();
-        c.request("workspace/executeCommand", json!({ "command": "java.project.getAll", "arguments": [] }));
+        let c = self.client();
+        c.request(
+            "workspace/executeCommand",
+            json!({ "command": "java.project.getAll", "arguments": [] }),
+        );
     }
 
     /// Start the server (if needed) and return the client.
     pub fn client(&mut self) -> &mut LspClient {
         if self.client.is_none() {
             let mut c = LspClient::spawn_in_with_java_options(
-                Some(&self.dir.parent().unwrap().join("oracle-data")), &self.oracle_java_options);
+                Some(&self.dir.parent().unwrap().join("oracle-data")),
+                &self.oracle_java_options,
+            );
             let folders: Vec<Value> = self
                 .roots
                 .iter()
@@ -388,6 +448,17 @@ impl Workspace {
                 init["javaHome"] = json!(java_home());
             }
             init["settings"] = self.settings.clone();
+            // vscode-java sends the workspace folders in the initialization
+            // options too; jdt.ls takes its root paths from there
+            // (`BaseInitHandler`), falling back to `rootUri`.
+            if init.get("workspaceFolders").is_none() {
+                let uris: Vec<Value> = self
+                    .roots
+                    .iter()
+                    .map(|r| json!(Url::from_file_path(r).unwrap().to_string()))
+                    .collect();
+                init["workspaceFolders"] = Value::Array(uris);
+            }
             self.initialize_result = c.request(
                 "initialize",
                 json!({
@@ -464,7 +535,11 @@ impl Workspace {
         let matches = |s: &Value, exact: bool| {
             let name = s["name"].as_str().unwrap_or("");
             let cont = s["containerName"].as_str().unwrap_or("");
-            if exact { name == simple && cont == container } else { name.eq_ignore_ascii_case(simple) && cont.eq_ignore_ascii_case(container) }
+            if exact {
+                name == simple && cont == container
+            } else {
+                name.eq_ignore_ascii_case(simple) && cont.eq_ignore_ascii_case(container)
+            }
         };
         let root = self
             .roots
@@ -481,7 +556,11 @@ impl Workspace {
             }
         };
         for exact in [true, false] {
-            if let Some(s) = symbols.iter().find(|s| matches(s, exact) && in_project(s)).or_else(|| symbols.iter().find(|s| matches(s, exact))) {
+            if let Some(s) = symbols
+                .iter()
+                .find(|s| matches(s, exact) && in_project(s))
+                .or_else(|| symbols.iter().find(|s| matches(s, exact)))
+            {
                 return s["location"]["uri"].as_str().map(str::to_owned);
             }
         }
@@ -493,7 +572,10 @@ impl Workspace {
     pub fn update_settings(&mut self, settings: Value) {
         self.settings = settings.clone();
         if self.client.is_some() {
-            self.client().notify("workspace/didChangeConfiguration", json!({ "settings": settings }));
+            self.client().notify(
+                "workspace/didChangeConfiguration",
+                json!({ "settings": settings }),
+            );
             self.wait_idle();
         }
     }
@@ -527,7 +609,8 @@ impl Workspace {
     // ── Documents ────────────────────────────────────────────────────────────
 
     pub fn open(&mut self, uri: &str) {
-        let text = std::fs::read_to_string(Url::parse(uri).unwrap().to_file_path().unwrap()).unwrap();
+        let text =
+            std::fs::read_to_string(Url::parse(uri).unwrap().to_file_path().unwrap()).unwrap();
         self.open_with(uri, &text);
     }
 
@@ -550,13 +633,18 @@ impl Workspace {
     }
 
     pub fn close(&mut self, uri: &str) {
-        self.client().notify("textDocument/didClose", json!({ "textDocument": { "uri": uri } }));
+        self.client().notify(
+            "textDocument/didClose",
+            json!({ "textDocument": { "uri": uri } }),
+        );
     }
 
     /// Latest `publishDiagnostics` for `uri` after a fresh build.
     pub fn diagnostics(&mut self, uri: &str) -> Vec<Value> {
         let c = self.client();
-        c.notifications.retain(|m| !(m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri));
+        c.notifications.retain(|m| {
+            !(m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri)
+        });
         // jdt.ls `DiagnosticsCommand.refreshDiagnostics(uri, scope, syntaxOnly)`.
         c.request(
             "workspace/executeCommand",
@@ -567,7 +655,10 @@ impl Workspace {
                 m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri
             })
             .unwrap_or_else(|| panic!("no diagnostics for {uri}"));
-        msg["params"]["diagnostics"].as_array().cloned().unwrap_or_default()
+        msg["params"]["diagnostics"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Wait for the server to go quiet (no message for `QUIET`), then return
@@ -586,18 +677,27 @@ impl Workspace {
     pub fn published_diagnostics_min(&mut self, min: usize) -> Vec<Value> {
         let is_doc_report = |m: &Value| {
             m["method"] == "textDocument/publishDiagnostics"
-                && m["params"]["uri"].as_str().is_some_and(|u| u.ends_with(".java"))
+                && m["params"]["uri"]
+                    .as_str()
+                    .is_some_and(|u| u.ends_with(".java"))
         };
         let c = self.client();
         let deadline = Instant::now() + Duration::from_secs(60);
-        while c.notifications.iter().filter(|m| is_doc_report(m)).count() < min && Instant::now() < deadline {
+        while c.notifications.iter().filter(|m| is_doc_report(m)).count() < min
+            && Instant::now() < deadline
+        {
             c.settle(Duration::from_millis(200), Duration::from_millis(200));
         }
         c.settle(Duration::from_millis(3000), Duration::from_secs(60));
-        let (taken, kept): (Vec<Value>, Vec<Value>) =
-            std::mem::take(&mut c.notifications).into_iter().partition(|m| m["method"] == "textDocument/publishDiagnostics");
+        let (taken, kept): (Vec<Value>, Vec<Value>) = std::mem::take(&mut c.notifications)
+            .into_iter()
+            .partition(|m| m["method"] == "textDocument/publishDiagnostics");
         c.notifications = kept;
-        taken.into_iter().filter(|m| is_doc_report(m)).map(|m| m["params"].clone()).collect()
+        taken
+            .into_iter()
+            .filter(|m| is_doc_report(m))
+            .map(|m| m["params"].clone())
+            .collect()
     }
 
     pub fn save(&mut self, uri: &str, text: Option<&str>) {
@@ -711,7 +811,10 @@ pub fn copy_dir(from: &Path, to: &Path) {
         return;
     }
     std::fs::create_dir_all(to).unwrap();
-    for e in std::fs::read_dir(from).unwrap_or_else(|_| panic!("fixture {} missing", from.display())).flatten() {
+    for e in std::fs::read_dir(from)
+        .unwrap_or_else(|_| panic!("fixture {} missing", from.display()))
+        .flatten()
+    {
         let p = e.path();
         let target = to.join(e.file_name());
         if p.is_dir() {
@@ -726,7 +829,9 @@ fn walk_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -743,7 +848,9 @@ fn walk_dirs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -778,7 +885,10 @@ fn project_name_of(dir: &Path) -> Option<String> {
             }
         }
     }
-    if dir.join("build.gradle").exists() || dir.join("settings.gradle").exists() || dir.join("build.gradle.kts").exists() {
+    if dir.join("build.gradle").exists()
+        || dir.join("settings.gradle").exists()
+        || dir.join("build.gradle.kts").exists()
+    {
         return dir.file_name().map(|n| n.to_string_lossy().into_owned());
     }
     None
@@ -807,7 +917,9 @@ pub fn apply_edits(text: &str, edits: &[Value]) -> String {
     let to_offset = |p: &Value| -> usize {
         let line = p["line"].as_u64().unwrap() as usize;
         let ch = p["character"].as_u64().unwrap() as usize;
-        let Some(&start) = line_starts.get(line) else { return text.len() };
+        let Some(&start) = line_starts.get(line) else {
+            return text.len();
+        };
         let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
         let mut units = 0;
         for (i, c) in text[start..line_end].char_indices() {
@@ -820,7 +932,13 @@ pub fn apply_edits(text: &str, edits: &[Value]) -> String {
     };
     let mut spans: Vec<(usize, usize, String)> = edits
         .iter()
-        .map(|e| (to_offset(&e["range"]["start"]), to_offset(&e["range"]["end"]), e["newText"].as_str().unwrap_or("").to_owned()))
+        .map(|e| {
+            (
+                to_offset(&e["range"]["start"]),
+                to_offset(&e["range"]["end"]),
+                e["newText"].as_str().unwrap_or("").to_owned(),
+            )
+        })
         .collect();
     // Stable: equal starts keep request order.
     let mut indexed: Vec<(usize, (usize, usize, String))> = spans.drain(..).enumerate().collect();
@@ -1393,5 +1511,8 @@ pub fn test_default_options() -> BTreeMap<String, String> {
         ("org.eclipse.jdt.core.formatter.wrap_before_switch_case_arrow_operator", "false"),
         ("org.eclipse.jdt.core.formatter.wrap_outer_expressions_when_nested", "true"),
     ];
-    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }

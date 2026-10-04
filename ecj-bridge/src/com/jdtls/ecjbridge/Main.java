@@ -220,9 +220,12 @@ public class Main {
         BridgeOptions.setCurrent(req.options);
         return switch (req.method) {
             case "compile" -> {
+                Map<String, String> generated = new LinkedHashMap<>();
                 List<BridgeDiagnostic> diags = compiler.compile(
-                    req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uris, req.expectedPackages);
-                yield new DiagnosticsResponse(req.id, diags);
+                    req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uris, req.expectedPackages, req.collectGeneratedSources ? generated : null);
+                DiagnosticsResponse response = new DiagnosticsResponse(req.id, diags);
+                response.generatedSources = generated;
+                yield response;
             }
             case "complete" -> {
                 List<BridgeCompletion> items = completer.complete(

@@ -6,10 +6,10 @@ mod document_store;
 mod embedded_jar;
 mod features;
 mod handlers;
-mod ordering;
 mod index;
 mod javadoc;
 mod lenient_uri;
+mod ordering;
 mod project;
 mod rewrite;
 mod semantic_ast;
@@ -17,7 +17,7 @@ mod server;
 
 use server::JavaLanguageServer;
 use tower_lsp::{LspService, Server};
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() {
@@ -27,16 +27,39 @@ async fn main() {
         .with_env_filter(EnvFilter::from_env("JDTLS_LOG"))
         .init();
 
+    // jdt.ls launcher arguments: `-data <workspace>`.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "-data") {
+        if let Some(dir) = args.get(i + 1) {
+            let _ = config::DATA_DIR.set(std::path::PathBuf::from(dir));
+        }
+    }
+
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
     let (service, socket) = LspService::build(JavaLanguageServer::new)
-        .custom_method("java/classFileContents", JavaLanguageServer::class_file_contents)
+        .custom_method(
+            "java/classFileContents",
+            JavaLanguageServer::class_file_contents,
+        )
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
         .custom_method("java/buildWorkspace", JavaLanguageServer::build_workspace)
         .custom_method("java/buildProjects", JavaLanguageServer::build_projects)
+        .custom_method(
+            "java/projectConfigurationUpdate",
+            JavaLanguageServer::project_configuration_update,
+        )
+        .custom_method(
+            "java/projectConfigurationsUpdate",
+            JavaLanguageServer::project_configurations_update,
+        )
         .finish();
     Server::new(stdin, stdout, socket)
-        .serve(ordering::Ordered::new(lenient_uri::LenientUri::new(features::init::InitializeResultRewrite::new(features::completion::CompletionService::new(service)))))
+        .serve(ordering::Ordered::new(lenient_uri::LenientUri::new(
+            features::init::InitializeResultRewrite::new(
+                features::completion::CompletionService::new(service),
+            ),
+        )))
         .await;
 }

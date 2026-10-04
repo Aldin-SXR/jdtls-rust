@@ -4,6 +4,7 @@
 pub mod call_hierarchy;
 pub mod client_caps;
 pub mod code_lens;
+pub mod completion;
 pub mod document_symbol;
 pub mod dom;
 pub mod file_events;
@@ -18,16 +19,16 @@ pub mod java_model;
 pub mod lifecycle;
 pub mod navigation;
 pub mod preferences;
-pub mod completion;
+pub mod project_commands;
 pub mod rename;
 pub mod scanner;
 pub mod selection_range;
 pub mod semantic;
 pub mod semantic_tokens;
 pub mod signature_help;
+mod ts_dump;
 pub mod type_hierarchy;
 pub mod workspace_symbols;
-mod ts_dump;
 
 use tower_lsp::lsp_types::Url;
 
@@ -52,7 +53,10 @@ pub fn source_text(store: &DocumentStore, uri: &Url) -> Option<String> {
 /// Editor text for a compilation unit or a read-only class-file document.
 /// Keep binary source out of the document store: it must not be compiled as
 /// another workspace compilation unit.
-pub async fn document_text(d: &crate::analysis::dispatcher::Dispatcher, uri: &Url) -> Option<String> {
+pub async fn document_text(
+    d: &crate::analysis::dispatcher::Dispatcher,
+    uri: &Url,
+) -> Option<String> {
     if crate::classfile::is_class_file_uri(uri) {
         let text = navigation::class_file_contents(d, uri.as_str()).await;
         return (!text.is_empty()).then_some(text);
