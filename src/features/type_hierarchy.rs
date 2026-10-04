@@ -191,7 +191,20 @@ fn entry_item(e: HierarchyEntry, target: Option<&Elem>, parents: bool, ws: &Work
 // ─── legacy commands ─────────────────────────────────────────────────────────
 
 /// `java.navigate.openTypeHierarchy [TextDocumentPositionParams, direction, resolve]`.
+/// jdt.ls reads command arguments with `JSONUtility.toModel`, which accepts
+/// JSON values or JSON-encoded strings (vscode-java sends `JSON.stringify`
+/// for each argument).
+fn decode_args(args: &[Value]) -> Vec<Value> {
+    args.iter()
+        .map(|a| match a {
+            Value::String(s) => serde_json::from_str(s).unwrap_or_else(|_| a.clone()),
+            other => other.clone(),
+        })
+        .collect()
+}
+
 pub async fn open_type_hierarchy(d: &Dispatcher, args: &[Value]) -> Option<Value> {
+    let args = &decode_args(args)[..];
     let params = args.first()?;
     let uri = Url::parse(params.pointer("/textDocument/uri")?.as_str()?).ok()?;
     let pos: Position = serde_json::from_value(params.get("position")?.clone()).ok()?;
@@ -207,6 +220,7 @@ pub async fn open_type_hierarchy(d: &Dispatcher, args: &[Value]) -> Option<Value
 
 /// `java.navigate.resolveTypeHierarchy [TypeHierarchyItem, direction, resolve]`.
 pub async fn resolve_type_hierarchy(d: &Dispatcher, args: &[Value]) -> Option<Value> {
+    let args = &decode_args(args)[..];
     let item = args.first()?;
     item.get("range")?;
     item.get("uri")?.as_str()?;
