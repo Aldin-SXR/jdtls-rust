@@ -443,7 +443,10 @@ fn to_signature_information(p: &SigCandidate, settings: Settings) -> SignatureIn
         label.push_str(p.return_type.as_deref().unwrap_or("void"));
     }
     let documentation = if settings.description {
-        p.javadoc.as_deref().map(|doc| Documentation::String(javadoc_plain_text(doc)))
+        p.javadoc
+            .as_deref()
+            .and_then(crate::javadoc::comment_reader::plain_text_content)
+            .map(Documentation::String)
     } else {
         None
     };
@@ -772,139 +775,12 @@ fn from_heuristics(
     help
 }
 
-// ── Javadoc → plain text (`JavadocContentAccess2.getPlainTextContent`) ─────
-
-/// Plain text of a Javadoc comment: the description with inline tags
-/// resolved, HTML stripped and whitespace collapsed (what jsoup's
-/// `HtmlToPlainText` makes of jdt.ls's HTML rendering), followed by the
-/// block-tag sections.
-pub fn javadoc_plain_text(raw: &str) -> String {
-    let body = raw.trim_start_matches("/**");
-    let body = body.strip_suffix("*/").unwrap_or(body);
-    let mut lines = Vec::new();
-    for (i, line) in body.split('\n').enumerate() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        let stripped = if i == 0 {
-            line
-        } else {
-            let t = line.trim_start();
-            t.strip_prefix('*').unwrap_or(t)
-        };
-        lines.push(stripped.to_owned());
-    }
-    let mut description_lines: Vec<&str> = Vec::new();
-    let mut tags: Vec<(String, String)> = Vec::new();
-    for line in &lines {
-        let t = line.trim_start();
-        if t.starts_with('@') {
-            let (tag, rest) = t.split_once(char::is_whitespace).unwrap_or((t, ""));
-            tags.push((tag.to_owned(), rest.to_owned()));
-        } else if let Some(last) = tags.last_mut() {
-            last.1.push('\n');
-            last.1.push_str(line);
-        } else {
-            description_lines.push(line);
-        }
-    }
-    let description = description_lines.join("\n");
-    let mut out = collapse_whitespace(&html_to_text(&inline_tags(&description)));
-    let mut section = |title: &str, items: Vec<String>| {
-        if items.is_empty() {
-            return;
-        }
-        out.push_str(&format!("\n{title}\n"));
-        for item in items {
-            out.push_str(&format!("  {}\n", collapse_whitespace(&html_to_text(&inline_tags(&item))).trim()));
-        }
-    };
-    let collect = |names: &[&str]| -> Vec<String> {
-        tags.iter().filter(|(t, _)| names.contains(&t.as_str())).map(|(_, v)| v.clone()).collect()
-    };
-    section("Parameters:", collect(&["@param"]));
-    section("Returns:", collect(&["@return"]));
-    section("Throws:", collect(&["@throws", "@exception"]));
-    section("See Also:", collect(&["@see"]));
-    out
-}
-
-fn inline_tags(s: &str) -> String {
-    let mut out = String::new();
-    let mut rest = s;
-    while let Some(start) = rest.find("{@") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let Some(end) = after.find('}') else {
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let inner = &after[..end];
-        let (tag, arg) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
-        let arg = arg.trim();
-        let rendered = match tag {
-            "link" | "linkplain" => {
-                let (target, label) = arg.split_once(char::is_whitespace).unwrap_or((arg, ""));
-                if label.trim().is_empty() {
-                    target.trim_start_matches('#').replace('#', ".")
-                } else {
-                    label.trim().to_owned()
-                }
-            }
-            _ => arg.to_owned(),
-        };
-        out.push_str(&rendered);
-        rest = &after[end + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn html_to_text(s: &str) -> String {
-    let mut out = String::new();
-    let mut in_tag = false;
-    for c in s.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' if in_tag => {
-                in_tag = false;
-                out.push(' ');
-            }
-            _ if !in_tag => out.push(c),
-            _ => {}
-        }
-    }
-    out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&nbsp;", " ").replace("&amp;", "&")
-}
-
-fn collapse_whitespace(s: &str) -> String {
-    let mut out = String::new();
-    let mut ws = false;
-    for c in s.chars() {
-        if c.is_whitespace() {
-            if !ws {
-                out.push(' ');
-            }
-            ws = true;
-        } else {
-            out.push(c);
-            ws = false;
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn u(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
-    }
-
-    #[test]
-    fn javadoc_plain() {
-        assert_eq!(javadoc_plain_text("/**\n\t * Test\n\t */"), " Test ");
-        assert_eq!(javadoc_plain_text("/** This is a method */"), " This is a method ");
-        assert_eq!(javadoc_plain_text("/** hi */").trim(), "hi");
     }
 
     #[test]

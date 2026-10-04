@@ -5,8 +5,9 @@ mod document_store;
 mod embedded_jar;
 mod features;
 mod handlers;
-mod lenient_uri;
 mod index;
+mod javadoc;
+mod lenient_uri;
 mod project;
 mod server;
 

@@ -21,6 +21,13 @@ public class InMemoryCompilationUnit implements ICompilationUnit {
         this.fileName = uriToFileName(uri);
     }
 
+    /** A unit with an explicit file name (e.g. the attached source of a class file). */
+    public InMemoryCompilationUnit(String uri, String source, String fileName) {
+        this.uri = uri;
+        this.source = source;
+        this.fileName = fileName.toCharArray();
+    }
+
     @Override
     public char[] getContents() {
         return source.toCharArray();

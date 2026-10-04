@@ -283,16 +283,37 @@ impl Dispatcher {
         }).await
     }
 
-    pub async fn hover(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
-        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
-        self.send(BridgeRequest::Hover {
+    /// Element data for hover at a UTF-16 position (see `features::hover`).
+    /// `standalone` is the disk content of a file the store does not know
+    /// (jdt.ls resolves such files into the default project).
+    pub async fn hover_info(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        standalone: Option<String>,
+        class_file: Option<(crate::classfile::ClassFileDesc, String)>,
+        source_attachments: HashMap<String, String>,
+    ) -> Result<BridgeResponse> {
+        let RequestContext { mut files, classpath, source_level, options } = match &class_file {
+            Some((_, project)) => self.context_for_project_name(project).await,
+            None => self.context_for(Some(uri)).await,
+        };
+        let class_file = class_file.map(|(d, _)| d);
+        if let Some(content) = standalone {
+            files.insert(uri.to_string(), content);
+        }
+        self.send(BridgeRequest::HoverInfo {
             id: next_id(),
             files,
             classpath,
             source_level,
             options,
             uri: uri.to_string(),
-            offset,
+            line,
+            character,
+            class_file,
+            source_attachments,
         }).await
     }
 

@@ -103,7 +103,7 @@ fn project_roots(ws: &Workspace) -> Vec<(String, PathBuf)> {
 }
 
 /// `JDTUtils.resolveClassFile`: the bridge descriptor of a class-file URI.
-fn class_file_target(ws: &Workspace, uri: &str) -> Option<(ClassFileDesc, ClassFileRef)> {
+pub fn class_file_target(ws: &Workspace, uri: &str) -> Option<(ClassFileDesc, ClassFileRef)> {
     let r = ClassFileRef::parse(uri)?;
     let project_root = ws.project(&r.project).map(|p| p.root.clone());
     let root = classfile::resolve_root_path(&r.root_path, project_root.as_deref(), &project_roots(ws));
@@ -133,7 +133,7 @@ async fn resolve_target(d: &Dispatcher, uri: &Url) -> Option<Target> {
 }
 
 /// Library path → source attachment, for every imported project.
-fn source_attachments(ws: &Workspace) -> HashMap<String, String> {
+pub fn source_attachments(ws: &Workspace) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for p in &ws.projects {
         for lib in &p.libraries {

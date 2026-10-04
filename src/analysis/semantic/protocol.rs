@@ -42,7 +42,8 @@ pub enum BridgeRequest {
         options: BTreeMap<String, String>,
         uri: String,
     },
-    Hover {
+    /// Element data for hover (`HoverService.hoverInfo`).
+    HoverInfo {
         id: u64,
         files: HashMap<String, String>,
         classpath: Vec<String>,
@@ -50,7 +51,14 @@ pub enum BridgeRequest {
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         options: BTreeMap<String, String>,
         uri: String,
-        offset: usize,
+        /// 0-based line / UTF-16 column (Java string indexing).
+        line: u32,
+        character: u32,
+        /// Set when hovering in a class file (`jdt://` URI).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_file: Option<crate::classfile::ClassFileDesc>,
+        /// Library path → source attachment path.
+        source_attachments: HashMap<String, String>,
     },
     Navigate {
         id: u64,
@@ -298,6 +306,21 @@ pub enum BridgeRequest {
         options: BTreeMap<String, String>,
         query: serde_json::Value,
     },
+    /// Text of one entry of a jar (attached Javadoc HTML); answers
+    /// `ClassFileContents`.
+    ReadJarEntry {
+        id: u64,
+        archive: String,
+        entry: String,
+    },
+    /// Copy one entry of a jar to a file (`JavaDocHTMLPathHandler` image
+    /// extraction); answers `Ok`, or `Error` when the entry is missing.
+    ExtractJarEntry {
+        id: u64,
+        archive: String,
+        entry: String,
+        output: String,
+    },
     Shutdown { id: u64 },
 }
 
@@ -331,9 +354,12 @@ pub enum BridgeResponse {
         id: u64,
         items: Vec<BridgeCompletion>,
     },
-    Hover {
+    HoverInfo {
         id: u64,
-        contents: String,
+        /// `ok`, `none` (no element), `unresolved` (unresolved type), `noUnit`.
+        status: String,
+        #[serde(default)]
+        element: Option<serde_json::Value>,
     },
     Locations {
         id: u64,
@@ -457,7 +483,7 @@ impl BridgeResponse {
         match self {
             BridgeResponse::Diagnostics { id, .. }
             | BridgeResponse::Completions { id, .. }
-            | BridgeResponse::Hover { id, .. }
+            | BridgeResponse::HoverInfo { id, .. }
             | BridgeResponse::Locations { id, .. }
             | BridgeResponse::CodeActions { id, .. }
             | BridgeResponse::SignatureHelpData { id, .. }

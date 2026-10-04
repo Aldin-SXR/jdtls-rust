@@ -729,6 +729,20 @@ fn javac_bin() -> String {
 }
 
 /// Unique `file://` URI for a test (avoids collisions between parallel tests).
+/// All text of a jdt.ls hover: `contents` is a MarkedString, or a list of
+/// MarkedStrings (`{ language, value }` or plain strings).
+fn hover_text(hover: &Value) -> String {
+    fn text(v: &Value) -> String {
+        match v {
+            Value::String(s) => s.clone(),
+            Value::Array(a) => a.iter().map(text).collect::<Vec<_>>().join("\n"),
+            Value::Object(o) => o.get("value").and_then(Value::as_str).unwrap_or("").to_owned(),
+            _ => String::new(),
+        }
+    }
+    text(&hover["contents"])
+}
+
 fn test_uri(name: &str) -> String {
     format!("file:///tmp/jdtls-test-{name}.java")
 }
@@ -1709,10 +1723,7 @@ fn ecj_hover_method_signature() {
 
     // Line 1: "    public int foo(String s) { return 0; }" — cursor on "foo" (col 15)
     let result = c.hover(&uri, 1, 15);
-    let text = result["contents"]["value"]
-        .as_str()
-        .or_else(|| result["contents"].as_str())
-        .unwrap_or("");
+    let text = &hover_text(&result);
     assert!(
         text.contains("foo") && text.contains("String"),
         "hover should contain method signature with 'foo' and 'String', got: {text:?}"
@@ -1742,10 +1753,7 @@ fn ecj_hover_field_type() {
 
     // Line 1: "    private String myField = ..." — cursor on "myField" (col 19)
     let result = c.hover(&uri, 1, 19);
-    let text = result["contents"]["value"]
-        .as_str()
-        .or_else(|| result["contents"].as_str())
-        .unwrap_or("");
+    let text = &hover_text(&result);
     assert!(
         text.contains("myField") || text.contains("String"),
         "hover should mention field name or type, got: {text:?}"
@@ -3891,10 +3899,7 @@ fn ecj_hover_after_astral_char_uses_utf16_positions() {
 
     let prefix = "        String emoji = \"😀\"; ";
     let hover = c.hover(&uri, 2, utf16_len(prefix));
-    let value = hover["contents"]["value"]
-        .as_str()
-        .or_else(|| hover["contents"].as_str())
-        .unwrap_or("");
+    let value = &hover_text(&hover);
     assert!(
         value.contains("Math") || value.contains("abs"),
         "expected hover on Math.abs after astral char, got: {hover:?}"
