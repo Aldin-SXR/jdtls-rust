@@ -1,6 +1,7 @@
 mod analysis;
 mod classfile;
 mod config;
+mod correction;
 mod document_store;
 mod embedded_jar;
 mod features;

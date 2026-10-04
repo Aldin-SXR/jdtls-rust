@@ -389,16 +389,17 @@ impl LanguageServer for JavaLanguageServer {
                 document_highlight_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                // `CodeActionHandler.createOptions`.
                 code_action_provider: Some(CodeActionProviderCapability::Options(
                     CodeActionOptions {
-                        code_action_kinds: Some(vec![
-                            CodeActionKind::QUICKFIX,
-                            CodeActionKind::from("quickassist"),
-                            CodeActionKind::REFACTOR,
-                            CodeActionKind::SOURCE,
-                            CodeActionKind::from("source.generate.accessors"),
-                        ]),
-                        resolve_provider: Some(false),
+                        code_action_kinds: Some(
+                            ["quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports"]
+                                .into_iter()
+                                .filter(|k| crate::features::client_caps::supported_code_action_kind(k))
+                                .map(CodeActionKind::from)
+                                .collect(),
+                        ),
+                        resolve_provider: Some(crate::features::client_caps::resolve_code_action()),
                         work_done_progress_options: Default::default(),
                     },
                 )),
@@ -1131,34 +1132,38 @@ impl LanguageServer for JavaLanguageServer {
             .map(|d| to_bridge_diag(uri, d))
             .collect();
 
-        let mut lsp_actions: Vec<CodeActionOrCommand> = Vec::new();
+        // jdt.ls `CodeActionHandler` (Rust port).
+        let env = self.format_env().await;
+        let cenv = crate::correction::edit::Env { dispatcher: &self.dispatcher, format: &env };
+        let mut lsp_actions = crate::correction::handler::code_actions(&cenv, &params).await;
 
-        if let Ok(BridgeResponse::CodeActions { actions, .. }) =
-            self.dispatcher.code_action(uri, bridge_range, bridge_diags).await
-        {
-            lsp_actions.extend(
-                ca_conv::to_lsp(&actions)
-                    .into_iter()
-                    .map(CodeActionOrCommand::CodeAction),
-            );
+        // Corrections not ported to Rust yet still come from the bridge.
+        if crate::features::client_caps::supported_code_action_kind(CodeActionKind::QUICKFIX.as_str()) {
+            if let Ok(BridgeResponse::CodeActions { actions, .. }) =
+                self.dispatcher.code_action(uri, bridge_range, bridge_diags).await
+            {
+                let titles: std::collections::HashSet<String> = lsp_actions
+                    .iter()
+                    .map(|a| match a {
+                        CodeActionOrCommand::CodeAction(c) => c.title.clone(),
+                        CodeActionOrCommand::Command(c) => c.title.clone(),
+                    })
+                    .collect();
+                lsp_actions.extend(
+                    ca_conv::to_lsp(&actions)
+                        .into_iter()
+                        .filter(|a| !titles.contains(&a.title) && !crate::correction::handler::is_superseded_legacy_action(&a.title))
+                        .map(CodeActionOrCommand::CodeAction),
+                );
+            }
         }
+        Ok(Some(lsp_actions))
+    }
 
-        // Organize Imports — always offered (ECJ code action also includes it, but this
-        // ensures it appears even when the ECJ organizeImports call returns no edits).
-        if let Ok(BridgeResponse::WorkspaceEdit { changes, .. }) =
-            self.dispatcher.organize_imports(uri).await
-        {
-            let org_edit = ca_conv::workspace_edit_from_bridge(&changes);
-            lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: "Organize Imports".to_owned(),
-                kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
-                edit: Some(org_edit),
-                is_preferred: Some(true),
-                ..Default::default()
-            }));
-        }
-
-        Ok(if lsp_actions.is_empty() { None } else { Some(lsp_actions) })
+    async fn code_action_resolve(&self, params: CodeAction) -> LspResult<CodeAction> {
+        let env = self.format_env().await;
+        let cenv = crate::correction::edit::Env { dispatcher: &self.dispatcher, format: &env };
+        Ok(crate::correction::handler::resolve(&cenv, params).await)
     }
 
     // ── Formatting ─────────────────────────────────────────────────────────────

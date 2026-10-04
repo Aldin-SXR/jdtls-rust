@@ -50,6 +50,9 @@ pub struct Edit {
     pub children: Vec<usize>,
     pub parent: Option<usize>,
     pub modifier: Option<SourceModifier>,
+    /// `MultiTextEdit.fDefined`: the region was fixed when it was added to
+    /// a parent (`defineRegion`).
+    pub defined: bool,
 }
 
 /// Overlapping or misplaced edits (`MalformedTreeException`).
@@ -70,13 +73,13 @@ impl Default for EditTree {
 impl EditTree {
     /// A tree whose root (index 0) is an undefined `MultiTextEdit`.
     pub fn new() -> Self {
-        EditTree { edits: vec![Edit { offset: 0, length: 0, kind: EditKind::Multi, children: Vec::new(), parent: None, modifier: None }] }
+        EditTree { edits: vec![Edit { offset: 0, length: 0, kind: EditKind::Multi, children: Vec::new(), parent: None, modifier: None, defined: false }] }
     }
 
     pub const ROOT: usize = 0;
 
     pub fn new_edit(&mut self, offset: i32, length: i32, kind: EditKind) -> usize {
-        self.edits.push(Edit { offset, length, kind, children: Vec::new(), parent: None, modifier: None });
+        self.edits.push(Edit { offset, length, kind, children: Vec::new(), parent: None, modifier: None, defined: false });
         self.edits.len() - 1
     }
 
@@ -84,7 +87,7 @@ impl EditTree {
     pub fn offset(&self, e: usize) -> i32 {
         let ed = &self.edits[e];
         match ed.kind {
-            EditKind::Multi => ed.children.first().map(|&c| self.offset(c)).unwrap_or(0),
+            EditKind::Multi if !ed.defined => ed.children.first().map(|&c| self.offset(c)).unwrap_or(0),
             _ => ed.offset,
         }
     }
@@ -92,7 +95,7 @@ impl EditTree {
     pub fn length(&self, e: usize) -> i32 {
         let ed = &self.edits[e];
         match ed.kind {
-            EditKind::Multi => match (ed.children.first(), ed.children.last()) {
+            EditKind::Multi if !ed.defined => match (ed.children.first(), ed.children.last()) {
                 (Some(&f), Some(&l)) => self.offset(l) - self.offset(f) + self.length(l),
                 _ => 0,
             },
@@ -105,7 +108,7 @@ impl EditTree {
     }
 
     fn is_defined(&self, e: usize) -> bool {
-        !matches!(self.edits[e].kind, EditKind::Multi)
+        !matches!(self.edits[e].kind, EditKind::Multi) || self.edits[e].defined
     }
 
     /// `INSERTION_COMPARATOR`.
@@ -292,9 +295,6 @@ impl EditTree {
     /// Adds every child of `other`'s root under this tree's root (keeps
     /// `other`'s nesting), like `editRoot.addChild(otherRoot)`.
     pub fn add_tree(&mut self, other: &EditTree) -> Result<(), MalformedTree> {
-        if other.edits[Self::ROOT].children.is_empty() {
-            return Ok(());
-        }
         let base = self.edits.len();
         for (i, ed) in other.edits.iter().enumerate() {
             let mut ed = ed.clone();
@@ -308,6 +308,15 @@ impl EditTree {
             let _ = i;
             self.edits.push(ed);
         }
+        // `MultiTextEdit.defineRegion(parent.getOffset())`.
+        let (o, l) = if self.edits[base].children.is_empty() {
+            (self.offset(Self::ROOT), 0)
+        } else {
+            (self.offset(base), self.length(base))
+        };
+        self.edits[base].offset = o;
+        self.edits[base].length = l;
+        self.edits[base].defined = true;
         self.add_child(Self::ROOT, base)
     }
 }
