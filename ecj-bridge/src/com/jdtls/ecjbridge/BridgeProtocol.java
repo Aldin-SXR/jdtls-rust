@@ -31,9 +31,23 @@ public class BridgeProtocol {
         public String lineSeparator;
         public List<BridgeDiagnostic> diagnostics;
         public String data;    // opaque data passed back for typeHierarchy supertypes/subtypes
+        // navData / classFileContents / classFileInfo (NavigationDataService)
+        public String op;
+        public int line, character;
+        public ClassFileService.ClassFileDesc classFile;
+        public Map<String, String> sourceAttachments; // library path -> source attachment path
+        public boolean includeClassFiles;
+        public Boolean includeDecompiled;
+        public boolean includeDeclaration;
+        public Boolean includeAccessors;
+        public String fqn;
+        public List<String> libraries;     // navData references: library roots in search order ("jrt" = JDK)
+        public List<String> skipLibraries; // navData references: library roots already searched
+        public List<String> searchKeys;    // navData referencesByKeys: "<includeDeclaration>|<binding key>"
         public List<String> uris;        // renameOccurrences: units to resolve
         public List<String> names;       // renameOccurrences: identifiers of interest
         public String packageName;       // renameOccurrences: package whose references to collect
+        public com.google.gson.JsonObject query; // semanticSearch: SemanticIndexService query
         public List<String> sourcepath; // source folders on disk (inlayHints binding environment)
         public boolean formatParameters; // inlayHints: include expression text for format hints
         // signatureHelpData
@@ -168,6 +182,13 @@ public class BridgeProtocol {
         public List<BridgeFormatEdit> edits; // null when the formatter returned null
         public FormatEditsResponse(long id, List<BridgeFormatEdit> edits) {
             this.id = id; this.method = "formatEdits"; this.edits = edits;
+        }
+    }
+
+    public static class SemanticSearchResponse extends Response {
+        public Object result;
+        public SemanticSearchResponse(long id, Object result) {
+            this.id = id; this.method = "semanticSearch"; this.result = result;
         }
     }
 

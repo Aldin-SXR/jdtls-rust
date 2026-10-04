@@ -88,6 +88,12 @@ impl Dispatcher {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    /// Send a raw bridge request (used by feature modules that build their
+    /// own requests, e.g. `features::navigation`).
+    pub async fn send_request(&self, req: BridgeRequest) -> Result<BridgeResponse> {
+        self.send(req).await
+    }
+
     async fn send(&self, req: BridgeRequest) -> Result<BridgeResponse> {
         let guard = self.ecj.read().await;
         let ecj = guard.as_ref().ok_or_else(|| anyhow!("ecj-bridge not started"))?;
@@ -104,6 +110,14 @@ impl Dispatcher {
         self.context_for_project(&ws, project.as_deref(), uri.is_none()).await
     }
 
+    /// Context for the workspace project named `name` (the default project
+    /// when no such project exists).
+    pub async fn context_for_project_name(&self, name: &str) -> RequestContext {
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let project = ws.project(name).map(|p| p.name.clone());
+        self.context_for_project(&ws, project.as_deref(), false).await
+    }
+
     /// Contexts of the other projects whose closure includes the project
     /// owning `uri` (they may reference its elements).
     pub async fn dependent_contexts(&self, uri: &Url) -> Vec<RequestContext> {
@@ -116,6 +130,50 @@ impl Dispatcher {
             }
         }
         out
+    }
+
+    /// One context per imported project plus the default project, each with
+    /// the URIs of the files the project itself owns (its closure's other
+    /// files are only visible for binding resolution).
+    pub async fn project_contexts(&self) -> Vec<(Option<String>, RequestContext, Vec<String>)> {
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut targets: Vec<Option<String>> = ws.projects.iter().map(|p| Some(p.name.clone())).collect();
+        targets.push(None);
+        let mut out = Vec::new();
+        for target in targets {
+            let ctx = self.context_for_project(&ws, target.as_deref(), false).await;
+            let mut owned: Vec<String> = ctx
+                .files
+                .keys()
+                .filter(|u| {
+                    let owner = Url::parse(u).ok().and_then(|u| ws.project_for_uri(&u)).map(|p| p.name.clone());
+                    owner == target
+                })
+                .cloned()
+                .collect();
+            owned.sort();
+            out.push((target, ctx, owned));
+        }
+        out
+    }
+
+    /// `SemanticIndexService` query against `ctx`.
+    pub async fn semantic_search(&self, ctx: &RequestContext, query: serde_json::Value) -> Result<serde_json::Value> {
+        match self
+            .send(BridgeRequest::SemanticSearch {
+                id: next_id(),
+                files: ctx.files.clone(),
+                classpath: ctx.classpath.clone(),
+                source_level: ctx.source_level.clone(),
+                options: ctx.options.clone(),
+                query,
+            })
+            .await?
+        {
+            BridgeResponse::SemanticSearch { result, .. } => Ok(result),
+            BridgeResponse::Error { message, .. } => Err(anyhow!(message)),
+            other => Err(anyhow!("unexpected bridge response {other:?}")),
+        }
     }
 
     /// Context for the named project, or for the default project when `None`

@@ -238,6 +238,66 @@ pub enum BridgeRequest {
         uri: String,
         offset: usize,
     },
+    /// Binding-resolution data for navigation (`NavigationDataService`).
+    #[serde(rename_all = "camelCase")]
+    NavData {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        uri: String,
+        /// definition | typeDefinition | declaration | implementation | references | highlight
+        op: String,
+        line: u32,
+        character: u32,
+        /// Set when the request targets a class file (`jdt://` URI).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_file: Option<crate::classfile::ClassFileDesc>,
+        /// Library path → source attachment path.
+        source_attachments: HashMap<String, String>,
+        include_class_files: bool,
+        include_decompiled: bool,
+        include_declaration: bool,
+        include_accessors: bool,
+        /// references: library roots in search order ("jrt" = the JDK).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        libraries: Option<Vec<String>>,
+        /// references: library roots already searched for another project.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        skip_libraries: Vec<String>,
+        /// referencesByKeys: "<includeDeclaration>|<binding key>".
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        search_keys: Vec<String>,
+    },
+    /// `java/classFileContents`: attached source or decompiled content.
+    #[serde(rename_all = "camelCase")]
+    ClassFileContents {
+        id: u64,
+        class_file: crate::classfile::ClassFileDesc,
+        source_attachments: HashMap<String, String>,
+    },
+    /// `ClassFileUtil.getURI`: locate a type by name (source or binary).
+    #[serde(rename_all = "camelCase")]
+    ClassFileInfo {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        fqn: String,
+    },
+    /// Binding-resolved semantic index query (`SemanticIndexService`);
+    /// the query shapes live in `features::semantic`.
+    SemanticSearch {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        query: serde_json::Value,
+    },
     Shutdown { id: u64 },
 }
 
@@ -351,6 +411,34 @@ pub enum BridgeResponse {
         id: u64,
         calls: Vec<BridgeCallHierarchyOutgoingCall>,
     },
+    #[serde(rename_all = "camelCase")]
+    NavData {
+        id: u64,
+        locations: Vec<RawLocation>,
+        #[serde(default)]
+        null_result: bool,
+        #[serde(default)]
+        search_keys: Option<Vec<String>>,
+        #[serde(default)]
+        scanned_libraries: Option<Vec<String>>,
+        #[serde(default)]
+        source_elements: bool,
+    },
+    ClassFileContents {
+        id: u64,
+        contents: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    ClassFileInfo {
+        id: u64,
+        class_file: Option<crate::classfile::ClassFileDesc>,
+        source_uri: Option<String>,
+    },
+    SemanticSearch {
+        id: u64,
+        #[serde(default)]
+        result: serde_json::Value,
+    },
     AstBindings {
         id: u64,
         strings: Vec<String>,
@@ -386,6 +474,10 @@ impl BridgeResponse {
             | BridgeResponse::CallHierarchyPrepare { id, .. }
             | BridgeResponse::CallHierarchyIncomingCalls { id, .. }
             | BridgeResponse::CallHierarchyOutgoingCalls { id, .. }
+            | BridgeResponse::NavData { id, .. }
+            | BridgeResponse::ClassFileContents { id, .. }
+            | BridgeResponse::ClassFileInfo { id, .. }
+            | BridgeResponse::SemanticSearch { id, .. }
             | BridgeResponse::AstBindings { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
@@ -651,6 +743,22 @@ pub struct BridgeCallHierarchyIncomingCall {
 pub struct BridgeCallHierarchyOutgoingCall {
     pub to: BridgeCallHierarchyItem,
     pub from_ranges: Vec<BridgeCallFromRange>,
+}
+
+/// A navigation result location from `NavigationDataService`: a source URI
+/// or a class file, plus a UTF-16 range.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawLocation {
+    pub uri: Option<String>,
+    pub class_file: Option<crate::classfile::ClassFileDesc>,
+    pub start_line: u32,
+    pub start_char: u32,
+    pub end_line: u32,
+    pub end_char: u32,
+    /// Highlight kind (1=Text 2=Read 3=Write), 0 otherwise.
+    #[serde(default)]
+    pub kind: u8,
 }
 
 /// An element selected for rename (`RenameBindingService.Element`).

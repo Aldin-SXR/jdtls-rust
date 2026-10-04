@@ -405,6 +405,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower-lsp",
+ "tower-service",
  "tracing",
  "tracing-subscriber",
  "tree-sitter",

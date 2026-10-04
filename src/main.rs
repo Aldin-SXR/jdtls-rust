@@ -1,9 +1,12 @@
 mod analysis;
+mod classfile;
 mod config;
 mod document_store;
 mod embedded_jar;
 mod features;
 mod handlers;
+mod lenient_uri;
+mod index;
 mod project;
 mod server;
 
@@ -22,6 +25,9 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::build(JavaLanguageServer::new).finish();
-    Server::new(stdin, stdout, socket).serve(service).await;
+    let (service, socket) = LspService::build(JavaLanguageServer::new)
+        .custom_method("java/classFileContents", JavaLanguageServer::class_file_contents)
+        .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
+        .finish();
+    Server::new(stdin, stdout, socket).serve(lenient_uri::LenientUri::new(service)).await;
 }

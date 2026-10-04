@@ -2777,7 +2777,7 @@ fn ecj_call_hierarchy_prepare() {
     let items = c.prepare_call_hierarchy(&uri, 1, 9);
     assert!(!items.is_empty(), "expected prepare to return at least one item for 'foo'");
     let name = items[0]["name"].as_str().unwrap_or("");
-    assert_eq!(name, "foo", "prepared item should be 'foo', got: {name:?}");
+    assert_eq!(name, "foo() : void", "prepared item should be jdt.ls label for foo, got: {name:?}");
 }
 
 /// Incoming calls to `foo` → `bar` appears as a caller.
@@ -2816,7 +2816,7 @@ fn ecj_call_hierarchy_incoming() {
         .filter_map(|c| c["from"]["name"].as_str())
         .collect();
     assert!(
-        callers.contains(&"bar"),
+        callers.contains(&"bar() : void"),
         "expected 'bar' as a caller of 'foo', got: {callers:?}"
     );
 }
@@ -2858,7 +2858,7 @@ fn ecj_call_hierarchy_outgoing() {
         .filter_map(|c| c["to"]["name"].as_str())
         .collect();
     assert!(
-        callees.contains(&"foo"),
+        callees.contains(&"foo() : void"),
         "expected 'foo' as a callee of 'bar', got: {callees:?}"
     );
 }
@@ -3231,7 +3231,7 @@ fn ecj_code_lens_usages() {
     assert!(!lenses.is_empty(), "expected at least one code lens");
 
     let resolved: Vec<Value> = lenses.iter()
-        .filter(|l| l["data"]["tag"].as_str() == Some("references"))
+        .filter(|l| l["data"][2].as_str() == Some("references"))
         .map(|l| c.resolve_code_lens(l))
         .collect();
     assert!(
@@ -3261,15 +3261,15 @@ fn ecj_code_lens_zero_references() {
 
     let lenses = c.code_lens(&uri);
     let zero = lenses.iter()
-        .filter(|l| l["data"]["tag"].as_str() == Some("references"))
+        .filter(|l| l["data"][2].as_str() == Some("references"))
         .map(|l| c.resolve_code_lens(l))
         .find(|l| l["command"]["title"].as_str() == Some("0 references"));
     assert!(zero.is_some(), "expected a resolved 0-reference lens, got: {lenses:?}");
     let zero = zero.unwrap();
     assert_eq!(
         zero["command"]["command"],
-        "editor.action.showReferences",
-        "0-reference lens should still invoke showReferences"
+        "java.show.references",
+        "0-reference lens should still invoke showReferences (jdt.ls CodeLensHandler)"
     );
     let refs = zero["command"]["arguments"][2].as_array().cloned().unwrap_or_default();
     assert!(refs.is_empty(), "0-reference lens should carry an empty reference list, got: {zero:?}");
@@ -3300,7 +3300,7 @@ fn ecj_code_lens_lms_monaco_shape() {
 
     let lenses = c.code_lens(&uri);
     let lens = lenses.iter()
-        .filter(|l| l["data"]["tag"].as_str() == Some("references"))
+        .filter(|l| l["data"][2].as_str() == Some("references"))
         .map(|l| c.resolve_code_lens(l))
         .find(|l| l["command"]["title"].as_str() == Some("1 reference"));
     assert!(lens.is_some(), "expected resolved 1-reference lens, got: {lenses:?}");
@@ -3345,7 +3345,7 @@ fn ecj_code_lens_cross_class_reference() {
 
     let lenses = c.code_lens(&uri);
     let resolved: Vec<Value> = lenses.iter()
-        .filter(|l| l["data"]["tag"].as_str() == Some("references"))
+        .filter(|l| l["data"][2].as_str() == Some("references"))
         .map(|l| c.resolve_code_lens(l))
         .collect();
     assert!(
@@ -3383,7 +3383,7 @@ fn ecj_code_lens_method_name_same_as_variable() {
 
     let lenses = c.code_lens(&uri);
     let resolved: Vec<Value> = lenses.iter()
-        .filter(|l| l["data"]["tag"].as_str() == Some("references"))
+        .filter(|l| l["data"][2].as_str() == Some("references"))
         .map(|l| c.resolve_code_lens(l))
         .collect();
     assert!(

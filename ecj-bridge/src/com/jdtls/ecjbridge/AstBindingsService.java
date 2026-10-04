@@ -67,7 +67,47 @@ final class AstBindingsService {
             GENERIC_TYPE = 16384, PARAMETERIZED_TYPE = 32768;
 
     private static final Pattern PACKAGE = Pattern.compile("^\\s*package\\s+([\\w.\\s]+?)\\s*;", Pattern.MULTILINE);
-    private static final Map<String, Map<String, String>> MIRRORS = new HashMap<>();
+    /** Mirror roots kept for reuse; least recently used ones are deleted. */
+    private static final int MAX_MIRRORS = 16;
+    private static final Map<String, Map<String, String>> MIRRORS =
+        new java.util.LinkedHashMap<>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, Map<String, String>> eldest) {
+                if (size() <= MAX_MIRRORS) {
+                    return false;
+                }
+                deleteTree(mirrorRoot(eldest.getKey()));
+                return true;
+            }
+        };
+
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            synchronized (MIRRORS) {
+                for (String key : MIRRORS.keySet()) {
+                    deleteTree(mirrorRoot(key));
+                }
+            }
+        }));
+    }
+
+    private static Path mirrorRoot(String key) {
+        return Path.of(System.getProperty("java.io.tmpdir"), "jdtls-rust-src-" + key);
+    }
+
+    private static void deleteTree(Path root) {
+        try (java.util.stream.Stream<Path> walk = Files.walk(root)) {
+            walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (IOException ignored) {
+                    // best effort
+                }
+            });
+        } catch (IOException ignored) {
+            // already gone
+        }
+    }
 
     private AstBindingsService() {}
 
@@ -117,7 +157,7 @@ final class AstBindingsService {
     private static Path mirror(Map<String, String> files) throws IOException {
         TreeSet<String> uris = new TreeSet<>(files.keySet());
         String key = hash(String.join("\n", uris));
-        Path root = Path.of(System.getProperty("java.io.tmpdir"), "jdtls-rust-src-" + key);
+        Path root = mirrorRoot(key);
         synchronized (MIRRORS) {
             Map<String, String> written = MIRRORS.computeIfAbsent(key, k -> new HashMap<>());
             Files.createDirectories(root);
