@@ -50,6 +50,10 @@ pub enum BridgeRequest {
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         options: BTreeMap<String, String>,
         uri: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_file: Option<crate::classfile::ClassFileDesc>,
+        #[serde(skip_serializing_if = "HashMap::is_empty")]
+        source_attachments: HashMap<String, String>,
     },
     /// Element data for hover (`HoverService.hoverInfo`).
     HoverInfo {
@@ -462,6 +466,8 @@ pub enum BridgeResponse {
     ClassFileContents {
         id: u64,
         contents: String,
+        #[serde(default, rename = "attachedSource")]
+        attached_source: bool,
     },
     #[serde(rename_all = "camelCase")]
     ClassFileInfo {

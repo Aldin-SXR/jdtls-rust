@@ -30,8 +30,44 @@ pub fn code_lenses(store: &DocumentStore, uri: &Url) -> Vec<CodeLens> {
     let Some(tree) = state.tree.clone() else { return Vec::new() };
     let text = state.content_string();
     drop(state);
-    let mut c = Collector { text: &text, uri: uri.as_str(), lenses: Vec::new() };
+    collect_lenses(uri, &text, &tree)
+}
+
+pub fn class_file_code_lenses(uri: &Url, text: &str, attached: bool) -> Vec<CodeLens> {
+    if !preferences::code_lens_enabled() {
+        return Vec::new();
+    }
+    // Without source, binary members have unknown name ranges overlapping
+    // the type's unknown range. JDT skips these methods and emits type lenses
+    // at the default location.
+    if !attached {
+        let mut c = Collector { text, uri: uri.as_str(), lenses: Vec::new() };
+        if preferences::references_code_lens_enabled() {
+            c.push(REFERENCES_TYPE, Range::default());
+        }
+        if matches!(preferences::implementations_code_lens().as_str(), "all" | "types") {
+            c.push(IMPLEMENTATION_TYPE, Range::default());
+        }
+        return c.lenses;
+    }
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&tree_sitter_java::language()).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(text, None) else { return Vec::new() };
+    collect_lenses(uri, text, &tree)
+}
+
+fn collect_lenses(uri: &Url, text: &str, tree: &tree_sitter::Tree) -> Vec<CodeLens> {
+    let mut c = Collector { text, uri: uri.as_str(), lenses: Vec::new() };
     let root = tree.root_node();
+    if let Some(reference) = crate::classfile::ClassFileRef::parse(uri.as_str()) {
+        let chain: Vec<&str> = reference.class_file.trim_end_matches(".class").split('$').collect();
+        if let Some(ty) = find_binary_type(root, &chain, text) {
+            c.collect_type(ty);
+        }
+        return c.lenses;
+    }
     let mut implicit_members = Vec::new();
     let mut cur = root.walk();
     for child in root.named_children(&mut cur) {
@@ -46,6 +82,25 @@ pub fn code_lenses(store: &DocumentStore, uri: &Url) -> Vec<CodeLens> {
         c.member(m, None);
     }
     c.lenses
+}
+
+fn find_binary_type<'a>(node: Node<'a>, chain: &[&str], text: &str) -> Option<Node<'a>> {
+    let (name, rest) = chain.split_first()?;
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if is_type(child) && child.child_by_field_name("name").is_some_and(|n| &text[n.byte_range()] == *name) {
+            if rest.is_empty() {
+                return Some(child);
+            }
+            return find_binary_type(child.child_by_field_name("body")?, rest, text);
+        }
+        if child.kind() == "enum_body_declarations" {
+            if let Some(found) = find_binary_type(child, chain, text) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 struct Collector<'a> {
@@ -236,7 +291,7 @@ pub async fn resolve(dispatcher: &Dispatcher, mut lens: CodeLens) -> CodeLens {
     };
     let mut locations: Vec<Location> = Vec::new();
     if let Ok(url) = Url::parse(&uri) {
-        if dispatcher.store.contains(&url) || dispatcher.store.get(&url).is_some() {
+        if crate::classfile::is_class_file_uri(&url) || dispatcher.store.contains(&url) || dispatcher.store.get(&url).is_some() {
             let sem = Semantic::new(dispatcher).await;
             if let Some((sel, _)) = sem.select(&url, position).await {
                 if let Some(element) = sel.select.first() {

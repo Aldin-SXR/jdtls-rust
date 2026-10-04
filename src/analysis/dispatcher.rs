@@ -351,8 +351,18 @@ impl Dispatcher {
 
     /// Resolved DOM and bindings of `uri` (data for semantic tokens).
     pub async fn ast_bindings(&self, uri: &Url) -> Result<BridgeResponse> {
-        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
-        self.send(BridgeRequest::AstBindings { id: next_id(), files, classpath, source_level, options, uri: uri.to_string() }).await
+        let (target, source_attachments) = {
+            let ws = self.workspace.read().unwrap();
+            (crate::features::navigation::class_file_target(&ws, uri.as_str()), crate::features::navigation::source_attachments(&ws))
+        };
+        let RequestContext { files, classpath, source_level, options } = match &target {
+            Some((_, reference)) => self.context_for_project_name(&reference.project).await,
+            None => self.context_for(Some(uri)).await,
+        };
+        self.send(BridgeRequest::AstBindings {
+            id: next_id(), files, classpath, source_level, options, uri: uri.to_string(),
+            class_file: target.map(|(desc, _)| desc), source_attachments,
+        }).await
     }
 
     pub async fn navigate(&self, uri: &Url, offset: usize, kind: NavKind) -> Result<BridgeResponse> {

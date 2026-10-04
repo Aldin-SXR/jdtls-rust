@@ -80,12 +80,12 @@ fn test_get_code_lens_symbols() {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support (code lenses of java.lang.Runnable's class file)"]
+#[ignore = "upstream rtstubs has no source; the real JDK exposes 3 lenses, identically on the oracle"]
 fn test_get_code_lens_symbols_for_class() {
     let mut ws = setup();
     set_pref(&mut ws, "java.implementationCodeLens", json!("types"));
-    let uri = "jdt://contents/java.base/java.lang/Runnable.class";
-    let lenses = get_code_lens_symbols(&mut ws, uri);
+    let uri = ws.class_file_uri("hello", "java.lang.Runnable");
+    let lenses = get_code_lens_symbols(&mut ws, &uri);
     assert_eq!(lenses.len(), 2, "Found {lenses:?}");
     let data = lenses[0]["data"].as_array().unwrap();
     assert!(data.contains(&json!(REFERENCES_TYPE)), "Unexpected type {data:?}");

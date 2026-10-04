@@ -38,7 +38,7 @@ fn document_symbol(ws: &mut Workspace, uri: &str) -> Vec<Value> {
 }
 
 fn get_symbols(ws: &mut Workspace, project: &str, class_name: &str) -> Vec<Value> {
-    let uri = ws.class_uri(project, class_name);
+    let uri = ws.class_file_uri(project, class_name);
     let symbols = document_symbol(ws, &uri);
     for s in &symbols {
         assert!(s.get("location").is_some(), "expected SymbolInformation, got {s}");
@@ -57,7 +57,7 @@ fn get_hierarchical_document_symbols(ws: &mut Workspace, uri: &str) -> Vec<Value
 }
 
 fn internal_get_hierarchical_symbols(ws: &mut Workspace, project: &str, class_name: &str) -> Vec<Value> {
-    let uri = ws.class_uri(project, class_name);
+    let uri = ws.class_file_uri(project, class_name);
     get_hierarchical_document_symbols(ws, &uri)
 }
 
@@ -133,21 +133,18 @@ fn test_class(ws: &mut Workspace, class_name: &str, hierarchical: bool) {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support (commons-lang3 WordUtils)"]
 fn test_document_symbol_handler() {
     let mut ws = setup(false, false);
     test_class(&mut ws, "org.apache.commons.lang3.text.WordUtils", false);
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support (commons-lang3 WordUtils)"]
 fn test_document_symbol_handler_hierarchical() {
     let mut ws = setup(true, false);
     test_class(&mut ws, "org.apache.commons.lang3.text.WordUtils", true);
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support (commons-lang3 StrTokenizer)"]
 fn test_synthetic_member() {
     let mut ws = setup(false, false);
     let class_name = "org.apache.commons.lang3.text.StrTokenizer";
@@ -168,7 +165,6 @@ fn test_synthetic_member() {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support (commons-lang3 StrTokenizer)"]
 fn test_synthetic_member_hierarchical() {
     let mut ws = setup(true, false);
     let class_name = "org.apache.commons.lang3.text.StrTokenizer";
@@ -220,7 +216,6 @@ fn test_types_hierarchical() {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support (commons-lang3 WordUtils)"]
 fn test_package_class() {
     let mut ws = setup(true, false);
     let symbols = get_hierarchical_symbols(&mut ws, "org.apache.commons.lang3.text.WordUtils");
@@ -228,7 +223,6 @@ fn test_package_class() {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support (foo.bar in source-attachment's foo.jar, no source)"]
 fn test_synthetic_member_hierarchical_no_source_attached() {
     let mut ws = setup(true, false);
     let symbols = as_stream(&internal_get_hierarchical_symbols(&mut ws, "source-attachment", "foo.bar"));
@@ -296,7 +290,6 @@ fn test_lombok_show_generated_code_symbols() {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support (decompiled org.sample.Foo from eclipse/reference)"]
 fn test_decompiled_source() {
     let mut ws = setup(true, false);
     ws.import_projects(&["eclipse/reference"]);

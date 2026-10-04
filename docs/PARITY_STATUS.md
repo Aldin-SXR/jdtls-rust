@@ -4,7 +4,7 @@ How far jdtls-rust is from eclipse.jdt.ls parity, measured against the upstream 
 suite. For how the port is done, see [PORTING.md](PORTING.md).
 
 * **Branch:** `jdtls-parity`, including the verified lifecycle/init/file-event
-  integration. `main` is unchanged.
+  and binary-editor integrations. `main` is unchanged.
 * **Reference:** eclipse.jdt.ls 1.58.0. The upstream checkout is 1.58.0-SNAPSHOT
   (2026-04-10), and the oracle in `.oracle/` is the 1.58.0 release.
 * **Last updated:** 2026-10-04.
@@ -17,20 +17,21 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 | | Tests | Share of upstream |
 |---|---:|---:|
 | Ported | 459 | 22.0% |
-| Passing | 413 | 19.8% |
-| Ported but `#[ignore]`d | 46 | 2.2% |
+| Passing | 422 | 20.2% |
+| Ported but `#[ignore]`d | 37 | 1.8% |
 | Not ported yet | 1,628 | 78.0% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 588 passed,
-0 failed and 47 ignored. That count also includes our own regression suite
-(`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test) and unit
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 602 passed,
+0 failed and 38 ignored. That count also includes our own regression suite
+(`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
+`tests/binary_editor_regressions.rs`, 5 tests) and unit
 tests that aren't ports.
 
 ## By upstream area
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 399 | 371 | 43% |
+| handlers | 871 | 399 | 380 | 44% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 21 | 3 | 1% |
@@ -52,13 +53,13 @@ tests that aren't ports.
 | Upstream class | Test file | Ported | Pass | Ignored | Oracle |
 |---|---|---:|---:|---:|---|
 | handlers/BuildWorkspaceHandlerTest | `handlers_build_workspace_handler_test` | 5 | 5 | 0 | 5/5 |
-| handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 9 | 1 | 8 pass; `outgoing_calls_src` resolves into the real JDK's `src.zip` (environment) |
-| handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 13 | 1 | 13/13 |
+| handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 9 | 1 | 9/9 active; `outgoing_calls_src` resolves into the real JDK's `src.zip` (environment) |
+| handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 13 | 1 | 13/13 active; Runnable exposes 3 lenses with the real JDK's sources (environment) |
 | handlers/DocumentHighlightHandlerTest | `handlers_document_highlight_handler_test` | 5 | 5 | 0 | pass |
 | handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` | 19 | 17 | 2 | 17/17 active cases |
-| handlers/DocumentSymbolHandlerTest | `handlers_document_symbol_handler_test` | 14 | 6 | 8 | pass |
+| handlers/DocumentSymbolHandlerTest | `handlers_document_symbol_handler_test` | 14 | 13 | 1 | 13/13 active |
 | handlers/FileEventHandlerTest | `handlers_file_event_handler_test` | 8 | 8 | 0 | 8/8 |
-| handlers/FoldingRangeHandlerTest | `handlers_folding_range_handler_test` | 9 | 8 | 1 | 8/9 (the harness had no jdt:// URIs at the time) |
+| handlers/FoldingRangeHandlerTest | `handlers_folding_range_handler_test` | 9 | 9 | 0 | 9/9 |
 | handlers/FormatterHandlerTest | `handlers_formatter_handler_test` | 34 | 34 | 0 | 34/34 |
 | handlers/HoverHandlerTest | `handlers_hover_handler_test` | 36 | 34 | 2 | pass (the 2 ignored also fail on jdt.ls) |
 | handlers/ImplementationsHandlerTest | `handlers_implementations_handler_test` | 13 | 12 | 1 | pass |
@@ -72,7 +73,7 @@ tests that aren't ports.
 | handlers/ReferencesHandlerTest | `handlers_references_handler_test` | 7 | 6 | 1 | pass |
 | handlers/RenameHandlerTest | `handlers_rename_handler_test` | 22 | 22 | 0 | 20/22; jdt.ls NPEs on JDK 25 (record field) and has no Lombok jar |
 | handlers/SelectionRangeHandlerTest | `handlers_selection_range_handler_test` | 5 | 5 | 0 | 5/5 |
-| handlers/SemanticTokensHandlerTest | `handlers_semantic_tokens_handler_test` | 11 | 10 | 1 | 10/10 |
+| handlers/SemanticTokensHandlerTest | `handlers_semantic_tokens_handler_test` | 11 | 11 | 0 | 11/11 |
 | handlers/SignatureHelpHandlerTest | `handlers_signature_help_handler_test` | 56 | 54 | 2 | 53/54; `test_signature_help_erasure_type`, where jdt.ls returns no doc |
 | handlers/TypeHierarchyHandlerTest | `handlers_type_hierarchy_handler_test` | 4 | 4 | 0 | 4/4 |
 | handlers/WorkspaceDiagnosticsHandlerTest | `handlers_workspace_diagnostics_handler_test` | 2 | 2 | 0 | 2/2 (package deletion and diagnostic filtering) |
@@ -93,8 +94,7 @@ ignored test keeps its upstream assertions unchanged.
 
 | Reason | Count | Tests |
 |---|---:|---|
-| Upstream's fake test JDK (`rtstubs.jar`, no sources); we run a real JDK with `lib/src.zip` | 18 | 9 ContentProviderManagerTest tests; `test_disassembled_source` and `test_source_version` (definition and type definition); `test_implementation_from_binary_type_with_class_content_support`; `test_references_in_jre`; `test_workspace_search`, `test_camel_case_fuzzy_search` and `test_workspace_search_with_class_content_support`; `test_hover_javadoc_link_plain` |
-| Class-file handlers and fixture setup remain incomplete; all 11 rechecked and still failing (see below) | 11 | `test_folding_ranges`; 7 document-symbol tests (WordUtils, StrTokenizer, `test_package_class`, the no-source jar, `test_decompiled_source`); `test_semantic_tokens_source_attachment`; `test_get_code_lens_symbols_for_class`; `outgoing_jar` |
+| Upstream's fake test JDK (`rtstubs.jar`, no sources); we run a real JDK with `lib/src.zip` | 20 | `test_get_code_lens_symbols_for_class`, `outgoing_calls_src`; 9 ContentProviderManagerTest tests; `test_disassembled_source` and `test_source_version` (definition and type definition); `test_implementation_from_binary_type_with_class_content_support`; `test_references_in_jre`; `test_workspace_search`, `test_camel_case_fuzzy_search` and `test_workspace_search_with_class_content_support`; `test_hover_javadoc_link_plain` |
 | Upstream test-plugin internals with no LSP equivalent (FakeContentProvider, null URIs, decompiler line mappings) | 9 | ContentProviderManagerTest |
 | Missing local artifacts (no download yet) | 2 | `test_signature_help_assert_equals` (junit 4.13.1); `test_empty_names` (reactor-core 3.3.0) |
 | Lombok not supported | 1 | `test_lombok_show_generated_code_symbols` |
@@ -131,25 +131,39 @@ jdt.ls 1.58.0; the remaining 2 passing cases are preference unit tests.
   work. Save actions/cleanups and the rest of workspace marker reporting remain
   unfinished.
 
-## Class-file ignore audit
+## Binary-editor integration evidence
 
-Re-ran the 11 tests previously labeled only "needs jdt:// classfile support" with
-`--ignored` (excluding the separate Lombok case). None passes yet:
+Ten previously ignored upstream ports now pass against both Rust and jdt.ls
+1.58.0: seven document-symbol cases, binary folding, semantic tokens of an
+attached source and outgoing call hierarchy into and within a jar. The complete
+five affected handler suites give 55 passing active cases against the oracle.
 
-* Seven document-symbol tests and the folding-range test fail in the harness:
-  `Workspace::class_uri` only searches source files. The binary-capable
-  `class_file_uri` lookup exists but is not used by these ports.
-* The semantic-token source-attachment fixture setup is currently an empty
-  function, and the harness tries to read its `jdt:` URI as a disk path.
-* The binary code-lens request returns no lenses. Binary outgoing call hierarchy
-  returns a zero selection range instead of the attached source's line 61.
-* `source_text` only handles the document store and `.java` files; document symbols,
-  folding, code lenses and semantic-token handlers still need binary source/model
-  integration. Navigation/hover class-file support alone does not cover them.
+* Editor handlers obtain binary text through the existing class-file content
+  provider. Binary sources stay outside the workspace document store and builds.
+* The bridge supplies source-attachment metadata and binding-resolved AST/index
+  data using the binary's owning project and source filename. Rust shapes symbols,
+  tokens, lenses, selection ranges and hierarchy items.
+* Explicit Eclipse/Maven raw library entries retain their sourcepath. Nearby
+  source jars are not silently attached to Eclipse `lib` entries without one.
+* Attached outlines include implicit default constructors and the Java model's
+  package and flat-container conventions. Flat outlines without sources use zero
+  ranges; their hierarchical outline uses decompiled text. Semantic tokens and
+  selection ranges require an attached source buffer.
+* Binary lenses resolve references back into workspace sources, and binary call
+  hierarchy works even in a project with no workspace compilation units.
+* Five additional oracle-verified regressions assert complete outline output,
+  lens ranges and commands, source selection chains, no-source behavior and
+  binary-only project contexts (`binary_editor_regressions.rs`).
+* Two upstream assertions depend on the source-less fake test runtime: Runnable
+  expects 2 lenses rather than the real JDK's 3, and `outgoing_calls_src` expects
+  `currentThread` at line 0 rather than its attached source location. Both fail
+  identically on Rust and the oracle. They retain their assertions and explicit
+  environment ignores; the latter was previously a misleading Rust pass.
 
-These ignores remain enabled, with their assertions unchanged. This is the next
-concrete binary-document gap; removing the ignore annotations alone would not
-increase feature parity.
+This brings passing upstream ports from 413 to 422 (ten newly passing cases,
+one corrected environment classification). Binary Java model parity still needs
+broader coverage of generated enum/record members and unusual or mismatched
+source attachments; this integration does not claim exhaustive class-file parity.
 
 ## Known differences from jdt.ls
 
@@ -202,13 +216,13 @@ was saved as a WIP commit and **hasn't been built or tested**.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
 Add the ports that live as unit tests in `src/` (InlayHintFilterManagerTest 7,
 JavaDoc2Markdown 19, JavaDoc2PlainText 2, JavaDocImageExtraction 1, InitHandler 2).
-Exclude `lifecycle_regressions.rs`, which is our regression suite, and empty
-placeholders (these are not ports). Upstream counts
+Exclude `lifecycle_regressions.rs` and `binary_editor_regressions.rs`, which are
+our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.

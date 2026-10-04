@@ -183,7 +183,6 @@ impl<'a> Semantic<'a> {
             .project_contexts()
             .await
             .into_iter()
-            .filter(|(_, _, owned)| !owned.is_empty())
             .map(|(project, ctx, owned)| ProjectContext { project, ctx, owned })
             .collect();
         Semantic { dispatcher, contexts }
@@ -195,15 +194,30 @@ impl<'a> Semantic<'a> {
 
     /// The context whose project owns `uri`.
     pub fn context_of(&self, uri: &str) -> Option<&ProjectContext> {
+        if let Some(reference) = crate::classfile::ClassFileRef::parse(uri) {
+            return self.context_named(Some(&reference.project));
+        }
         self.contexts.iter().find(|c| c.owned.iter().any(|u| u == uri))
     }
 
     fn context_named(&self, project: Option<&str>) -> Option<&ProjectContext> {
+        let project = project.filter(|p| *p != crate::project::DEFAULT_PROJECT_NAME);
         self.contexts.iter().find(|c| c.project.as_deref() == project)
     }
 
     async fn query(&self, pc: &ProjectContext, mut query: Value) -> Option<Value> {
         query["owned"] = json!(pc.owned);
+        if let Some(uri) = query["uri"].as_str() {
+            let binary = {
+                let ws = self.dispatcher.workspace.read().unwrap();
+                super::navigation::class_file_target(&ws, uri)
+                    .map(|(desc, _)| (desc, super::navigation::source_attachments(&ws)))
+            };
+            if let Some((desc, attachments)) = binary {
+                query["classFile"] = json!(desc);
+                query["sourceAttachments"] = json!(attachments);
+            }
+        }
         let op = query["op"].clone();
         match self.dispatcher.semantic_search(&pc.ctx, query).await {
             Ok(mut v) => {
@@ -234,7 +248,11 @@ impl<'a> Semantic<'a> {
     /// Fill in the location of a source element declared in a file another
     /// project owns.
     pub async fn complete(&self, e: &mut Elem) {
-        if !e.from_source || e.has_source_location() {
+        if e.has_source_location() {
+            return;
+        }
+        if !e.from_source {
+            self.complete_binary(e).await;
             return;
         }
         for pc in &self.contexts {
@@ -245,6 +263,29 @@ impl<'a> Semantic<'a> {
                         return;
                     }
                 }
+            }
+        }
+    }
+
+    /// Resolve binary declarations against their source attachment while
+    /// preserving the binding's binary identity and parameter signatures.
+    async fn complete_binary(&self, e: &mut Elem) {
+        let fqn = if e.is_type() { e.fqn.as_deref() } else { e.declaring_type_fqn.as_deref() };
+        let Some(fqn) = fqn else { return };
+        for pc in &self.contexts {
+            if e.module.is_none() && e.archive.as_ref().is_some_and(|archive| !pc.ctx.classpath.contains(archive)) {
+                continue;
+            }
+            let Some(project) = pc.project.as_deref() else { continue };
+            let Some(uri) = super::navigation::type_uri(self.dispatcher, project, fqn).await else { continue };
+            if !uri.starts_with("jdt:") { continue; }
+            let Some(v) = self.query(pc, json!({ "op": "element", "key": e.key, "uri": uri })).await else { continue };
+            let Ok(ElementResult { element: Some(found) }) = serde_json::from_value::<ElementResult>(v) else { continue };
+            if found.has_source_location() {
+                e.uri = found.uri;
+                e.range = found.range;
+                e.name_range = found.name_range;
+                return;
             }
         }
     }
@@ -296,7 +337,7 @@ impl<'a> Semantic<'a> {
     pub async fn callees(&self, member: &Elem) -> Vec<(Elem, Option<Rng>)> {
         let Some(uri) = member.uri.as_deref() else { return Vec::new() };
         let Some(pc) = self.context_of(uri) else { return Vec::new() };
-        let Some(v) = self.query(pc, json!({ "op": "callees", "key": member.key })).await else {
+        let Some(v) = self.query(pc, json!({ "op": "callees", "key": member.key, "uri": uri })).await else {
             return Vec::new();
         };
         let Ok(r) = serde_json::from_value::<CalleesResult>(v) else { return Vec::new() };

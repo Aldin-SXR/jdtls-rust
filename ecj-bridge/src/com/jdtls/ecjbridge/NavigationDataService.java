@@ -64,6 +64,7 @@ final class NavigationDataService {
 
     public static class ClassFileContentsResponse extends BridgeProtocol.Response {
         public String contents;
+        public boolean attachedSource;
 
         ClassFileContentsResponse(long id, String contents) {
             this.id = id;
@@ -1766,7 +1767,9 @@ final class NavigationDataService {
     static Object classFileContents(BridgeProtocol.Request req) {
         ClassFileDesc cf = ClassFileService.complete(req.classFile);
         Map<String, String> attachments = req.sourceAttachments == null ? Map.of() : req.sourceAttachments;
-        return new ClassFileContentsResponse(req.id, cf == null ? "" : ClassFileService.contents(cf, attachments));
+        ClassFileContentsResponse response = new ClassFileContentsResponse(req.id, cf == null ? "" : ClassFileService.contents(cf, attachments));
+        response.attachedSource = cf != null && ClassFileService.hasAttachedSource(cf, attachments);
+        return response;
     }
 
     static Object classFileInfo(BridgeProtocol.Request req) {

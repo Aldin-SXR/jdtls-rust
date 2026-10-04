@@ -136,6 +136,7 @@ fn test_selection_range() {
 }
 
 #[test]
+#[ignore = "upstream rtstubs has no source; the real JDK locates currentThread in src.zip, identically on the oracle"]
 fn outgoing_calls_src() {
     let mut ws = setup();
     // Line 34 from `CallHierarchy`
@@ -176,7 +177,6 @@ fn incoming_calls_maven() {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support (outgoing calls of a class-file method, its source attachment and URI)"]
 fn outgoing_jar() {
     let mut ws = setup();
     // Line 15 from `CallHierarchy`

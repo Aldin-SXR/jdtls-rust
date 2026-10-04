@@ -14,9 +14,94 @@ use super::scanner::LineIndex;
 
 pub fn document_symbols(uri: &Url, src: &str) -> DocumentSymbolResponse {
     let cu = java_model::parse(src);
+    symbols(uri, src, &cu)
+}
+
+pub fn class_file_symbols(uri: &Url, src: &str, attached: bool) -> DocumentSymbolResponse {
+    let mut cu = java_model::parse(src);
+    let reference = crate::classfile::ClassFileRef::parse(uri.as_str());
+    if attached {
+        if let Some(reference) = &reference {
+            let chain: Vec<&str> = reference.class_file.trim_end_matches(".class").split('$').collect();
+            if let Some(ty) = binary_type(&cu.types, &chain).cloned() {
+                cu.types = vec![ty];
+            } else {
+                cu.types.clear();
+            }
+        }
+        for ty in &mut cu.types {
+            binary_members(ty);
+        }
+    }
+    let mut result = symbols(uri, src, &cu);
+    match &mut result {
+        DocumentSymbolResponse::Nested(symbols) if attached => {
+            // The Java model's package-fragment symbol covers the package
+            // keyword (inclusive scanner end), rather than its name.
+            if let Some(package) = symbols.iter_mut().find(|s| s.kind == SymbolKind::PACKAGE) {
+                if let Some(p) = &cu.package {
+                    let range = LineIndex::new(src).range(src, p.source.0, p.source.0 + 6);
+                    package.range = range;
+                    package.selection_range = range;
+                    package.children = Some(Vec::new());
+                }
+            }
+        }
+        DocumentSymbolResponse::Flat(symbols) => {
+            for symbol in symbols {
+                if !attached {
+                    symbol.location.range = Range::default();
+                }
+                if cu.types.iter().any(|t| symbol.name == type_label(t)) {
+                    symbol.container_name = reference.as_ref().map(|r| r.class_file.clone());
+                }
+            }
+        }
+        _ => {}
+    }
+    result
+}
+
+fn binary_type<'a>(types: &'a [TypeDecl], chain: &[&str]) -> Option<&'a TypeDecl> {
+    let (name, rest) = chain.split_first()?;
+    let ty = types.iter().find(|t| t.name == *name)?;
+    if rest.is_empty() {
+        return Some(ty);
+    }
+    for member in &ty.members {
+        if let Member::Type(child) = member {
+            if let Some(found) = binary_type(std::slice::from_ref(child), rest) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn binary_members(ty: &mut TypeDecl) {
+    // The binary Java model includes the implicit default constructor, whose
+    // source and name ranges coincide with the declaring type.
+    if ty.kind == TypeKind::Class && !ty.members.iter().any(|m| matches!(m, Member::Method(m) if m.constructor)) {
+        ty.members.insert(0, Member::Method(MethodDecl {
+            name: ty.name.clone(), name_range: ty.name_range, source: ty.source,
+            flags: ty.flags & (flags::PUBLIC | flags::PRIVATE | flags::PROTECTED),
+            constructor: true, params: Vec::new(), type_params: Vec::new(), return_type: None, children: Vec::new(),
+        }));
+    }
+    for member in &mut ty.members {
+        match member {
+            Member::Type(child) => binary_members(child),
+            Member::Method(method) => method.children.clear(),
+            Member::Field(field) => field.children.clear(),
+            Member::Initializer(init) => init.children.clear(),
+        }
+    }
+}
+
+fn symbols(uri: &Url, src: &str, cu: &CompilationUnit) -> DocumentSymbolResponse {
     let ctx = Ctx { src, li: LineIndex::new(src), tags: client_caps::symbol_tags() };
     if client_caps::hierarchical_document_symbols() {
-        DocumentSymbolResponse::Nested(ctx.hierarchical(&cu))
+        DocumentSymbolResponse::Nested(ctx.hierarchical(cu))
     } else {
         let mut out = Vec::new();
         let cu_name = uri.path_segments().and_then(|mut s| s.next_back()).unwrap_or("").to_owned();

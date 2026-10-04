@@ -1273,7 +1273,11 @@ impl LanguageServer for JavaLanguageServer {
             // Not a compilation unit (`JDTUtils.resolveCompilationUnit` is null).
             return Ok(Some(DocumentSymbolResponse::Nested(Vec::new())));
         }
-        let Some(text) = crate::features::source_text(&self.store, uri) else { return Ok(Some(DocumentSymbolResponse::Nested(Vec::new()))) };
+        if crate::classfile::is_class_file_uri(uri) {
+            let Some((text, attached)) = crate::features::navigation::class_file_document(&self.dispatcher, uri.as_str()).await else { return Ok(Some(DocumentSymbolResponse::Nested(Vec::new()))) };
+            return Ok(Some(crate::features::document_symbol::class_file_symbols(uri, &text, attached)));
+        }
+        let Some(text) = crate::features::document_text(&self.dispatcher, uri).await else { return Ok(Some(DocumentSymbolResponse::Nested(Vec::new()))) };
         Ok(Some(crate::features::document_symbol::document_symbols(uri, &text)))
     }
 
@@ -1419,7 +1423,7 @@ impl LanguageServer for JavaLanguageServer {
     // ── Folding Ranges ────────────────────────────────────────────────────────
 
     async fn folding_range(&self, params: FoldingRangeParams) -> LspResult<Option<Vec<FoldingRange>>> {
-        let Some(text) = crate::features::source_text(&self.store, &params.text_document.uri) else { return Ok(Some(Vec::new())) };
+        let Some(text) = crate::features::document_text(&self.dispatcher, &params.text_document.uri).await else { return Ok(Some(Vec::new())) };
         Ok(Some(crate::features::folding_range::folding_ranges(&text)))
     }
 
@@ -1428,7 +1432,6 @@ impl LanguageServer for JavaLanguageServer {
     async fn semantic_tokens_full(&self, params: SemanticTokensParams) -> LspResult<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
         let empty = || Ok(Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data: Vec::new() })));
-        let Some(text) = crate::features::source_text(&self.store, uri) else { return empty() };
         // jdt.ls waits for the document life-cycle jobs; wait for the bridge.
         for _ in 0..600 {
             if self.dispatcher.is_ecj_ready().await {
@@ -1436,6 +1439,7 @@ impl LanguageServer for JavaLanguageServer {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        let Some(text) = crate::features::document_text(&self.dispatcher, uri).await else { return empty() };
         let Ok(BridgeResponse::AstBindings { strings, nodes, bindings, .. }) = self.dispatcher.ast_bindings(uri).await else { return empty() };
         let ast = crate::features::semantic_tokens::Ast::from_bridge(&strings, &nodes, &bindings);
         let data = crate::features::semantic_tokens::semantic_tokens(&text, &ast);
@@ -1443,7 +1447,16 @@ impl LanguageServer for JavaLanguageServer {
     }
 
     async fn selection_range(&self, params: SelectionRangeParams) -> LspResult<Option<Vec<SelectionRange>>> {
-        let Some(text) = crate::features::source_text(&self.store, &params.text_document.uri) else { return Ok(Some(Vec::new())) };
+        let uri = &params.text_document.uri;
+        let text = if crate::classfile::is_class_file_uri(uri) {
+            match crate::features::navigation::class_file_document(&self.dispatcher, uri.as_str()).await {
+                Some((text, true)) => text,
+                _ => return Ok(Some(Vec::new())),
+            }
+        } else {
+            let Some(text) = crate::features::source_text(&self.store, uri) else { return Ok(Some(Vec::new())) };
+            text
+        };
         Ok(Some(crate::features::selection_range::selection_ranges(&text, &params.positions)))
     }
 
@@ -1457,6 +1470,10 @@ impl LanguageServer for JavaLanguageServer {
     // ── Code Lenses ───────────────────────────────────────────────────────────
 
     async fn code_lens(&self, params: CodeLensParams) -> LspResult<Option<Vec<CodeLens>>> {
+        if crate::classfile::is_class_file_uri(&params.text_document.uri) {
+            let Some((text, attached)) = crate::features::navigation::class_file_document(&self.dispatcher, params.text_document.uri.as_str()).await else { return Ok(Some(Vec::new())) };
+            return Ok(Some(crate::features::code_lens::class_file_code_lenses(&params.text_document.uri, &text, attached)));
+        }
         Ok(Some(crate::features::code_lens::code_lenses(&self.store, &params.text_document.uri)))
     }
 

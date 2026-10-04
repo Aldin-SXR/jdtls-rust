@@ -11,7 +11,7 @@ fn setup() -> Workspace {
 }
 
 fn get_folding_ranges(ws: &mut Workspace, class_name: &str) -> Vec<Value> {
-    let uri = ws.class_uri("foldingRange", class_name);
+    let uri = ws.class_file_uri("foldingRange", class_name);
     let result = ws.request("textDocument/foldingRange", json!({ "textDocument": { "uri": uri } }));
     result.as_array().cloned().unwrap_or_default()
 }
@@ -35,7 +35,6 @@ fn test_class_for_valid_range(class_name: &str, ranges: &[Value]) {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support"]
 fn test_folding_ranges() {
     let mut ws = setup();
     let ranges = get_folding_ranges(&mut ws, "org.apache.commons.lang3.text.WordUtils");

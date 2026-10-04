@@ -47,3 +47,14 @@ pub fn source_text(store: &DocumentStore, uri: &Url) -> Option<String> {
     }
     None
 }
+
+/// Editor text for a compilation unit or a read-only class-file document.
+/// Keep binary source out of the document store: it must not be compiled as
+/// another workspace compilation unit.
+pub async fn document_text(d: &crate::analysis::dispatcher::Dispatcher, uri: &Url) -> Option<String> {
+    if crate::classfile::is_class_file_uri(uri) {
+        let text = navigation::class_file_contents(d, uri.as_str()).await;
+        return (!text.is_empty()).then_some(text);
+    }
+    source_text(&d.store, uri)
+}

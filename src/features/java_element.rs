@@ -106,7 +106,7 @@ pub fn name_location(e: &Elem, project: &str) -> Option<Location> {
 }
 
 fn location(e: &Elem, project: &str, name: bool) -> Option<Location> {
-    if e.from_source {
+    if e.has_source_location() {
         let uri = Url::parse(e.uri.as_deref()?).ok()?;
         let r = if name { e.name_range.or(e.range) } else { e.range }?;
         return Some(Location { uri, range: r.to_lsp() });
@@ -157,6 +157,9 @@ fn source_root(ws: &Workspace, uri: &str) -> (String, String) {
 /// The project a source element belongs to (for class-file URIs of the
 /// binaries it references).
 pub fn project_of(ws: &Workspace, uri: Option<&str>) -> String {
+    if let Some(reference) = uri.and_then(crate::classfile::ClassFileRef::parse) {
+        return reference.project;
+    }
     uri.map(|u| source_root(ws, u).0).unwrap_or_else(|| DEFAULT_PROJECT_NAME.to_owned())
 }
 

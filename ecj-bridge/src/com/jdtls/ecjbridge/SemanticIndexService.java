@@ -232,6 +232,25 @@ final class SemanticIndexService {
             owned = new ArrayList<>();
             for (JsonElement e : query.getAsJsonArray("owned")) owned.add(e.getAsString());
         }
+        if (query.has("classFile")) {
+            com.google.gson.Gson gson = new com.google.gson.Gson();
+            ClassFileService.ClassFileDesc cf = ClassFileService.complete(
+                gson.fromJson(query.get("classFile"), ClassFileService.ClassFileDesc.class));
+            Map<String, String> attachments = new HashMap<>();
+            if (query.has("sourceAttachments")) {
+                query.getAsJsonObject("sourceAttachments").entrySet().forEach(e -> attachments.put(e.getKey(), e.getValue().getAsString()));
+            }
+            // A binary Java model AST requires an attached source buffer.
+            // Decompiler text is an editor fallback, not a compilation unit.
+            String source = cf == null ? null : ClassFileService.attachedSource(cf, attachments);
+            if (source == null) return Map.of();
+            String uri = str(query, "uri");
+            if (uri == null) return Map.of();
+            files = new HashMap<>(files == null ? Map.of() : files);
+            files.put(uri, source);
+            owned = new ArrayList<>(owned == null ? files.keySet() : owned);
+            if (!owned.contains(uri)) owned.add(uri);
+        }
         Index idx = index(files, classpath, sourceLevel, owned);
         return switch (op) {
             case "select" -> select(idx, str(query, "uri"), intOf(query, "line"), intOf(query, "character"));
@@ -438,7 +457,7 @@ final class SemanticIndexService {
         List<Map<String, Object>> calls = new ArrayList<>();
         Map<String, Elem> elements = new LinkedHashMap<>();
         Elem member = key == null ? null : idx.elements.get(key);
-        if (member != null && member.fromSource) {
+        if (member != null && member.uri != null) {
             if ("method".equals(member.kind) && member.declaringTypeKey != null
                     && (Modifier.isAbstract(member.flags) || isInterface(idx, member.declaringTypeKey))) {
                 // CalleeAnalyzerVisitor.visit(MethodDeclaration): implementations of an abstract method
@@ -725,7 +744,8 @@ final class SemanticIndexService {
         // ── declarations ──
 
         private Elem declare(Elem e, ASTNode node, SimpleName name) {
-            e.fromSource = true;
+            e.fromSource = !uri.startsWith("jdt:");
+            if (!e.fromSource) locateBinary(e);
             e.uri = uri;
             e.start = node.getStartPosition();
             e.end = node.getStartPosition() + node.getLength();
@@ -819,7 +839,7 @@ final class SemanticIndexService {
                 if (p.isVarargs()) text += "[]";
                 sigs.add(Signature.createTypeSignature(text, false));
             }
-            e.paramSigs = sigs;
+            if (!uri.startsWith("jdt:")) e.paramSigs = sigs;
             declare(e, node, node.getName());
             e.overrides = overridden(b);
             Elem owner = idx.elements.get(e.declaringTypeKey);

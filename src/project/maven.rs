@@ -579,7 +579,7 @@ fn to_project(
     let mut options = project_prefs(dir);
     options.extend(compliance_options(&version));
 
-    Project {
+    let mut project = Project {
         name: model.artifact.clone(),
         root: dir.to_path_buf(),
         kind: ProjectKind::Maven,
@@ -587,7 +587,19 @@ fn to_project(
         libraries,
         project_deps,
         options,
+    };
+    // m2e retains explicitly added raw library entries alongside its Maven
+    // container. Their sourcepath is authoritative, including no attachment.
+    if let Ok(xml) = std::fs::read_to_string(dir.join(".classpath")) {
+        let mut raw = project.clone();
+        raw.libraries.clear();
+        super::eclipse::apply_classpath(&mut raw, &xml);
+        for lib in raw.libraries {
+            project.libraries.retain(|existing| existing.path != lib.path);
+            project.libraries.push(lib);
+        }
     }
+    project
 }
 
 #[cfg(test)]

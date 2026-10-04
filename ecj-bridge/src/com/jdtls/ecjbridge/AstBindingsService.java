@@ -112,7 +112,11 @@ final class AstBindingsService {
     private AstBindingsService() {}
 
     static AstBindingsResponse handle(BridgeProtocol.Request req) {
+        ClassFileService.ClassFileDesc classFile = req.classFile == null ? null : ClassFileService.complete(req.classFile);
         String source = req.files == null ? null : req.files.get(req.uri);
+        if (classFile != null) {
+            source = ClassFileService.attachedSource(classFile, req.sourceAttachments == null ? Map.of() : req.sourceAttachments);
+        }
         if (source == null) {
             return new AstBindingsResponse(req.id, List.of(), List.of(), List.of());
         }
@@ -129,7 +133,7 @@ final class AstBindingsService {
         parser.setBindingsRecovery(true);
         parser.setStatementsRecovery(true);
         parser.setCompilerOptions(BridgeOptions.map(req.sourceLevel));
-        parser.setUnitName(unitName(req.uri));
+        parser.setUnitName(classFile == null ? unitName(req.uri) : ClassFileService.unitName(classFile));
         String[] cp = req.classpath != null ? req.classpath.toArray(new String[0]) : new String[0];
         parser.setEnvironment(cp, sourcepath, null, true);
         CompilationUnit cu = (CompilationUnit) parser.createAST(null);

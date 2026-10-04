@@ -535,6 +535,10 @@ final class ClassFileService {
 
     /** Unit name used when parsing the class file's contents ("/java/util/Map.java"). */
     static String unitName(ClassFileDesc d) {
+        if (d.sourceFileName != null) {
+            String pkg = d.packageName == null || d.packageName.isEmpty() ? "" : d.packageName.replace('.', '/') + "/";
+            return "/" + pkg + d.sourceFileName;
+        }
         String top = topLevelBinaryName(d);
         return "/" + top.replace('.', '/') + ".java";
     }

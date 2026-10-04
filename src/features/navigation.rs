@@ -385,20 +385,25 @@ fn is_resolvable(d: &Dispatcher, uri: &Url) -> bool {
 /// `java/classFileContents` (`ContentProviderManager.getContent`): attached
 /// source, else the FernFlower-decompiled class, else "".
 pub async fn class_file_contents(d: &Dispatcher, uri: &str) -> String {
+    class_file_document(d, uri).await.map(|(text, _)| text).unwrap_or_default()
+}
+
+/// Text and whether it comes from a source attachment rather than a decompiler.
+pub async fn class_file_document(d: &Dispatcher, uri: &str) -> Option<(String, bool)> {
     if !d.is_ecj_ready().await {
-        return String::new();
+        return None;
     }
     let ws = workspace(d);
     let desc = if uri.starts_with("jdt:") {
         match class_file_target(&ws, uri) {
             Some((desc, _)) => desc,
-            None => return String::new(),
+            None => return None,
         }
     } else {
         // A `.class` file on disk.
-        let Some(path) = Url::parse(uri).ok().and_then(|u| u.to_file_path().ok()) else { return String::new() };
+        let Some(path) = Url::parse(uri).ok().and_then(|u| u.to_file_path().ok()) else { return None };
         if !path.is_file() || path.extension().is_none_or(|e| e != "class") {
-            return String::new();
+            return None;
         }
         ClassFileDesc {
             root: path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
@@ -410,8 +415,8 @@ pub async fn class_file_contents(d: &Dispatcher, uri: &str) -> String {
     };
     let req = BridgeRequest::ClassFileContents { id: next_id(), class_file: desc, source_attachments: source_attachments(&ws) };
     match d.send_request(req).await {
-        Ok(BridgeResponse::ClassFileContents { contents, .. }) => contents,
-        _ => String::new(),
+        Ok(BridgeResponse::ClassFileContents { contents, attached_source, .. }) if !contents.is_empty() => Some((contents, attached_source)),
+        _ => None,
     }
 }
 

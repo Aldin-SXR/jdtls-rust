@@ -4,8 +4,6 @@ mod common;
 use common::jdtls::{test_default_options, Workspace};
 use serde_json::{json, Value};
 
-const CLASS_FILE_URI: &str = "jdt://contents/foo.jar/foo/bar.class?%3Dsemantic-tokens%2Ffoo.jar%3Cfoo%28bar.class";
-
 /// `SemanticTokensHandler.legend()` token types, in legend order.
 const TOKEN_TYPES: &[&str] = &[
     "namespace", "class", "interface", "enum", "enumMember", "type", "typeParameter", "method", "property", "variable",
@@ -40,8 +38,18 @@ fn set_options(ws: &mut Workspace) {
 }
 
 /// `addTestLibraryToClasspath`: `foo.jar` with `foo-sources.jar` attached.
-/// Only meaningful together with jdt:// class file support.
-fn add_test_library_to_classpath(_ws: &mut Workspace) {}
+fn add_test_library_to_classpath(ws: &mut Workspace) {
+    let root = ws.project_root("semantic-tokens");
+    std::fs::write(root.join(".classpath"), concat!(
+        "<classpath>",
+        "<classpathentry kind=\"src\" path=\"src/main/java\"/>",
+        "<classpathentry kind=\"con\" path=\"org.eclipse.jdt.launching.JRE_CONTAINER\"/>",
+        "<classpathentry kind=\"con\" path=\"org.eclipse.m2e.MAVEN2_CLASSPATH_CONTAINER\"/>",
+        "<classpathentry kind=\"lib\" path=\"foo.jar\" sourcepath=\"foo-sources.jar\"/>",
+        "<classpathentry kind=\"output\" path=\"target/classes\"/>",
+        "</classpath>",
+    )).unwrap();
+}
 
 fn get_uri(ws: &Workspace, compilation_unit_name: &str) -> String {
     let root = ws.project_root("semantic-tokens");
@@ -74,7 +82,11 @@ impl TokenAssertionHelper {
             .map(|v: &Value| v.as_u64().unwrap())
             .collect();
         assert!(data.len() % 5 == 0, "Semantic tokens data should contain 5 integers per token");
-        let text = ws.read(uri);
+        let text = if uri.starts_with("jdt:") {
+            ws.request("java/classFileContents", json!({ "uri": uri })).as_str().expect("class file text").to_owned()
+        } else {
+            ws.read(uri)
+        };
         let buffer = text.split('\n').map(|l| l.trim_end_matches('\r').to_owned()).collect();
         TokenAssertionHelper {
             buffer,
@@ -150,11 +162,10 @@ impl TokenAssertionHelper {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile support (foo.jar with foo-sources.jar attached)"]
 fn test_semantic_tokens_source_attachment() {
     let mut ws = setup();
     add_test_library_to_classpath(&mut ws);
-    let uri = CLASS_FILE_URI.to_owned();
+    let uri = ws.class_file_uri("semantic-tokens", "foo.bar");
     TokenAssertionHelper::begin_assertion(&mut ws, &uri, &[])
         .assert_next_token("foo", "namespace", &[])
         .assert_next_token("public", "modifier", &[])

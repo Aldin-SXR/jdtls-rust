@@ -74,8 +74,8 @@ pub fn apply_classpath(project: &mut Project, classpath_xml: &str) {
                 let jar = resolve_lib_path(&project.root, path);
                 let source = entry
                     .attribute("sourcepath")
-                    .map(|s| resolve_lib_path(&project.root, s))
-                    .or_else(|| source_attachment(&jar));
+                    .filter(|s| !s.is_empty())
+                    .map(|s| resolve_lib_path(&project.root, s));
                 project.libraries.push(Library { path: jar, source, is_test });
             }
             "var" => {
