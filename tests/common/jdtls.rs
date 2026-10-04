@@ -356,6 +356,11 @@ impl Workspace {
         self.client().request(method, params)
     }
 
+    /// Whether the server has been started.
+    pub fn client_started(&self) -> bool {
+        self.client.is_some()
+    }
+
     // ── Lookup ───────────────────────────────────────────────────────────────
 
     /// `ClassFileUtil.getURI(project, fqn)` for source types: the file under

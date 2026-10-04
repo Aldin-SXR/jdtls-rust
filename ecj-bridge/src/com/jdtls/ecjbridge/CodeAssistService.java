@@ -110,6 +110,22 @@ final class CodeAssistService {
         public String enclosingKind;
         public String enclosingTypeName;
         public boolean enclosingStatic;
+        public boolean enclosingInterface;
+        public String enclosingMethodName;
+        /** Simple class name of the engine's completion node (CompletionOnKeyword2, ...). */
+        public String completionNode;
+        public String completionNodeParent;
+        /** IType.getFields() of the enclosing type (source model form). */
+        public List<EnclosingField> enclosingFields = new ArrayList<>();
+        /** IType.getMethods() names of the enclosing type. */
+        public List<String> enclosingMethods = new ArrayList<>();
+    }
+
+    static final class EnclosingField {
+        public String name;
+        public String typeSignature;
+        public int flags;
+        public boolean isEnumConstant;
     }
 
     static final class VisibleElement {
@@ -118,6 +134,7 @@ final class CodeAssistService {
         public String typeSignature; // as the Java model reports it
         public int parameterCount;
         public String returnType;    // methods: return type signature (model form)
+        public boolean inherited;    // declared outside the enclosing type
     }
 
     static final class Result {
@@ -125,12 +142,45 @@ final class CodeAssistService {
         public List<Proposal> proposals = new ArrayList<>();
         /** parameter type signature → assignable visible elements (jdt.ls getAssignableElements). */
         public Map<String, List<VisibleElement>> visibleElements = new LinkedHashMap<>();
+        /** Proposal kinds the engine asked about through {@code isIgnored(kind)}. */
+        public java.util.SortedSet<Integer> completionKinds = new java.util.TreeSet<>();
     }
 
     // ── Entry point ──────────────────────────────────────────────────────────
 
+    /** {@code codeAssist} request: {@code query.op} selects the operation. */
+    static Object handle(BridgeProtocol.Request req) {
+        com.google.gson.JsonObject q = req.query == null ? new com.google.gson.JsonObject() : req.query;
+        String op = q.has("op") ? q.get("op").getAsString() : "complete";
+        Map<String, String> files = req.files == null ? Map.of() : req.files;
+        List<String> classpath = req.classpath == null ? List.of() : req.classpath;
+        String level = req.sourceLevel == null ? "21" : req.sourceLevel;
+        switch (op) {
+            case "complete":
+                return new CodeAssistService().complete(files, classpath, level, req.uri, req.offset,
+                        new java.util.HashSet<>(jsonStrings(q, "testUris")), jsonStrings(q, "favorites"),
+                        jsonStrings(q, "typeFilters"), q.has("visibleElements") && q.get("visibleElements").getAsBoolean(),
+                        q.has("unitPackage") && !q.get("unitPackage").isJsonNull() ? q.get("unitPackage").getAsString() : null);
+            default:
+                return CodeAssistOps.handle(op, q, files, classpath, level, req.uri, req.offset);
+        }
+    }
+
+    static List<String> jsonStrings(com.google.gson.JsonObject q, String key) {
+        List<String> out = new ArrayList<>();
+        if (q.has(key) && q.get(key).isJsonArray()) {
+            for (com.google.gson.JsonElement e : q.getAsJsonArray(key)) out.add(e.getAsString());
+        }
+        return out;
+    }
+
     Result complete(Map<String, String> files, List<String> classpath, String sourceLevel, String uri, int offset,
             Set<String> testUris, List<String> favorites, List<String> typeFilters, boolean visibleElements) {
+        return complete(files, classpath, sourceLevel, uri, offset, testUris, favorites, typeFilters, visibleElements, null);
+    }
+
+    Result complete(Map<String, String> files, List<String> classpath, String sourceLevel, String uri, int offset,
+            Set<String> testUris, List<String> favorites, List<String> typeFilters, boolean visibleElements, String unitPackage) {
         String source = files.get(uri);
         if (source == null) source = "";
         boolean isTest = testUris.contains(uri);
@@ -158,8 +208,186 @@ final class CodeAssistService {
         // getResolvedSignature() resolves source constructor signatures through the
         // "no cache" environment; reuse ours instead of a model-based one.
         setField(CompletionEngine.class, engine, "noCacheNameEnvironment", env);
-        engine.complete(new InMemoryCompilationUnit(uri, source), offset, 0, null);
+        engine.complete(new InMemoryCompilationUnit(uri, source).withPackage(unitPackage), offset, 0, null);
         return requestor.result;
+    }
+
+    // ── Template scope (CompilationUnitCompletion) ──────────────────────────
+
+    static final class ScopeVariable {
+        public String name;
+        public String signature;
+        public boolean isArray;
+        public boolean isIterable;
+        public List<String> memberTypeNames = new ArrayList<>();
+        public List<String> supertypes = new ArrayList<>();
+    }
+
+    static final class TemplateScope {
+        public List<ScopeVariable> locals = new ArrayList<>();
+        public List<ScopeVariable> fields = new ArrayList<>();
+        public String enclosingType;
+        public String enclosingMethod;
+    }
+
+    /**
+     * The variables JDT's {@code CompilationUnitCompletion} collects by code
+     * completion at {@code offset} (the template start), with the type facts
+     * the template resolvers need.
+     */
+    TemplateScope templateScope(Map<String, String> files, List<String> classpath, String sourceLevel, String uri, int offset,
+            Set<String> testUris, int contextOffset, String unitPackage) {
+        String source = files.get(uri);
+        if (source == null) source = "";
+        boolean isTest = testUris.contains(uri);
+        CodeAssistEnvironment env = CodeAssistEnvironment.create(files, testUris, classpath, sourceLevel, uri, !isTest);
+        Map<String, String> options = BridgeOptions.map(sourceLevel);
+        IJavaProject project = javaProjectProxy(options);
+        TemplateScope scope = new TemplateScope();
+        List<String[]> locals = new ArrayList<>();
+        List<String[]> fields = new ArrayList<>();
+        CompletionEngine[] engineRef = new CompletionEngine[1];
+        CompletionContext[] contextRef = new CompletionContext[1];
+        CompletionRequestor requestor = new CompletionRequestor() {
+            {
+                setIgnored(CompletionProposal.ANONYMOUS_CLASS_DECLARATION, true);
+                setIgnored(CompletionProposal.ANONYMOUS_CLASS_CONSTRUCTOR_INVOCATION, true);
+                setIgnored(CompletionProposal.KEYWORD, true);
+                setIgnored(CompletionProposal.LABEL_REF, true);
+                setIgnored(CompletionProposal.METHOD_DECLARATION, true);
+                setIgnored(CompletionProposal.METHOD_NAME_REFERENCE, true);
+                setIgnored(CompletionProposal.METHOD_REF, true);
+                setIgnored(CompletionProposal.CONSTRUCTOR_INVOCATION, true);
+                setIgnored(CompletionProposal.METHOD_REF_WITH_CASTED_RECEIVER, true);
+                setIgnored(CompletionProposal.PACKAGE_REF, true);
+                setIgnored(CompletionProposal.MODULE_REF, true);
+                setIgnored(CompletionProposal.MODULE_DECLARATION, true);
+                setIgnored(CompletionProposal.POTENTIAL_METHOD_DECLARATION, true);
+                setIgnored(CompletionProposal.VARIABLE_DECLARATION, true);
+                setIgnored(CompletionProposal.TYPE_REF, true);
+                setRequireExtendedContext(true);
+            }
+
+            @Override
+            public boolean isTestCodeExcluded() {
+                return !isTest;
+            }
+
+            @Override
+            public void acceptContext(CompletionContext context) {
+                contextRef[0] = context;
+            }
+
+            @Override
+            public void accept(CompletionProposal proposal) {
+                String name = String.valueOf(proposal.getCompletion());
+                String signature = String.valueOf(proposal.getSignature());
+                if (proposal.getKind() == CompletionProposal.LOCAL_VARIABLE_REF) {
+                    locals.add(new String[] { name, signature });
+                } else if (proposal.getKind() == CompletionProposal.FIELD_REF) {
+                    fields.add(new String[] { name, signature });
+                }
+            }
+
+            @Override
+            public void endReporting() {
+                try {
+                    describe(scope.locals, locals);
+                    describe(scope.fields, fields);
+                } catch (RuntimeException e) {
+                    // best effort
+                }
+            }
+
+            private void describe(List<ScopeVariable> out, List<String[]> vars) {
+                LookupEnvironment lookup = getField(CompletionEngine.class, engineRef[0], "lookupEnvironment");
+                InternalExtendedCompletionContext ext = contextRef[0] instanceof InternalCompletionContext ic
+                        ? getField(InternalCompletionContext.class, ic, "extendedContext") : null;
+                Scope assistScope = ext == null ? null : getField(InternalExtendedCompletionContext.class, ext, "assistScope");
+                for (String[] v : vars) {
+                    ScopeVariable sv = new ScopeVariable();
+                    sv.name = v[0];
+                    sv.signature = v[1];
+                    sv.isArray = Signature.getTypeSignatureKind(v[1]) == Signature.ARRAY_TYPE_SIGNATURE;
+                    TypeBinding binding = null;
+                    if (ext != null && assistScope != null) {
+                        binding = typeFromSignature(ext, v[1], assistScope);
+                    }
+                    if (binding != null && lookup != null) {
+                        collectSupertypes(binding, sv.supertypes, new java.util.HashSet<>());
+                        if (!sv.isArray) {
+                            ReferenceBinding iterable = lookup.getType(new char[][] { "java".toCharArray(), "lang".toCharArray(), "Iterable".toCharArray() });
+                            TypeBinding sup = iterable == null ? null : binding.findSuperTypeOriginatingFrom(iterable);
+                            if (sup != null) {
+                                sv.isIterable = true;
+                                TypeBinding member = null;
+                                if (sup instanceof ParameterizedTypeBinding ptb && ptb.arguments != null && ptb.arguments.length > 0) {
+                                    member = ptb.arguments[0];
+                                    if (member instanceof WildcardBinding w) {
+                                        member = w.boundKind == org.eclipse.jdt.internal.compiler.ast.Wildcard.EXTENDS ? w.bound : null;
+                                    } else if (member instanceof TypeVariableBinding tv) {
+                                        member = tv.firstBound;
+                                    }
+                                }
+                                if (member == null) {
+                                    sv.memberTypeNames.add("Object");
+                                } else {
+                                    sv.memberTypeNames.add(memberTypeName(member, contextRef[0]));
+                                }
+                            } else {
+                                sv.memberTypeNames.add("Object");
+                            }
+                        }
+                    }
+                    if (sv.isArray) {
+                        String element = Signature.createArraySignature(Signature.getElementType(v[1]), Signature.getArrayCount(v[1]) - 1);
+                        sv.memberTypeNames.clear();
+                        sv.memberTypeNames.add(Signature.getSimpleName(Signature.getSignatureSimpleName(element)));
+                    }
+                    if (sv.memberTypeNames.isEmpty()) sv.memberTypeNames.add("Object");
+                    out.add(sv);
+                }
+            }
+
+            private String memberTypeName(TypeBinding member, CompletionContext ctx) {
+                String sig = new String(member.genericTypeSignature()).replace('/', '.');
+                try {
+                    return Signature.getSimpleName(Signature.getSignatureSimpleName(sig));
+                } catch (RuntimeException e) {
+                    return new String(member.sourceName());
+                }
+            }
+
+            private void collectSupertypes(TypeBinding t, List<String> out, java.util.Set<TypeBinding> seen) {
+                if (!(t instanceof ReferenceBinding rb) || !seen.add(t.erasure())) return;
+                out.add(new String(t.erasure().readableName()));
+                if (rb.superclass() != null) collectSupertypes(rb.superclass(), out, seen);
+                ReferenceBinding[] ifs = rb.superInterfaces();
+                if (ifs != null) for (ReferenceBinding i : ifs) collectSupertypes(i, out, seen);
+                if (rb.isInterface()) out.add("java.lang.Object");
+            }
+
+            private TypeBinding typeFromSignature(InternalExtendedCompletionContext ext, String signature, Scope scope) {
+                try {
+                    Method m = InternalExtendedCompletionContext.class.getDeclaredMethod("getTypeFromSignature", String.class, Scope.class);
+                    m.setAccessible(true);
+                    return (TypeBinding) m.invoke(ext, signature, scope);
+                } catch (ReflectiveOperationException e) {
+                    return null;
+                }
+            }
+        };
+        CompletionEngine engine = new CompletionEngine(env, requestor, options, project, null, new NullProgressMonitor());
+        engineRef[0] = engine;
+        setField(CompletionEngine.class, engine, "noCacheNameEnvironment", env);
+        engine.complete(new InMemoryCompilationUnit(uri, source).withPackage(unitPackage), offset, 0, null);
+        // enclosing type / method (CompilationUnitContext.findEnclosingElement at the template start)
+        Result main = complete(files, classpath, sourceLevel, uri, contextOffset, testUris, List.of(), List.of(), false, unitPackage);
+        if (main.context != null) {
+            scope.enclosingType = main.context.enclosingTypeName;
+            scope.enclosingMethod = main.context.enclosingMethodName;
+        }
+        return scope;
     }
 
     // ── Requestor ────────────────────────────────────────────────────────────
@@ -184,6 +412,12 @@ final class CodeAssistService {
         @Override
         public boolean isTestCodeExcluded() {
             return excludeTest;
+        }
+
+        @Override
+        public boolean isIgnored(int completionProposalKind) {
+            result.completionKinds.add(completionProposalKind);
+            return super.isIgnored(completionProposalKind);
         }
 
         @Override
@@ -361,6 +595,10 @@ final class CodeAssistService {
             c.enclosingKind = "unit";
             InternalExtendedCompletionContext ext = extended();
             if (ext == null) return;
+            ASTNode node = ext.getCompletionNode();
+            ASTNode parent = ext.getCompletionNodeParent();
+            c.completionNode = node == null ? null : node.getClass().getSimpleName();
+            c.completionNodeParent = parent == null ? null : parent.getClass().getSimpleName();
             CompilationUnitDeclaration unit = getField(InternalExtendedCompletionContext.class, ext, "compilationUnitDeclaration");
             if (unit == null || unit.types == null) return;
             int offset = c.offset;
@@ -374,6 +612,33 @@ final class CodeAssistService {
             c.enclosingKind = "type";
             c.enclosingTypeName = new String(t.name);
             c.enclosingStatic = false;
+            c.enclosingMethodName = null;
+            c.enclosingInterface = TypeDeclaration.kind(t.modifiers) == TypeDeclaration.INTERFACE_DECL
+                    || TypeDeclaration.kind(t.modifiers) == TypeDeclaration.ANNOTATION_TYPE_DECL;
+            c.enclosingFields = new ArrayList<>();
+            c.enclosingMethods = new ArrayList<>();
+            if (t.fields != null) {
+                for (FieldDeclaration f : t.fields) {
+                    if (f instanceof Initializer || f.name == null) continue;
+                    EnclosingField ef = new EnclosingField();
+                    ef.name = new String(f.name);
+                    ef.isEnumConstant = f.getKind() == AbstractVariableDeclaration.ENUM_CONSTANT;
+                    ef.flags = f.modifiers & 0xFFFF;
+                    if (ef.isEnumConstant) {
+                        ef.flags |= org.eclipse.jdt.internal.compiler.classfmt.ClassFileConstants.AccEnum;
+                        ef.typeSignature = Signature.createTypeSignature(t.name, false);
+                    } else if (f.type != null) {
+                        ef.typeSignature = org.eclipse.jdt.internal.core.util.Util.typeSignature(f.type);
+                    }
+                    c.enclosingFields.add(ef);
+                }
+            }
+            if (t.methods != null) {
+                for (AbstractMethodDeclaration m : t.methods) {
+                    if (m.isDefaultConstructor() || m.isClinit()) continue;
+                    c.enclosingMethods.add(new String(m.selector));
+                }
+            }
             if (t.memberTypes != null) {
                 for (TypeDeclaration m : t.memberTypes) {
                     if (enclosing(m, offset, c)) return true;
@@ -385,6 +650,7 @@ final class CodeAssistService {
                     if (offset >= m.declarationSourceStart && offset <= m.declarationSourceEnd) {
                         c.enclosingKind = "method";
                         c.enclosingStatic = m.isStatic();
+                        c.enclosingMethodName = new String(m.selector);
                         return true;
                     }
                 }
@@ -462,6 +728,7 @@ final class CodeAssistService {
                 VisibleElement e = new VisibleElement();
                 e.kind = 1;
                 e.name = new String(b.name);
+                e.inherited = !isEnclosingType(scope, b.declaringClass);
                 if (scope.isDefinedInSameUnit(b.declaringClass)) {
                     FieldDeclaration decl = b.sourceField();
                     e.typeSignature = decl != null && decl.type != null
@@ -478,6 +745,7 @@ final class CodeAssistService {
                 VisibleElement e = new VisibleElement();
                 e.kind = 2;
                 e.name = new String(b.selector);
+                e.inherited = !isEnclosingType(scope, b.declaringClass);
                 e.parameterCount = b.parameters.length;
                 if (scope.isDefinedInSameUnit(b.declaringClass)) {
                     AbstractMethodDeclaration decl = b.sourceMethod();
@@ -494,6 +762,11 @@ final class CodeAssistService {
                 out.add(e);
             }
             return out;
+        }
+
+        private static boolean isEnclosingType(Scope scope, ReferenceBinding declaring) {
+            org.eclipse.jdt.internal.compiler.lookup.SourceTypeBinding enclosing = scope.enclosingSourceType();
+            return enclosing != null && declaring != null && TypeBinding.equalsEquals(enclosing, declaring.erasure());
         }
 
         private static String resolvedSignature(TypeBinding type) {

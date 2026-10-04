@@ -29,5 +29,7 @@ async fn main() {
         .custom_method("java/classFileContents", JavaLanguageServer::class_file_contents)
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
         .finish();
-    Server::new(stdin, stdout, socket).serve(lenient_uri::LenientUri::new(service)).await;
+    Server::new(stdin, stdout, socket)
+        .serve(features::completion::CompletionService::new(lenient_uri::LenientUri::new(service)))
+        .await;
 }

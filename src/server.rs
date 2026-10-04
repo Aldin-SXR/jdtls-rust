@@ -154,6 +154,12 @@ impl JavaLanguageServer {
         let dispatcher = Arc::new(Dispatcher::new(Arc::clone(&store), Arc::clone(&config)));
 
         let (compile_tx, _) = watch::channel(0u64);
+        crate::features::completion::set_env(crate::features::completion::Env {
+            dispatcher: Arc::clone(&dispatcher),
+            store: Arc::clone(&store),
+            client: client.clone(),
+            config: Arc::clone(&config),
+        });
 
         Self {
             client,
@@ -267,6 +273,7 @@ impl LanguageServer for JavaLanguageServer {
         *self.client_flavor.write().await = detect_client_flavor(params.client_info.as_ref());
         crate::features::client_caps::set(&params.capabilities);
         crate::features::preferences::init(&params);
+        crate::features::completion::prefs::init(&params);
         *self.workspace_folders.write().await = params.workspace_folders.clone().unwrap_or_default();
         navigation::init_preferences(params.initialization_options.as_ref());
         *self.rename_client.write().await = crate::features::rename::RenameClient::from_capabilities(&params.capabilities);
@@ -362,11 +369,15 @@ impl LanguageServer for JavaLanguageServer {
                         ..Default::default()
                     },
                 )),
+                // jdt.ls `CompletionHandler.getDefaultCompletionOptions`.
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![
-                        ".".into(), "@".into(), "#".into(),
+                        ".".into(), "@".into(), "#".into(), "*".into(), " ".into(),
                     ]),
-                    resolve_provider: Some(false),
+                    resolve_provider: Some(true),
+                    completion_item: crate::features::completion::prefs::Client::load()
+                        .label_details
+                        .then(|| CompletionOptionsCompletionItem { label_details_support: Some(true) }),
                     ..Default::default()
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -528,6 +539,7 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         navigation::update_settings(&params.settings);
+        crate::features::preferences::update(&params.settings);
         let (restart_ecj, refresh_inlay_hints) = {
             let mut config = self.config.write().await;
             let old_inlay_hints = config.inlay_hints.clone();
@@ -648,186 +660,8 @@ impl LanguageServer for JavaLanguageServer {
         }
     }
 
-    // ── Completion ────────────────────────────────────────────────────────────
-
-    async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
-        let uri = &params.text_document_position.text_document.uri;
-        let pos = params.text_document_position.position;
-        let trigger_char: Option<&str> = params
-            .context
-            .as_ref()
-            .and_then(|c| c.trigger_character.as_deref());
-
-        // Wait until the stored content is up-to-date around the cursor.
-        // A plain line-length check is not enough: if the cursor sits before an
-        // existing delimiter like `;`, the stale document can still be "long
-        // enough" while missing the just-typed identifier or trigger character.
-        {
-            let mut change_rx = self.compile_tx.subscribe();
-            let deadline = tokio::time::Instant::now()
-                + std::time::Duration::from_millis(150);
-            loop {
-                let up_to_date = self.store.get(uri).map(|state| {
-                    completion_store_is_fresh(&state.content_string(), pos, trigger_char)
-                }).unwrap_or(true); // document not open yet → don't spin
-
-                if up_to_date || tokio::time::Instant::now() >= deadline {
-                    break;
-                }
-                tokio::select! {
-                    _ = change_rx.changed() => {}
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
-                }
-            }
-        }
-
-        let (offset, content, tree) = {
-            match self.store.get(uri) {
-                None => return Ok(None),
-                Some(state) => (
-                    pos_to_offset(&state.content, pos).unwrap_or(0),
-                    state.content_string(),
-                    state.tree.clone(),
-                ),
-            }
-        };
-
-        let import_prefix: Option<String> =
-            detect_import_prefix(&content, pos.line, pos.character, trigger_char);
-        let in_import = import_prefix.is_some();
-        let in_member_access = is_member_access_context(&content, offset);
-
-        // Suppress completions when the cursor is in a variable/parameter name slot.
-        if let Some(tree) = tree.as_ref() {
-            if syntax_completion::is_in_declaration_name(tree, &content, offset) {
-                return Ok(Some(CompletionResponse::Array(vec![])));
-            }
-        }
-        // Also suppress when the cursor sits right after a type name on the same line
-        // (e.g. `int |`, `final int myV|`) — the user is about to type a *new* name.
-        if syntax_completion::is_awaiting_declaration_name(&content, offset) {
-            return Ok(Some(CompletionResponse::Array(vec![])));
-        }
-        // Suppress auto-trigger right after `= ` — user hasn't started typing yet.
-        if syntax_completion::is_after_assignment_operator(&content, offset) {
-            return Ok(Some(CompletionResponse::Array(vec![])));
-        }
-        if is_after_numeric_literal_dot(&content, offset) {
-            return Ok(Some(CompletionResponse::Array(vec![])));
-        }
-        if let Some(tree) = tree.as_ref() {
-            if !syntax_completion::is_inside_method_body(tree, offset)
-                && syntax_completion::is_inside_class_body(tree, offset)
-            {
-                if syntax_completion::is_after_member_modifiers(&content, offset)
-                    || syntax_completion::is_in_member_param_name_slot(&content, offset)
-                    || syntax_completion::is_after_member_parameter_list(&content, offset)
-                {
-                    return Ok(Some(CompletionResponse::Array(vec![])));
-                }
-            }
-        }
-
-        let mut items: Vec<CompletionItem> = Vec::new();
-
-        if !in_import && !in_member_access {
-            let prefix = syntax_completion::current_prefix(&content, offset);
-            let in_params = tree.as_ref()
-                .map(|t| syntax_completion::is_in_parameter_declaration(t, offset))
-                .unwrap_or(false);
-            let (in_method, in_class) = tree.as_ref()
-                .map(|t| {
-                    let m = syntax_completion::is_inside_method_body(t, offset);
-                    let c = m || syntax_completion::is_inside_class_body(t, offset);
-                    (m, c)
-                })
-                .unwrap_or((false, false));
-
-            if in_params {
-                // Parameter declaration: only type names are valid.
-                // But if the cursor is in the parameter-name slot (type already written),
-                // suppress all Rust-side completions — the ECJ bridge handles it too.
-                let in_param_name_slot = syntax_completion::is_in_param_name_slot(&content, offset);
-                if !in_param_name_slot {
-                    if let Some(tree) = tree.as_ref() {
-                        items.extend(syntax_completion::import_type_completions(tree, &content, &prefix));
-                    }
-                }
-            } else {
-                // Local variables, parameters, and imported types are only valid
-                // inside a class body — never at the file top level.
-                if in_class {
-                    if let Some(tree) = tree.as_ref() {
-                        items.extend(syntax_completion::local_completions(tree, &content, offset));
-                        items.extend(syntax_completion::import_type_completions(tree, &content, &prefix));
-                    }
-                }
-
-                if is_expression_context(&content, offset) {
-                    items.extend(snippets::expression_keywords());
-                } else if in_method {
-                    items.extend(snippets::method_body_snippets());
-                } else if in_class {
-                    items.extend(snippets::class_body_keywords());
-                    items.extend(snippets::class_body_snippets());
-                }
-                // Top level: nothing added from Rust side; ECJ bridge handles it.
-            }
-        } else if in_member_access && !in_import {
-            // Syntax-level this. completion (ECJ will override with full semantic results)
-            if let Some(tree) = tree.as_ref() {
-                items.extend(syntax_completion::this_member_completions(tree, &content, offset));
-            }
-            items.extend(snippets::postfix_snippets(&content, offset, pos));
-        }
-
-        // Compute the word range at the cursor. The CodeRunner Monaco adapter in
-        // `ui/` relies on the server to provide explicit replacement ranges for
-        // import-path completions and other items, while the simpler `web/`
-        // demo synthesizes its own range client-side.
-        let word_range = word_range_at(&content, pos);
-
-        // Semantic completions from ECJ
-        let in_expr = is_expression_context(&content, offset);
-        if self.dispatcher.is_ecj_ready().await {
-            match self.dispatcher.complete(uri, offset, import_prefix, content.clone()).await {
-                Ok(BridgeResponse::Completions { items: bridge_items, .. }) => {
-                    let semantic: Vec<CompletionItem> = bridge_items.iter().filter_map(|c| {
-                        // In expression context (after `=`, `return`, etc.) void methods
-                        // cannot produce a value — suppress them.
-                        if in_expr
-                            && c.kind == 2  // METHOD
-                            && c.label.ends_with(": void")
-                        {
-                            return None;
-                        }
-                        let mut item = comp_conv::to_lsp(c);
-                        attach_completion_text_edit(&mut item, word_range.clone());
-                        Some(item)
-                    }).collect();
-                    if in_import {
-                        items = semantic;
-                    } else {
-                        // Prepend semantic items so they sort first
-                        items = semantic.into_iter().chain(items).collect();
-                    }
-                }
-                Ok(BridgeResponse::Error { message, .. }) => {
-                    warn!("completion ECJ error: {message}");
-                }
-                Err(e) => warn!("completion error: {e}"),
-                _ => {}
-            }
-        }
-
-        if word_range.is_some() {
-            for item in &mut items {
-                attach_completion_text_edit(item, word_range.clone());
-            }
-        }
-
-        Ok(Some(CompletionResponse::Array(Self::dedupe_completion_items(items))))
-    }
+    // textDocument/completion and completionItem/resolve are served by
+    // `features::completion::CompletionService` (see main.rs).
 
     async fn document_link(&self, params: DocumentLinkParams) -> LspResult<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;

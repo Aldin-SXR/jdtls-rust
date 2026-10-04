@@ -43,11 +43,22 @@ public class InMemoryCompilationUnit implements ICompilationUnit {
         return base.toCharArray();
     }
 
+    /** The expected package (Java model: the package fragment of the unit), or null. */
+    private char[][] packageName;
+
+    /** Set the package the unit belongs to (dotted, "" for the default package). */
+    public InMemoryCompilationUnit withPackage(String dotted) {
+        if (dotted != null) {
+            this.packageName = dotted.isEmpty() ? new char[0][]
+                    : org.eclipse.jdt.core.compiler.CharOperation.splitOn('.', dotted.toCharArray());
+        }
+        return this;
+    }
+
     @Override
     public char[][] getPackageName() {
-        // Parse package statement from source to derive package name.
-        // ECJ will re-parse it anyway; returning null is fine.
-        return null;
+        // null: the package declaration decides.
+        return packageName;
     }
 
     @Override

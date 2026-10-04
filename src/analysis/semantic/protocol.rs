@@ -298,6 +298,19 @@ pub enum BridgeRequest {
         options: BTreeMap<String, String>,
         query: serde_json::Value,
     },
+    /// JDT code assist without the Java model (`CodeAssistService`);
+    /// `query.op` selects the operation, shapes live in `features::completion`.
+    CodeAssist {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        uri: String,
+        offset: usize,
+        query: serde_json::Value,
+    },
     Shutdown { id: u64 },
 }
 
@@ -439,6 +452,11 @@ pub enum BridgeResponse {
         #[serde(default)]
         result: serde_json::Value,
     },
+    CodeAssist {
+        id: u64,
+        #[serde(default)]
+        result: serde_json::Value,
+    },
     AstBindings {
         id: u64,
         strings: Vec<String>,
@@ -478,6 +496,7 @@ impl BridgeResponse {
             | BridgeResponse::ClassFileContents { id, .. }
             | BridgeResponse::ClassFileInfo { id, .. }
             | BridgeResponse::SemanticSearch { id, .. }
+            | BridgeResponse::CodeAssist { id, .. }
             | BridgeResponse::AstBindings { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
