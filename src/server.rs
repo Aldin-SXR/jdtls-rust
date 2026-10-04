@@ -415,6 +415,25 @@ impl JavaLanguageServer {
         let _ = self.compile_tx.send(next);
     }
 
+    pub async fn check_to_string_status(
+        &self,
+        params: CodeActionParams,
+    ) -> LspResult<crate::features::tostring::CheckToStringResponse> {
+        Ok(crate::features::tostring::check(&self.dispatcher, params).await)
+    }
+    pub async fn generate_to_string(
+        &self,
+        params: crate::features::tostring::GenerateToStringParams,
+    ) -> LspResult<Option<WorkspaceEdit>> {
+        let format = self.format_env().await;
+        let env = crate::correction::edit::Env {
+            dispatcher: &self.dispatcher,
+            format: &format,
+            lifecycle: &self.lifecycle,
+        };
+        Ok(crate::features::tostring::generate(&env, params).await)
+    }
+
     pub async fn check_constructors_status(
         &self,
         params: CodeActionParams,

@@ -30,7 +30,7 @@ import org.eclipse.jdt.core.dom.*;
  * value as a string index).</li>
  * <li>{@code bindings}: one entry per distinct binding, referencing others by
  * index (supertypes, erasure, declaring class, parameter types, ...).
- * Declared members are listed for source types only.</li>
+ * Declared members are listed for source types and their superclass hierarchy.</li>
  * <li>{@code problems}: {@code CompilationUnit.getProblems()}.</li>
  * </ul>
  * String-valued entries index {@code strings}; -1 means absent.
@@ -58,6 +58,7 @@ final class SemanticAstService {
         // method
         public int rt = -1, md = -1;
         public int[] pt, et, pn;
+        public int nameOffset = -1;
     }
 
     static final class ProblemOut {
@@ -177,6 +178,10 @@ final class SemanticAstService {
                 if (type != null) {
                     constructorMembers(type);
                     if (type.getSuperclass() != null) constructorMembers(type.getSuperclass());
+                    java.util.Set<String> seen = new java.util.HashSet<>();
+                    for (ITypeBinding hierarchy = type; hierarchy != null && seen.add(hierarchy.getKey()); hierarchy = hierarchy.getSuperclass()) {
+                        hierarchyMembers(hierarchy);
+                    }
                 }
             }
             constructorMembers(cu.getAST().resolveWellKnownType("java.lang.Object"));
@@ -389,6 +394,14 @@ final class SemanticAstService {
             try {
                 b.n = str(binding.getName());
                 b.m = binding.getModifiers();
+                try {
+                    if (binding.getJavaElement() instanceof org.eclipse.jdt.core.IMember member) {
+                        org.eclipse.jdt.core.ISourceRange nameRange = member.getNameRange();
+                        if (nameRange != null) b.nameOffset = nameRange.getOffset();
+                    }
+                } catch (org.eclipse.jdt.core.JavaModelException | RuntimeException e) {
+                    // Binary members and standalone ASTs can lack source ranges.
+                }
                 long f = 0;
                 if (binding.isDeprecated()) f |= DEPRECATED;
                 if (binding.isRecovered()) f |= RECOVERED;
@@ -451,6 +464,13 @@ final class SemanticAstService {
                 // keep what we have
             }
             return idx;
+        }
+
+        private void hierarchyMembers(ITypeBinding type) {
+            BindingOut out = bindings.get(binding(type));
+            if (out.dmeth == null) out.dmeth = bindings(type.getDeclaredMethods());
+            if (out.dfld == null) out.dfld = bindings(type.getDeclaredFields());
+            if (out.dtyp == null) out.dtyp = bindings(type.getDeclaredTypes());
         }
 
         private void constructorMembers(ITypeBinding type) {

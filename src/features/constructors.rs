@@ -38,6 +38,8 @@ pub struct LspVariableBinding {
     pub is_field: bool,
     #[serde(default)]
     pub is_selected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<Vec<String>>,
 }
 #[derive(Default, Serialize)]
 pub struct CheckConstructorsResponse {
@@ -147,6 +149,7 @@ pub(crate) fn status(context: &Context, selected: &Selection) -> CheckConstructo
                     .unwrap_or_default(),
                 is_field: binding.is_field(),
                 is_selected: names.iter().any(|n| n == binding.name()),
+                parameters: None,
             })
         })
         .collect();

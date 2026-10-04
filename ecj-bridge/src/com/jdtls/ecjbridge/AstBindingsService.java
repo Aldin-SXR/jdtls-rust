@@ -145,11 +145,38 @@ final class AstBindingsService {
         parser.setResolveBindings(true);
         parser.setBindingsRecovery(true);
         parser.setStatementsRecovery(true);
-        parser.setCompilerOptions(BridgeOptions.map(req.sourceLevel));
-        parser.setUnitName(classFile == null ? unitName(req.uri) : ClassFileService.unitName(classFile));
         String[] cp = req.classpath != null ? req.classpath.toArray(new String[0]) : new String[0];
-        parser.setEnvironment(cp, sourcepath, null, true);
+        Map<String, String> parserOptions = BridgeOptions.map(req.sourceLevel);
+        // Standalone ASTParser requires the running VM's system library. An
+        // explicit rt.jar/rtstubs.jar otherwise makes java.util imports ambiguous
+        // against java.base. Limit the workaround to supplied boot classes.
+        if (hasBootClasses(cp)) {
+            parserOptions.put("org.eclipse.jdt.core.compiler.ignoreUnnamedModuleForSplitPackage", "enabled");
+        }
+        parser.setCompilerOptions(parserOptions);
+        parser.setUnitName(classFile == null ? unitName(req.uri) : ClassFileService.unitName(classFile));
+        BridgeOptions.configureEnvironment(parser, cp, sourcepath);
         return (CompilationUnit) parser.createAST(null);
+    }
+
+    private static boolean hasBootClasses(String[] classpath) {
+        for (String entry : classpath) {
+            Path path = Path.of(entry);
+            if (Files.isDirectory(path)) {
+                if (Files.exists(path.resolve("java/lang/Object.class"))) {
+                    return true;
+                }
+            } else {
+                try (java.util.zip.ZipFile jar = new java.util.zip.ZipFile(entry)) {
+                    if (jar.getEntry("java/lang/Object.class") != null) {
+                        return true;
+                    }
+                } catch (IOException ignored) {
+                    // Missing or ordinary classpath entries supply no boot classes.
+                }
+            }
+        }
+        return false;
     }
 
     private static String unitName(String uri) {

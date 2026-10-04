@@ -30,6 +30,7 @@ pub mod semantic;
 pub mod semantic_tokens;
 pub mod signature_help;
 pub mod smart_detection;
+pub mod tostring;
 mod ts_dump;
 pub mod type_hierarchy;
 pub mod workspace_symbols;

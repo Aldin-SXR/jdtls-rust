@@ -779,18 +779,6 @@ public class Main {
 
         // Generate Getter / Setter — available when cursor is on a field declaration.
 
-        // Generate toString() — offered as quickassist (lightbulb) and source.generate.toString (source menu).
-        BridgeAction toStringAction = makeToStringAction(req.uri, source, cu, req.range);
-        if (toStringAction != null) {
-            actions.add(toStringAction);
-            // Also add source.generate.toString variant (same edit, different kind).
-            BridgeAction toStringSource = new BridgeAction();
-            toStringSource.title = "Generate toString()";
-            toStringSource.kind  = "source.generate.toString";
-            toStringSource.edits = toStringAction.edits;
-            actions.add(toStringSource);
-        }
-
         // "Change modifiers to final where possible" — whole-file source action.
         BridgeAction finalModifiers = makeFinalModifiersAction(req.uri, source, cu);
         if (finalModifiers != null) actions.add(finalModifiers);
@@ -2356,94 +2344,6 @@ public class Main {
         int start = lineStart(source, line);
         int end   = lineStart(source, line + 1);
         return removalEditFromOffsets(source, start, end);
-    }
-
-    /**
-     * Generates a {@code toString()} method for the enclosing type at the cursor.
-     * Returns {@code null} if the type already has a {@code toString()} override,
-     * has no fields to include, or the cursor is not inside a type body.
-     * Matches jdtls by offering the action as both {@code quickassist} and
-     * {@code source.generate.toString}.
-     */
-    private static BridgeAction makeToStringAction(String uri, String source,
-            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
-        if (range == null) return null;
-
-        final int cursorLine = range.startLine;
-
-        // Locate the innermost type containing the cursor.
-        final org.eclipse.jdt.core.dom.AbstractTypeDeclaration[] holder = {null};
-        cu.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
-            @Override public boolean visit(org.eclipse.jdt.core.dom.TypeDeclaration n) { return check(n); }
-            @Override public boolean visit(org.eclipse.jdt.core.dom.EnumDeclaration n) { return check(n); }
-            private boolean check(org.eclipse.jdt.core.dom.AbstractTypeDeclaration n) {
-                int s = cu.getLineNumber(n.getStartPosition()) - 1;
-                int e = cu.getLineNumber(n.getStartPosition() + n.getLength() - 1) - 1;
-                if (cursorLine >= s && cursorLine <= e) holder[0] = n;
-                return true;
-            }
-        });
-        org.eclipse.jdt.core.dom.AbstractTypeDeclaration atd = holder[0];
-        if (!(atd instanceof org.eclipse.jdt.core.dom.TypeDeclaration td) || td.isInterface()) return null;
-
-        // Don't offer if toString() already exists.
-        for (org.eclipse.jdt.core.dom.MethodDeclaration md : td.getMethods()) {
-            if ("toString".equals(md.getName().getIdentifier()) && md.parameters().isEmpty()) return null;
-        }
-
-        // Collect instance fields.
-        List<String[]> fields = new ArrayList<>(); // [typeName, fieldName]
-        for (Object bd : td.bodyDeclarations()) {
-            if (!(bd instanceof org.eclipse.jdt.core.dom.FieldDeclaration fd)) continue;
-            if ((fd.getModifiers() & org.eclipse.jdt.core.dom.Modifier.STATIC) != 0) continue;
-            for (Object frag : fd.fragments()) {
-                if (frag instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf) {
-                    fields.add(new String[]{fd.getType().toString(), vdf.getName().getIdentifier()});
-                }
-            }
-        }
-
-        String className = td.getName().getIdentifier();
-        String memberIndent = indentOf(source, cu.getLineNumber(atd.getStartPosition()) - 1) + "    ";
-
-        // Build the method body: "ClassName [field1=" + field1 + ", field2=" + field2 + "]"
-        StringBuilder body = new StringBuilder();
-        body.append("\"").append(className).append(" [");
-        for (int i = 0; i < fields.size(); i++) {
-            if (i > 0) body.append(" + \", ");
-            else body.append("\" + \"");
-            body.append(fields.get(i)[1]).append("=\" + ").append(fields.get(i)[1]);
-        }
-        if (fields.isEmpty()) {
-            body.append("]\"");
-        } else {
-            body.append(" + \"]\"");
-        }
-
-        int classEndOffset = atd.getStartPosition() + atd.getLength() - 1;
-        while (classEndOffset > 0 && source.charAt(classEndOffset) != '}') classEndOffset--;
-        int[] insLC = CompilationService.offsetToLineCol(source, classEndOffset);
-
-        String methodText = "\n"
-                + memberIndent + "@Override\n"
-                + memberIndent + "public String toString() {\n"
-                + memberIndent + "    return " + body + ";\n"
-                + memberIndent + "}\n";
-
-        BridgeTextEdit edit = new BridgeTextEdit();
-        edit.startLine = insLC[0]; edit.startChar = insLC[1];
-        edit.endLine   = insLC[0]; edit.endChar   = insLC[1];
-        edit.newText   = methodText;
-
-        // jdtls offers toString as both quickassist (lightbulb) and source.generate.toString (source menu).
-        // Return the quickassist variant here; the source.generate.toString variant is added as a second action.
-        BridgeAction quickassist = new BridgeAction();
-        quickassist.title = "Generate toString()";
-        quickassist.kind  = "quickassist";
-        BridgeFileEdit fe1 = new BridgeFileEdit(); fe1.uri = uri; fe1.edits = List.of(edit);
-        quickassist.edits = List.of(fe1);
-
-        return quickassist;
     }
 
     private static BridgeAction makeEditAction(String title, String uri, BridgeTextEdit edit) {

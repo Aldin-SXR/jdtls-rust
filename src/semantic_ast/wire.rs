@@ -2,6 +2,10 @@
 
 use serde::Deserialize;
 
+fn minus_one() -> i32 {
+    -1
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct NodeOut {
     pub t: i32,
@@ -60,6 +64,8 @@ pub struct BindingOut {
     pub pt: Option<Vec<i32>>,
     pub et: Option<Vec<i32>>,
     pub pn: Option<Vec<i32>>,
+    #[serde(default = "minus_one", rename = "nameOffset")]
+    pub name_offset: i32,
 }
 
 #[derive(Debug, Default, Deserialize)]

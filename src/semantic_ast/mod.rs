@@ -234,7 +234,7 @@ pub struct Binding {
     pub bound: Option<BindingId>,
     pub generic_type_of_wildcard: Option<BindingId>,
     pub dimensions: i32,
-    /// Declared members — only for source types.
+    /// Declared members of source types and their superclass hierarchy.
     pub declared_methods: Option<Vec<BindingId>>,
     pub declared_fields: Option<Vec<BindingId>>,
     pub declared_types: Option<Vec<BindingId>>,
@@ -250,6 +250,7 @@ pub struct Binding {
     pub parameter_types: Vec<BindingId>,
     pub exception_types: Vec<BindingId>,
     pub parameter_names: Vec<String>,
+    pub name_offset: i32,
 }
 
 /// `IProblem` of the AST (`CompilationUnit.getProblems()`).
@@ -387,6 +388,7 @@ impl Ast {
                 parameter_names: o.pn.as_ref()
                     .map(|v| v.iter().filter_map(|&i| s(i)).collect())
                     .unwrap_or_default(),
+                name_offset: o.name_offset,
             })
             .collect();
         let problems = data

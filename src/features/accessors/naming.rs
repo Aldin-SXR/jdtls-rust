@@ -164,7 +164,7 @@ pub(crate) fn constructor_argument(
 ) -> String {
     argument_excluding(&base(f, options, true), options, excluded)
 }
-fn argument_excluding(base: &str, options: &Options, excluded: &[String]) -> String {
+pub(crate) fn argument_excluding(base: &str, options: &Options, excluded: &[String]) -> String {
     let name = suggest_argument(base, options);
     let suffixes = list(options, "argumentSuffixes");
     let suffix = suffixes.first().copied().unwrap_or("");
