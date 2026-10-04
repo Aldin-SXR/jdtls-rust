@@ -788,9 +788,6 @@ public class Main {
             if (javadocAction != null) actions.add(javadocAction);
         }
 
-        // Generate hashCode() and equals().
-        actions.addAll(makeHashCodeEqualsActions(req.uri, source, cu, req.range));
-
         // Sort members (fields → constructors → methods → inner types).
         BridgeAction sortMembers = makeSortMembersAction(req.uri, source, cu, req.range);
         if (sortMembers != null) actions.add(sortMembers);
@@ -2540,114 +2537,11 @@ public class Main {
         return result;
     }
 
-    /** Return true when the type has a method with the given name and parameter count. */
-    private static boolean hasMethod(org.eclipse.jdt.core.dom.TypeDeclaration td, String name, int paramCount) {
-        for (org.eclipse.jdt.core.dom.MethodDeclaration md : td.getMethods()) {
-            if (md.getName().getIdentifier().equals(name) && md.parameters().size() == paramCount) return true;
-        }
-        return false;
-    }
-
     /** The offset of the closing '}' of the type body — insertion point for new members. */
     private static int classClosingBrace(org.eclipse.jdt.core.dom.AbstractTypeDeclaration atd, String source) {
         int off = atd.getStartPosition() + atd.getLength() - 1;
         while (off > 0 && source.charAt(off) != '}') off--;
         return off;
-    }
-
-    // ── Generate hashCode() and equals() ────────────────────────────────────
-
-    private static List<BridgeAction> makeHashCodeEqualsActions(String uri, String source,
-            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
-        org.eclipse.jdt.core.dom.TypeDeclaration td = findEnclosingClass(cu, range);
-        if (td == null) return List.of();
-
-        boolean hasHash   = hasMethod(td, "hashCode", 0);
-        boolean hasEquals = hasMethod(td, "equals", 1);
-        if (hasHash && hasEquals) return List.of();
-
-        List<org.eclipse.jdt.core.dom.FieldDeclaration> fields = instanceFields(td);
-        String className  = td.getName().getIdentifier();
-        String indent     = indentOf(source, cu.getLineNumber(td.getStartPosition()) - 1) + "    ";
-        int    insertOff  = classClosingBrace(td, source);
-        int[]  insLC      = CompilationService.offsetToLineCol(source, insertOff);
-
-        // Build field name list
-        List<String[]> fieldInfo = new ArrayList<>(); // [typeName, fieldName]
-        for (org.eclipse.jdt.core.dom.FieldDeclaration fd : fields) {
-            String typeName = fd.getType().toString();
-            for (Object frag : fd.fragments()) {
-                if (frag instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf) {
-                    fieldInfo.add(new String[]{typeName, vdf.getName().getIdentifier()});
-                }
-            }
-        }
-
-        StringBuilder sb = new StringBuilder();
-
-        if (!hasHash) {
-            sb.append("\n").append(indent).append("@Override\n");
-            sb.append(indent).append("public int hashCode() {\n");
-            if (fieldInfo.isEmpty()) {
-                sb.append(indent).append("    return 0;\n");
-            } else {
-                sb.append(indent).append("    return java.util.Objects.hash(");
-                for (int i = 0; i < fieldInfo.size(); i++) {
-                    if (i > 0) sb.append(", ");
-                    sb.append(fieldInfo.get(i)[1]);
-                }
-                sb.append(");\n");
-            }
-            sb.append(indent).append("}\n");
-        }
-
-        if (!hasEquals) {
-            sb.append("\n").append(indent).append("@Override\n");
-            sb.append(indent).append("public boolean equals(Object obj) {\n");
-            sb.append(indent).append("    if (this == obj) return true;\n");
-            sb.append(indent).append("    if (!(obj instanceof ").append(className).append(" other)) return false;\n");
-            if (fieldInfo.isEmpty()) {
-                sb.append(indent).append("    return true;\n");
-            } else {
-                sb.append(indent).append("    return ");
-                for (int i = 0; i < fieldInfo.size(); i++) {
-                    if (i > 0) sb.append("\n").append(indent).append("        && ");
-                    String type = fieldInfo.get(i)[0];
-                    String name = fieldInfo.get(i)[1];
-                    boolean primitive = isPrimitive(type);
-                    if (primitive) sb.append(name).append(" == other.").append(name);
-                    else sb.append("java.util.Objects.equals(").append(name).append(", other.").append(name).append(")");
-                }
-                sb.append(";\n");
-            }
-            sb.append(indent).append("}\n");
-        }
-
-        BridgeTextEdit edit = new BridgeTextEdit();
-        edit.startLine = insLC[0]; edit.startChar = insLC[1];
-        edit.endLine   = insLC[0]; edit.endChar   = insLC[1];
-        edit.newText   = sb.toString();
-
-        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
-
-        BridgeAction quickassist = new BridgeAction();
-        quickassist.title = "Generate hashCode() and equals()";
-        quickassist.kind  = "quickassist";
-        quickassist.edits = List.of(fe);
-
-        BridgeAction source2 = new BridgeAction();
-        source2.title = "Generate hashCode() and equals()";
-        source2.kind  = "source.generate.hashCodeEquals";
-        source2.edits = List.of(fe);
-
-        return List.of(quickassist, source2);
-    }
-
-    private static boolean isPrimitive(String typeName) {
-        return switch (typeName) {
-            case "int","long","short","byte","char","float","double","boolean" -> true;
-            default -> false;
-        };
     }
 
     // ── Sort members ─────────────────────────────────────────────────────────

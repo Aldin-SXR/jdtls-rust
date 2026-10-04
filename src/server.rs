@@ -415,6 +415,25 @@ impl JavaLanguageServer {
         let _ = self.compile_tx.send(next);
     }
 
+    pub async fn check_hash_code_equals_status(
+        &self,
+        params: CodeActionParams,
+    ) -> LspResult<crate::features::hashcode::CheckHashCodeEqualsResponse> {
+        Ok(crate::features::hashcode::check(&self.dispatcher, params).await)
+    }
+    pub async fn generate_hash_code_equals(
+        &self,
+        params: crate::features::hashcode::GenerateHashCodeEqualsParams,
+    ) -> LspResult<Option<WorkspaceEdit>> {
+        let format = self.format_env().await;
+        let env = crate::correction::edit::Env {
+            dispatcher: &self.dispatcher,
+            format: &format,
+            lifecycle: &self.lifecycle,
+        };
+        Ok(crate::features::hashcode::generate(&env, params).await)
+    }
+
     pub async fn check_to_string_status(
         &self,
         params: CodeActionParams,

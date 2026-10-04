@@ -67,6 +67,14 @@ async fn main() {
             "java/generateToString",
             JavaLanguageServer::generate_to_string,
         )
+        .custom_method(
+            "java/checkHashCodeEqualsStatus",
+            JavaLanguageServer::check_hash_code_equals_status,
+        )
+        .custom_method(
+            "java/generateHashCodeEquals",
+            JavaLanguageServer::generate_hash_code_equals,
+        )
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
         .custom_method("java/buildWorkspace", JavaLanguageServer::build_workspace)
         .custom_method("java/buildProjects", JavaLanguageServer::build_projects)

@@ -53,7 +53,7 @@ fn order(a: BindingRef<'_>, b: BindingRef<'_>) -> Ordering {
         _ => Ordering::Equal,
     }
 }
-fn ordered(mut b: Vec<BindingRef<'_>>) -> Vec<BindingRef<'_>> {
+pub(crate) fn ordered(mut b: Vec<BindingRef<'_>>) -> Vec<BindingRef<'_>> {
     b.sort_by(|a, b| order(*a, *b));
     b
 }
@@ -103,7 +103,7 @@ fn parents(mut binding: BindingRef<'_>) -> Vec<BindingRef<'_>> {
     }
     out
 }
-fn dto(b: BindingRef<'_>, selected: bool) -> LspVariableBinding {
+pub(crate) fn dto(b: BindingRef<'_>, selected: bool) -> LspVariableBinding {
     let method = b.return_type().is_some();
     LspVariableBinding {
         binding_key: b.key().into(),

@@ -327,9 +327,9 @@ fn imported_type(
 }
 /// ContextSensitiveImportRewriteContext's source type scope. Bindings remain
 /// data; Rust determines whether a simple imported name is shadowed.
-struct ConstructorImportContext {
-    ast: Arc<Ast>,
-    declaration: Option<NodeId>,
+pub(crate) struct ConstructorImportContext {
+    pub(crate) ast: Arc<Ast>,
+    pub(crate) declaration: Option<NodeId>,
 }
 impl ImportRewriteContext for ConstructorImportContext {
     fn find_in_context(
@@ -355,6 +355,7 @@ impl ImportRewriteContext for ConstructorImportContext {
                         if let Some(binding) = n.binding() {
                             types.push(binding);
                             types.extend(binding.declared_types().unwrap_or_default());
+                            types.extend(binding.type_parameters());
                         }
                     }
                     node = n.parent();

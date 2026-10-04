@@ -7,7 +7,7 @@ suite. For how the port is done, see [PORTING.md](PORTING.md).
   binary-editor, initial correction, completion and project-manager integrations. `main` is unchanged.
 * **Reference:** eclipse.jdt.ls 1.58.0. The upstream checkout is 1.58.0-SNAPSHOT
   (2026-04-10), and the oracle in `.oracle/` is the 1.58.0 release.
-* **Last updated:** 2026-10-04.
+* **Last updated:** 2026-10-05.
 
 ## Summary
 
@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 716 | 34.3% |
-| Passing | 669 | 32.1% |
+| Ported | 732 | 35.1% |
+| Passing | 685 | 32.8% |
 | Ported but `#[ignore]`d | 47 | 2.3% |
-| Not ported yet | 1,371 | 65.7% |
+| Not ported yet | 1,355 | 64.9% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,020 passed,
-0 failed and 48 ignored across 66 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,066 passed,
+0 failed and 48 ignored across 69 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -32,7 +32,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,020 passed
 `tests/smart_detection_regressions.rs`, 13 tests;
 `tests/accessor_regressions.rs`, 18 tests;
 `tests/constructor_regressions.rs`, 24 tests;
-`tests/tostring_regressions.rs`, 28 tests) and unit
+`tests/tostring_regressions.rs`, 28 tests;
+`tests/hashcode_regressions.rs`, 30 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -41,7 +42,7 @@ those duplicate runs are excluded from the upstream-port counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 537 | 518 | 59% |
+| handlers | 871 | 553 | 534 | 61% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 132 | 104 | 49% |
@@ -79,6 +80,8 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/GenerateConstructorsHandlerTest | `handlers_generate_constructors_handler_test` | 6 | 6 | 0 | 6/6 |
 | handlers/GenerateToStringActionTest | `handlers_generate_to_string_action_test` | 7 | 7 | 0 | 7/7 |
 | handlers/GenerateToStringHandlerTest | `handlers_generate_to_string_handler_test` | 8 | 8 | 0 | 8/8 |
+| handlers/HashCodeEqualsActionTest | `handlers_hash_code_equals_action_test` | 6 | 6 | 0 | 6/6 |
+| handlers/HashCodeEqualsHandlerTest | `handlers_hash_code_equals_handler_test` | 10 | 10 | 0 | 10/10 |
 | handlers/HoverHandlerTest | `handlers_hover_handler_test` | 36 | 34 | 2 | pass (the 2 ignored also fail on jdt.ls) |
 | handlers/ImplementationsHandlerTest | `handlers_implementations_handler_test` | 13 | 12 | 1 | pass |
 | handlers/InitHandlerTest | `handlers_init_handler_test`, plus unit tests in `server.rs` and `preferences.rs` | 14 | 14 | 0 | 12/12 LSP cases; 2 unit cases |
@@ -341,6 +344,10 @@ assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matche
   unfinished. Standalone ASTParser still requires the running VM system library;
   supplied boot-class jars use the split-package workaround, so exact custom-JDK
   binding contents are not guaranteed. These limits are not counted as parity.
+* **hashCode/equals dependencies:** inherited and external-package scope/import
+  conflicts, inherited nullness and type-use annotation rendering still require
+  the full ScopeAnalyzer/import-rewrite dependency ports. Comments share the
+  global/date/time/user template limitations above.
 * **Lombok** is not supported in any feature.
 
 ## Saved work branches
@@ -356,7 +363,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 | Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
 | Remaining project managers | 79 | 4% |
 | Refactoring | 119 | 6% |
-| Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 231 | 11% |
+| Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 215 | 10% |
 | Core utilities, preferences, commands and the rest | 243 | 12% |
 
 ## Updating this file
@@ -364,7 +371,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
@@ -374,7 +381,7 @@ Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
 `correction_regressions.rs`, `completion_regressions.rs` and
 `project_download_regressions.rs`, `paste_regressions.rs` and
 `smart_detection_regressions.rs`, `accessor_regressions.rs`,
-`constructor_regressions.rs`, `tostring_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
+`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.
 
@@ -555,4 +562,45 @@ passes all 66 targets (1,020 passing, 48 ignored). The fifteen upstream ports an
 twenty-seven file-backed regressions pass with `JDTLS_ORACLE=1 --test-threads=2`.
 Logs are in `target/parity-evidence/tostring-full-suite-final.log` and
 `target/parity-evidence/tostring-oracle-final.log` (gitignored). Full feature
+parity remains incomplete; dependency gaps remain listed above.
+
+## hashCode/equals integration evidence
+
+All ten `HashCodeEqualsHandlerTest` and six `HashCodeEqualsActionTest` methods
+retain their original source fixtures, preference choices, selections, discovery
+assertions and full edited compilation-unit comparisons. All sixteen pass against
+Rust and JDT LS 1.58.0. Handler tests preserve the Java 21 fake JDK and upstream
+formatter settings, including the explicit last-member insertion default.
+
+* Rust owns `java/checkHashCodeEqualsStatus`, `java/generateHashCodeEquals`,
+  declared-field discovery, existing-method signatures, binding-key selection,
+  generation, imports, text edits and prompt source/quick-assist actions. The
+  approximate Java generator and its unused signature helper are removed.
+* Generation supports all eight primitives, canonical float/double bit conversions,
+  one reused double temporary, enum identity, null-safe reference comparisons,
+  typed/deep array hashing and comparison, Objects hashing/equality, instanceof
+  and block settings, concrete/abstract and binary superclass behavior, nested
+  enclosing-instance helpers, regeneration, overload preservation and cursor
+  insertion. Shared import scope now includes type parameters.
+* Thirty additional Rust regressions cover exact DTOs and binding keys, generic
+  types, field/local-name collisions, imported-name conflicts, records, member
+  and local types, partial regeneration, custom override comments, Java 23 template
+  choice, UTF-16/CRLF and open-buffer edits, capabilities and command fallback.
+  Twenty-nine pass against the oracle; the remaining Rust-only test covers
+  untitled, in-memory and nonexistent file buffers. Disk text is unchanged and
+  edits retain `WorkspaceEdit.changes`.
+* Reference quirks remain: discovery does not exclude transient fields; generation
+  ignores descriptive DTO values and request order; standalone Objects.hash
+  explicitly boxes primitive arguments; array terms precede the remaining Objects
+  hash arguments; an empty selection returns super.hashCode(); regeneration=false
+  inserts duplicate methods; implicit record methods appear in DOM status. The
+  quick-assist presence check accepts ordinary one-argument equals overloads,
+  while status checks specifically for equals(Object). Override comments keep
+  the ordinary template with Java 23 Markdown enabled.
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 69 targets (1,066 passing, 48 ignored). The sixteen upstream ports and
+twenty-nine file-backed regressions pass with `JDTLS_ORACLE=1 --test-threads=2`.
+Logs are in `target/parity-evidence/hashcode-full-suite-final.log` and
+`target/parity-evidence/hashcode-oracle-final.log` (gitignored). Full feature
 parity remains incomplete; dependency gaps remain listed above.
