@@ -125,6 +125,7 @@ impl EcjProcess {
         let id = match &req {
             BridgeRequest::Compile { id, .. }
             | BridgeRequest::Complete { id, .. }
+            | BridgeRequest::CodeAssist { id, .. }
             | BridgeRequest::HoverInfo { id, .. }
             | BridgeRequest::ExtractJarEntry { id, .. }
             | BridgeRequest::ReadJarEntry { id, .. }

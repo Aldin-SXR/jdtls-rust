@@ -4,7 +4,7 @@ How far jdtls-rust is from eclipse.jdt.ls parity, measured against the upstream 
 suite. For how the port is done, see [PORTING.md](PORTING.md).
 
 * **Branch:** `jdtls-parity`, including the verified lifecycle/init/file-event,
-  binary-editor and initial correction integrations. `main` is unchanged.
+  binary-editor, initial correction and completion integrations. `main` is unchanged.
 * **Reference:** eclipse.jdt.ls 1.58.0. The upstream checkout is 1.58.0-SNAPSHOT
   (2026-04-10), and the oracle in `.oracle/` is the 1.58.0 release.
 * **Last updated:** 2026-10-04.
@@ -16,23 +16,24 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 478 | 22.9% |
-| Passing | 441 | 21.1% |
-| Ported but `#[ignore]`d | 37 | 1.8% |
-| Not ported yet | 1,609 | 77.1% |
+| Ported | 535 | 25.6% |
+| Passing | 496 | 23.8% |
+| Ported but `#[ignore]`d | 39 | 1.9% |
+| Not ported yet | 1,552 | 74.4% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 626 passed,
-0 failed and 38 ignored. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 695 passed,
+0 failed and 40 ignored across 42 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
-`tests/correction_regressions.rs`, 3 tests) and unit
+`tests/correction_regressions.rs`, 3 tests;
+`tests/completion_regressions.rs`, 6 tests) and unit
 tests that aren't ports.
 
 ## By upstream area
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 410 | 391 | 45% |
+| handlers | 871 | 467 | 446 | 51% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 21 | 3 | 1% |
@@ -57,6 +58,7 @@ tests that aren't ports.
 | handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 9 | 1 | 9/9 active; `outgoing_calls_src` resolves into the real JDK's `src.zip` (environment) |
 | handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 11 | 11 | 0 | 11/11 |
 | handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 13 | 1 | 13/13 active; Runnable exposes 3 lenses with the real JDK's sources (environment) |
+| handlers/CompletionHandlerTest | `handlers_completion_handler_test` | 57 | 55 | 2 | 55/55 active; real-JDK TimeUnit and Method* proposal counts differ from rtstubs.jar |
 | handlers/DocumentHighlightHandlerTest | `handlers_document_highlight_handler_test` | 5 | 5 | 0 | pass |
 | handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` | 19 | 17 | 2 | 17/17 active cases |
 | handlers/DocumentSymbolHandlerTest | `handlers_document_symbol_handler_test` | 14 | 13 | 1 | 13/13 active |
@@ -99,12 +101,12 @@ ignored test keeps its upstream assertions unchanged.
 
 | Reason | Count | Tests |
 |---|---:|---|
-| Upstream's fake test JDK (`rtstubs.jar`, no sources); we run a real JDK with `lib/src.zip` | 20 | `test_get_code_lens_symbols_for_class`, `outgoing_calls_src`; 9 ContentProviderManagerTest tests; `test_disassembled_source` and `test_source_version` (definition and type definition); `test_implementation_from_binary_type_with_class_content_support`; `test_references_in_jre`; `test_workspace_search`, `test_camel_case_fuzzy_search` and `test_workspace_search_with_class_content_support`; `test_hover_javadoc_link_plain` |
+| Upstream's fake test JDK (`rtstubs.jar`, no sources); we run a real JDK with `lib/src.zip` | 22 | `test_get_code_lens_symbols_for_class`, `outgoing_calls_src`; 9 ContentProviderManagerTest tests; `test_disassembled_source` and `test_source_version` (definition and type definition); `test_implementation_from_binary_type_with_class_content_support`; `test_references_in_jre`; `test_workspace_search`, `test_camel_case_fuzzy_search` and `test_workspace_search_with_class_content_support`; `test_hover_javadoc_link_plain`; completion `test_completion_import_static` and `test_snippet_interface_method` |
 | Upstream test-plugin internals with no LSP equivalent (FakeContentProvider, null URIs, decompiler line mappings) | 9 | ContentProviderManagerTest |
 | Missing local artifacts (no download yet) | 2 | `test_signature_help_assert_equals` (junit 4.13.1); `test_empty_names` (reactor-core 3.3.0) |
 | Lombok not supported | 1 | `test_lombok_show_generated_code_symbols` |
 | Kotlin not supported | 1 | `test_kotlin` |
-| Needs a completion-area feature | 1 | `test_signature_help_for_selected_completion_proposal` (`CompletionHandler.selectedProposal`) |
+| Direct completion-requestor state access | 1 | `test_signature_help_for_selected_completion_proposal` selects the first raw proposal directly, whose ordering differs from LSP items; the public selection flow is implemented and oracle verified separately |
 | The upstream test assumes a Java 10 JDK | 1 | `test_hover_on_java10var` |
 | Needs code-action/quick-fix parity | 2 | lifecycle `test_unimplemented_methods` and `test_remove_dead_code_after_if` |
 
@@ -211,11 +213,42 @@ fixtures, diagnostic inputs, kind restrictions and edit assertions.
 This raises passing upstream ports from 422 to 441. The two correction helper unit
 tests and three own regressions are excluded from the upstream-port count.
 
+## Completion integration evidence
+
+The completion branch is integrated. JDT's `CompletionEngine` returns proposals,
+contexts and binding data; Rust computes descriptions, replacements, argument
+placeholders, imports, snippets, documentation and completion resolution. A raw
+JSON service preserves LSP 3.17 item defaults and insert/replace edits, with the
+existing syntax path available while the bridge starts. Override bodies are
+computed in Rust from method/type bindings, including interface default methods.
+
+* `handlers_completion_handler_test`: 55 passed, 2 ignored on both Rust and the
+  1.58 oracle (`--test-threads=4`). Inputs and assertions come from upstream.
+  The fixture explicitly installs upstream's default type-comment template and
+  sets `java.lsp.joinOnCompletion` for the two tests that set that JVM property.
+* `completion_regressions`: 6 passed on Rust and the oracle: empty/custom comments,
+  CRLF snippets, expired completion cache errors, selected-overload signature help
+  and client hints, and class/interface override bodies in nonexistent files.
+* The saved branch's five empty cache/disabled-record placeholders were removed;
+  they are not ports and remain in the unported count. Its scratch probe was removed.
+* `java.completion.onDidSelect` records method/constructor selections and requests
+  client hints when enabled. Signature help uses the selected signature before
+  guessing and clears an unmatched selection. Contribution/ranking providers and
+  completion timing/common-data parity still need work.
+
+This adds 57 upstream ports (55 active passes); the 6 regression cases and 8 new
+unit tests are excluded from the upstream count. Completion is still incomplete:
+99 CompletionHandlerTest cases, plus the dedicated lazy-resolve, chain and postfix
+classes, remain unported. The old postfix helper remains available during bridge
+startup; the JDT completion path does not yet include that provider.
+
 ## Known differences from jdt.ls
 
-* **JDT version.** The bridge uses JDT/ECJ 3.44.0, while jdt.ls 1.58 uses 3.46. One
-  visible effect: `{@code}` containing braces ends at the first `}` (for example in
-  `Map.computeIfAbsent`). The completion branch evaluates 3.46.
+* **JDT build.** The bridge now uses Maven JDT/ECJ 3.46.0. Its Core build is
+  `v20260520-1003`; the 1.58 oracle bundles `v20260409-1507`. Snippet-directive
+  whitespace differs between them; Rust restores whitespace from the DOM source
+  range, retaining the upstream hover assertion (both snippet cases oracle pass).
+  Other build differences may surface as more cases are ported.
 * **`java.signatureHelp.enabled`** defaults to `true`, where jdt.ls defaults to
   `false`. This keeps signature help working for clients that send no settings
   (lms-monaco, `web/`).
@@ -242,7 +275,6 @@ was saved as a WIP commit and has not been verified in the integrated branch.
 
 | Branch | Area | Ahead of `jdtls-parity` | State |
 |---|---|---|---|
-| `worktree-agent-a1a367cb061d797a4` (`3a27dfc`) | Completion: JDT `CompletionEngine` running in the bridge without the Java model, plus the Rust conversion layer | 7 commits, about 11k lines | stopped while comparing JDT 3.46 with 3.44; 62 substantive completion tests saved (7 ignored), integration and oracle verification pending |
 | `worktree-agent-a1e31779b8b46b008` (`af6a7a8`) | Project import: Eclipse and Maven importers to match m2e and jdt.ls, Maven downloads, a Gradle decision | 4 commits, about 7k lines | stopped while starting MavenProjectImporterTest |
 
 ## Largest remaining work
@@ -250,7 +282,7 @@ was saved as a WIP commit and has not been verified in the integrated branch.
 | Work | Upstream tests | Share of suite |
 |---|---:|---:|
 | Quick fixes and assists (`correction`) | 604 | 29% |
-| Completion (CompletionHandlerTest 156, LazyResolve 20, Chain 12, Postfix 29) | 217 | 10% |
+| Remaining completion (CompletionHandlerTest 99, LazyResolve 20, Chain 12, Postfix 29) | 160 | 8% |
 | Project managers | 211 | 10% |
 | Refactoring | 119 | 6% |
 | Remaining handlers: code actions, code generation, organize imports, paste, save actions, workspace markers and other lifecycle/init cases | about 239 | 11% |
@@ -261,13 +293,13 @@ was saved as a WIP commit and has not been verified in the integrated branch.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
 Add the ports that live as unit tests in `src/` (InlayHintFilterManagerTest 7,
 JavaDoc2Markdown 19, JavaDoc2PlainText 2, JavaDocImageExtraction 1, InitHandler 2).
 Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
-`correction_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
+`correction_regressions.rs` and `completion_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.

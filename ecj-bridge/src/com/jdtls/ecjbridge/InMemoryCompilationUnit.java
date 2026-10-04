@@ -16,7 +16,7 @@ public class InMemoryCompilationUnit implements ICompilationUnit {
     private final char[] fileName;
 
     /** Expected package (JDT package fragment), or null for no check. */
-    private final char[][] packageName;
+    private char[][] packageName;
 
     public InMemoryCompilationUnit(String uri, String source) {
         this(uri, source, null);
@@ -60,6 +60,15 @@ public class InMemoryCompilationUnit implements ICompilationUnit {
             base = base.substring(0, base.length() - 5);
         }
         return base.toCharArray();
+    }
+
+    /** Set the package the unit belongs to (dotted, "" for the default package). */
+    public InMemoryCompilationUnit withPackage(String dotted) {
+        if (dotted != null) {
+            this.packageName = dotted.isEmpty() ? new char[0][]
+                    : org.eclipse.jdt.core.compiler.CharOperation.splitOn('.', dotted.toCharArray());
+        }
+        return this;
     }
 
     @Override

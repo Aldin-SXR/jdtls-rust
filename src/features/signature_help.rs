@@ -504,6 +504,20 @@ fn from_ast_node(text: &[u16], trigger: i64, search: i64, chain: &[SigNode], set
     if infos.is_empty() {
         return Some(help);
     }
+    if let Some(selected) = crate::features::completion::handler::selected_signature_key() {
+        for (i, info) in infos.iter().enumerate() {
+            if info.proposal.key == selected {
+                let parameter = active_parameter(trigger, info.proposal, &ctx);
+                if parameter >= 0 {
+                    help.active_signature = Some(i as u32);
+                    help.active_parameter = Some(parameter as u32);
+                    help.signatures = infos.into_iter().map(|i| i.info).collect();
+                    return Some(help);
+                }
+            }
+        }
+    }
+    crate::features::completion::handler::clear_selected_proposal();
     for (i, info) in infos.iter().enumerate() {
         if is_matched(info.proposal, &ctx) {
             help.active_signature = Some(i as u32);

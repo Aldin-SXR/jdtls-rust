@@ -18,6 +18,7 @@ pub mod java_model;
 pub mod lifecycle;
 pub mod navigation;
 pub mod preferences;
+pub mod completion;
 pub mod rename;
 pub mod scanner;
 pub mod selection_range;

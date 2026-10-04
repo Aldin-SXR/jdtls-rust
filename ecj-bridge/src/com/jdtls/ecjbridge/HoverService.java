@@ -219,6 +219,68 @@ final class HoverService {
         return result;
     }
 
+    /**
+     * The hover element of a member named the way {@code CompletionResolveHandler}
+     * looks it up: {@code findType(typeName)}, then {@code getMethod(name, paramSigs)}
+     * + {@code findMethods} (same name and simple parameter type names), else
+     * {@code getField(name)}. {@code name == null} selects the type itself.
+     */
+    static Map<String, Object> memberInfo(Request req, String typeName, String name, List<String> paramSigs) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        Ctx ctx = new Ctx(req);
+        CompilationUnit cu = ctx.files.containsKey(req.uri) ? ctx.unit(req.uri) : null;
+        if (cu == null) {
+            result.put("status", "noUnit");
+            return result;
+        }
+        ctx.ast = cu.getAST();
+        ITypeBinding type = org.eclipse.jdt.core.dom.BridgeDomResolver.findType(cu, typeName);
+        if (type == null) {
+            result.put("status", "none");
+            return result;
+        }
+        IBinding binding = type;
+        if (name != null) {
+            binding = null;
+            List<String> wanted = new ArrayList<>();
+            for (String s : paramSigs) {
+                wanted.add(org.eclipse.jdt.core.Signature.getSimpleName(org.eclipse.jdt.core.Signature.toString(
+                        org.eclipse.jdt.core.Signature.getTypeErasure(s))));
+            }
+            for (IMethodBinding m : type.getDeclaredMethods()) {
+                String mName = m.isConstructor() ? type.getErasure().getName() : m.getName();
+                if (!mName.equals(name) || m.getParameterTypes().length != wanted.size()) continue;
+                boolean same = true;
+                ITypeBinding[] pts = m.getMethodDeclaration().getParameterTypes();
+                for (int i = 0; i < pts.length && same; i++) {
+                    ITypeBinding p = pts[i];
+                    String simple = p.isTypeVariable() ? p.getName() : p.getErasure().getName();
+                    same = simple.equals(wanted.get(i));
+                }
+                if (same) {
+                    binding = m;
+                    break;
+                }
+            }
+            if (binding == null) {
+                for (IVariableBinding f : type.getDeclaredFields()) {
+                    if (f.getName().equals(name)) {
+                        binding = f;
+                        break;
+                    }
+                }
+            }
+            if (binding == null) {
+                result.put("status", "none");
+                return result;
+            }
+        }
+        Map<String, Object> element = element(ctx, binding);
+        result.put("status", element == null ? "none" : "ok");
+        result.put("element", element);
+        return result;
+    }
+
     private static boolean isProblemType(ITypeBinding t) {
         ITypeBinding e = t.getElementType() != null ? t.getElementType() : t;
         return e.isRecovered();

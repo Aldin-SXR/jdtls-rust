@@ -2,7 +2,6 @@
 
 use crate::analysis::dispatcher::Dispatcher;
 use crate::analysis::semantic::code_action as ca_conv;
-use crate::analysis::semantic::completion as comp_conv;
 use crate::analysis::semantic::definition as def_conv;
 use crate::analysis::semantic::diagnostics as diag_conv;
 use crate::analysis::semantic::protocol::{BridgeCallHierarchyItem, BridgeTypeHierarchyItem, BridgeRange, BridgeResponse, BridgeDiagnostic};
@@ -166,6 +165,12 @@ impl JavaLanguageServer {
 
         let (compile_tx, _) = watch::channel(0u64);
         let lifecycle = crate::features::lifecycle::Lifecycle::new(client.clone(), Arc::clone(&store), Arc::clone(&dispatcher));
+        crate::features::completion::set_env(crate::features::completion::Env {
+            dispatcher: Arc::clone(&dispatcher),
+            store: Arc::clone(&store),
+            client: client.clone(),
+            config: Arc::clone(&config),
+        });
 
         Self {
             lifecycle,
@@ -348,6 +353,7 @@ impl LanguageServer for JavaLanguageServer {
         let legacy = self.legacy_diagnostics().await;
         crate::features::client_caps::set(&params.capabilities);
         crate::features::preferences::init(&params);
+        crate::features::completion::prefs::init(&params);
         *self.workspace_folders.write().await = params.workspace_folders.clone().unwrap_or_default();
         navigation::init_preferences(params.initialization_options.as_ref());
         *self.rename_client.write().await = crate::features::rename::RenameClient::from_capabilities(&params.capabilities);
@@ -452,11 +458,15 @@ impl LanguageServer for JavaLanguageServer {
                         ..Default::default()
                     },
                 )),
+                // jdt.ls `CompletionHandler.getDefaultCompletionOptions`.
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![
-                        ".".into(), "@".into(), "#".into(),
+                        ".".into(), "@".into(), "#".into(), "*".into(), " ".into(),
                     ]),
-                    resolve_provider: Some(false),
+                    resolve_provider: Some(true),
+                    completion_item: crate::features::completion::prefs::Client::load()
+                        .label_details
+                        .then(|| CompletionOptionsCompletionItem { label_details_support: Some(true) }),
                     ..Default::default()
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -854,9 +864,12 @@ impl LanguageServer for JavaLanguageServer {
         }
     }
 
-    // ── Completion ────────────────────────────────────────────────────────────
-
+    // Syntax completion remains available while the JDT bridge starts.
+    // Once ready, CompletionService handles requests with the JDT engine.
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
+        if !crate::features::completion::prefs::Prefs::load().enabled {
+            return Ok(Some(CompletionResponse::Array(vec![])));
+        }
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
         let trigger_char: Option<&str> = params
@@ -992,39 +1005,6 @@ impl LanguageServer for JavaLanguageServer {
         // import-path completions and other items, while the simpler `web/`
         // demo synthesizes its own range client-side.
         let word_range = word_range_at(&content, pos);
-
-        // Semantic completions from ECJ
-        let in_expr = is_expression_context(&content, offset);
-        if self.dispatcher.is_ecj_ready().await {
-            match self.dispatcher.complete(uri, offset, import_prefix, content.clone()).await {
-                Ok(BridgeResponse::Completions { items: bridge_items, .. }) => {
-                    let semantic: Vec<CompletionItem> = bridge_items.iter().filter_map(|c| {
-                        // In expression context (after `=`, `return`, etc.) void methods
-                        // cannot produce a value — suppress them.
-                        if in_expr
-                            && c.kind == 2  // METHOD
-                            && c.label.ends_with(": void")
-                        {
-                            return None;
-                        }
-                        let mut item = comp_conv::to_lsp(c);
-                        attach_completion_text_edit(&mut item, word_range.clone());
-                        Some(item)
-                    }).collect();
-                    if in_import {
-                        items = semantic;
-                    } else {
-                        // Prepend semantic items so they sort first
-                        items = semantic.into_iter().chain(items).collect();
-                    }
-                }
-                Ok(BridgeResponse::Error { message, .. }) => {
-                    warn!("completion ECJ error: {message}");
-                }
-                Err(e) => warn!("completion error: {e}"),
-                _ => {}
-            }
-        }
 
         if word_range.is_some() {
             for item in &mut items {
@@ -1535,6 +1515,16 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<Value>> {
         match params.command.as_str() {
+            "java.completion.onDidSelect" => {
+                let request_id = params.arguments.first().and_then(Value::as_str)
+                    .ok_or_else(|| crate::features::completion::protocol_error("Cannot get completion responses."))?;
+                let proposal_id = params.arguments.get(1).and_then(Value::as_str)
+                    .ok_or_else(|| crate::features::completion::protocol_error("Cannot get completion responses."))?;
+                if let Some(env) = crate::features::completion::env() {
+                    crate::features::completion::handler::on_did_select(&env, request_id, proposal_id).await?;
+                }
+                Ok(Some(json!({})))
+            }
             "java.project.refreshDiagnostics" if !self.legacy_diagnostics().await => {
                 // (uri, scope, syntaxOnly), each possibly JSON-encoded.
                 let arg = |i: usize| -> Option<Value> {

@@ -122,8 +122,8 @@ impl<'a> SnippetEvaluator<'a> {
     /// jdt.ls `getModifiedStringForTagElement`
     fn modified_string_for_tag_element(&self, tag: usize, tags: &[usize]) -> String {
         let t = self.node(tag);
-        let first = t.fragments.first().map(|&i| self.node(i).text()).unwrap_or("");
-        let mut s = self.modified_string(first, tags);
+        let first = t.fragments.first().map(|&i| self.original_snippet_text(self.node(i))).unwrap_or_default();
+        let mut s = self.modified_string(&first, tags);
         if t.tag_name() == Some("@link") {
             let units = u16s(&s);
             let mut leading = 0usize;
@@ -137,6 +137,27 @@ impl<'a> SnippetEvaluator<'a> {
             }
         }
         s
+    }
+
+    /// JDT 3.46's later Maven build removes the whitespace before an inline
+    /// directive from TextElement.text. Its source range still contains it;
+    /// restore that data to match the JDT build bundled with jdt.ls 1.58.
+    fn original_snippet_text(&self, node: &DocNode) -> String {
+        let text = node.text();
+        let raw = u16s(&self.doc.raw);
+        let (start, end) = (node.s.max(0) as usize, (node.s + node.l).max(0) as usize);
+        let Some(span) = raw.get(start..end) else { return text.to_owned() };
+        let span = from16(span);
+        let suffix_start = span.trim_end_matches([' ', '\t']).len();
+        let suffix = &span[suffix_start..];
+        let body = text.trim_end_matches(['\r', '\n']);
+        if !suffix.is_empty() && !body.ends_with(suffix)
+            && span[..suffix_start].ends_with(body.trim_start())
+        {
+            format!("{body}{suffix}{}", &text[body.len()..])
+        } else {
+            text.to_owned()
+        }
     }
 
     /// `getModifiedString(String, List<TagElement>)`

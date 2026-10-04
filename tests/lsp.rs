@@ -1293,10 +1293,10 @@ fn ecj_completion_object_type() {
 
     let items = c.complete(&uri, 2, 13);
     let ls = labels(&items);
-    assert!(ls.contains(&"Object".to_owned()),
+    assert!(ls.contains(&"Object - java.lang".to_owned()),
         "expected 'Object' in completions for prefix 'Objec', got: {ls:?}");
 
-    let obj = find_item(&items, "Object").unwrap();
+    let obj = find_item(&items, "Object - java.lang").unwrap();
     assert_eq!(obj["kind"], 7, "Object should have kind=Class (7)");
 }
 
@@ -1329,7 +1329,7 @@ fn ecj_completion_constructor_after_new() {
 
     let ctor = ctor.unwrap();
     assert_eq!(ctor["kind"], 4, "constructor completion should have kind=Constructor");
-    let insert = ctor["insertText"].as_str().unwrap_or("");
+    let insert = ctor["textEdit"]["newText"].as_str().unwrap_or("");
     assert!(
         insert.starts_with("Object("),
         "expected constructor insert text for Object, got: {ctor:?}"
@@ -1362,7 +1362,7 @@ fn ecj_expression_completion_filtered() {
     let ls = labels(&items);
 
     // JDK types starting with "Arr" must appear
-    assert!(ls.iter().any(|l| l == "ArrayList"),
+    assert!(ls.iter().any(|l| l == "ArrayList - java.util"),
         "expected 'ArrayList' for prefix 'Arr', got: {ls:?}");
 
     // Own class method "foo" must NOT appear — filtered by prefix
@@ -1392,7 +1392,7 @@ fn ecj_completion_auto_import_additional_edits() {
     }
 
     let items = c.complete(&uri, 2, utf16_len("        int x = Arr"));
-    let item = find_item(&items, "ArrayList");
+    let item = find_item(&items, "ArrayList - java.util");
     assert!(item.is_some(), "expected ArrayList completion, got: {:?}", labels(&items));
 
     let item = item.unwrap();
@@ -1430,7 +1430,7 @@ fn ecj_completion_java_lang_type_skips_auto_import() {
     }
 
     let items = c.complete(&uri, 2, utf16_len("        Object x = Str"));
-    let item = find_item(&items, "String");
+    let item = find_item(&items, "String - java.lang");
     assert!(item.is_some(), "expected String completion, got: {:?}", labels(&items));
 
     let item = item.unwrap();
@@ -1463,9 +1463,9 @@ fn ecj_local_variable_completion() {
         return;
     }
 
-    let items = c.complete(&uri, 3, 36);
+    let items = c.complete(&uri, 3, utf16_len(src.lines().nth(3).unwrap()));
     let ls = labels(&items);
-    assert!(ls.contains(&"myLocalVar".to_owned()),
+    assert!(ls.contains(&"myLocalVar : String".to_owned()),
         "expected 'myLocalVar' in local completions, got: {ls:?}");
 }
 
@@ -1597,7 +1597,7 @@ fn ecj_import_completion_skips_additional_edits() {
     }
 
     let items = c.complete(&uri, 0, 20);
-    let item = items.iter().find(|i| i["label"].as_str() == Some("java.util.ArrayList"));
+    let item = items.iter().find(|i| i["label"].as_str() == Some("ArrayList - java.util"));
     assert!(item.is_some(), "expected java.util.ArrayList import completion, got: {:?}", labels(&items));
 
     let item = item.unwrap();
@@ -1622,13 +1622,15 @@ fn ecj_import_completion_includes_text_edit_for_ui_clients() {
     }
 
     let items = c.complete(&uri, 0, 20);
-    let item = items.iter().find(|i| i["label"].as_str() == Some("java.util.ArrayList"));
+    let item = items.iter().find(|i| i["label"].as_str() == Some("ArrayList - java.util"));
     assert!(item.is_some(), "expected java.util.ArrayList import completion, got: {:?}", labels(&items));
 
     let item = item.unwrap();
     let text_edit = &item["textEdit"];
     assert!(text_edit.is_object(), "expected import completion to include textEdit, got: {item:?}");
-    assert_eq!(text_edit["newText"], "ArrayList");
+    assert_eq!(text_edit["newText"], "ArrayList;");
+    assert_eq!(text_edit["range"]["start"]["character"], 17);
+    assert_eq!(text_edit["range"]["end"]["character"], 20);
 }
 
 /// Open imported workspace types should be exposed as document links.

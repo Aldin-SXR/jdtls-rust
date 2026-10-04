@@ -218,6 +218,13 @@ public class BridgeProtocol {
         }
     }
 
+    public static class CodeAssistResponse extends Response {
+        public Object result;
+        public CodeAssistResponse(long id, Object result) {
+            this.id = id; this.method = "codeAssist"; this.result = result;
+        }
+    }
+
     public static class OkResponse extends Response {
         public OkResponse(long id) { this.id = id; this.method = "ok"; }
     }

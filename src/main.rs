@@ -37,6 +37,6 @@ async fn main() {
         .custom_method("java/buildProjects", JavaLanguageServer::build_projects)
         .finish();
     Server::new(stdin, stdout, socket)
-        .serve(ordering::Ordered::new(lenient_uri::LenientUri::new(features::init::InitializeResultRewrite::new(service))))
+        .serve(ordering::Ordered::new(lenient_uri::LenientUri::new(features::init::InitializeResultRewrite::new(features::completion::CompletionService::new(service)))))
         .await;
 }

@@ -29,6 +29,7 @@ ropey = "1"            # efficient rope for incremental text edits
 tempfile = "3"         # extract embedded JAR to tmp at startup
 roxmltree = "0.20"
 walkdir = "2"
+futures = "0.3"
 tower-service = "0.3" # wrap the LSP service (lenient document URIs)
 
 [build-dependencies]

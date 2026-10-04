@@ -176,6 +176,27 @@ impl Dispatcher {
         }
     }
 
+    /// `CodeAssistService` operation against `ctx` (`query.op`).
+    pub async fn code_assist(&self, ctx: &RequestContext, uri: &str, offset: usize, query: serde_json::Value) -> Result<serde_json::Value> {
+        match self
+            .send(BridgeRequest::CodeAssist {
+                id: next_id(),
+                files: ctx.files.clone(),
+                classpath: ctx.classpath.clone(),
+                source_level: ctx.source_level.clone(),
+                options: ctx.options.clone(),
+                uri: uri.to_owned(),
+                offset,
+                query,
+            })
+            .await?
+        {
+            BridgeResponse::CodeAssist { result, .. } => Ok(result),
+            BridgeResponse::Error { message, .. } => Err(anyhow!(message)),
+            other => Err(anyhow!("unexpected bridge response {other:?}")),
+        }
+    }
+
     /// Context for the named project, or for the default project when `None`
     /// (`everything`: include all documents, used for workspace-wide queries).
     async fn context_for_project(&self, ws: &Workspace, project: Option<&str>, everything: bool) -> RequestContext {

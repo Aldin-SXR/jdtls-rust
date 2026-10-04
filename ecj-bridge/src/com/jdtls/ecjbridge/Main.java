@@ -254,6 +254,7 @@ public class Main {
             case "signatureHelpData" -> SIGNATURE_HELP.compute(
                     req.id, req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri,
                     req.searchOffset, req.contextOffset, req.fallbackName, req.description);
+            case "codeAssist" -> new CodeAssistResponse(req.id, CodeAssistService.handle(req));
             case "semanticSearch" -> new SemanticSearchResponse(req.id, SEMANTIC.request(
                 req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.query));
             case "renameTarget" -> new RenameTargetResponse(req.id, RENAME.target(

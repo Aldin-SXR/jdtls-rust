@@ -1160,7 +1160,7 @@ fn test_signature_help_in_class_file() {
 }
 
 #[test]
-#[ignore = "needs CompletionHandler.selectedProposal: the completion proposal selected through textDocument/completion (completion area), which this test sets directly"]
+#[ignore = "upstream selects the first raw CompletionProposalRequestor proposal directly; that ordering is not the first LSP completion item. The public onDidSelect/signature-help flow is covered in completion_regressions"]
 fn test_signature_help_for_selected_completion_proposal() {
     let mut ws = setup();
     let content = concat!(
@@ -1187,7 +1187,7 @@ fn test_signature_help_for_selected_completion_proposal() {
     );
     let items = completion["items"].as_array().cloned().unwrap_or_default();
     let first = items.first().cloned().unwrap_or(Value::Null);
-    ws.request("completionItem/resolve", first.clone());
+    ws.request("workspace/executeCommand", first["command"].clone());
     let from_proposal = first["label"].as_str().unwrap_or_default();
     assert!(l.contains(&from_proposal));
 

@@ -82,6 +82,10 @@ impl LspClient {
     }
 
     pub fn spawn_in(data_dir: Option<&Path>) -> Self {
+        Self::spawn_in_with_java_options(data_dir, &[])
+    }
+
+    fn spawn_in_with_java_options(data_dir: Option<&Path>, java_options: &[String]) -> Self {
         let mut cmd = if is_oracle() {
             let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/oracle-jdtls.sh");
             let data = data_dir
@@ -93,6 +97,10 @@ impl LspClient {
         } else {
             Command::new(env!("CARGO_BIN_EXE_jdtls-rust"))
         };
+        if is_oracle() && !java_options.is_empty() {
+            let existing = std::env::var("JAVA_TOOL_OPTIONS").unwrap_or_default();
+            cmd.env("JAVA_TOOL_OPTIONS", format!("{existing} {}", java_options.join(" ")));
+        }
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -234,6 +242,8 @@ pub struct Workspace {
     pub settings: Value,
     pub init_options: Value,
     pub capabilities: Value,
+    /// JVM properties set directly by the upstream test (oracle only).
+    pub oracle_java_options: Vec<String>,
     /// The `initialize` result, once the server has started.
     pub initialize_result: Value,
     versions: BTreeMap<String, i32>,
@@ -254,6 +264,7 @@ impl Workspace {
             // the client supports class file contents (jdt:// URIs).
             init_options: json!({ "extendedClientCapabilities": { "classFileContentsSupport": true } }),
             capabilities: default_client_capabilities(),
+            oracle_java_options: Vec::new(),
             initialize_result: Value::Null,
             versions: BTreeMap::new(),
         }
@@ -365,7 +376,8 @@ impl Workspace {
     /// Start the server (if needed) and return the client.
     pub fn client(&mut self) -> &mut LspClient {
         if self.client.is_none() {
-            let mut c = LspClient::spawn_in(Some(&self.dir.parent().unwrap().join("oracle-data")));
+            let mut c = LspClient::spawn_in_with_java_options(
+                Some(&self.dir.parent().unwrap().join("oracle-data")), &self.oracle_java_options);
             let folders: Vec<Value> = self
                 .roots
                 .iter()
@@ -398,6 +410,11 @@ impl Workspace {
 
     pub fn request(&mut self, method: &str, params: Value) -> Value {
         self.client().request(method, params)
+    }
+
+    /// Whether the server has been started.
+    pub fn client_started(&self) -> bool {
+        self.client.is_some()
     }
 
     // ── Lookup ───────────────────────────────────────────────────────────────

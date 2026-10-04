@@ -103,7 +103,7 @@ final class SignatureHelpService {
      * folders from disk otherwise).
      */
     @SuppressWarnings("unchecked")
-    private static void injectSources(ASTParser parser, InMemorySourceClasspath sources) {
+    static void injectSources(ASTParser parser, InMemorySourceClasspath sources) {
         try {
             Field f = ASTParser.class.getDeclaredField("unitResolver");
             f.setAccessible(true);
