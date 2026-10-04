@@ -1,6 +1,7 @@
 mod analysis;
 mod classfile;
 mod config;
+mod correction;
 mod document_store;
 mod embedded_jar;
 mod features;
@@ -10,6 +11,8 @@ mod index;
 mod javadoc;
 mod lenient_uri;
 mod project;
+mod rewrite;
+mod semantic_ast;
 mod server;
 
 use server::JavaLanguageServer;

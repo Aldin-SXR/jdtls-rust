@@ -1,1 +1,3 @@
 tests/fixtures/** -text
+# Preserve the upstream bundles verbatim; trailing spaces are message content.
+src/correction/messages/*.properties whitespace=-blank-at-eol

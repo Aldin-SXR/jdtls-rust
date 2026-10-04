@@ -55,6 +55,7 @@ fn to_bridge_diag(uri: &Url, d: &Diagnostic) -> BridgeDiagnostic {
         },
         category_id: 0,
         tags: None,
+        ..Default::default()
     }
 }
 
@@ -69,10 +70,15 @@ async fn publish_diagnostics(store: &DocumentStore, dispatcher: &Dispatcher, cli
     // are suppressed for those files to avoid inaccurate large-range squiggles
     // from tree-sitter's error-recovery nodes conflicting with ECJ's precise ones.
     let mut ecj_covered: std::collections::HashSet<Url> = std::collections::HashSet::new();
+    let tag_support = crate::features::client_caps::diagnostic_tags();
+    let mut docs: HashMap<String, Option<diag_conv::Doc16>> = HashMap::new();
     match dispatcher.compile_all().await {
         Ok(BridgeResponse::Diagnostics { items, .. }) => {
             for item in &items {
-                if let Some((uri, diag)) = diag_conv::to_lsp(item) {
+                let doc = docs.entry(item.uri.clone()).or_insert_with(|| {
+                    Url::parse(&item.uri).ok().and_then(|u| crate::features::source_text(store, &u)).map(|t| diag_conv::Doc16::new(&t))
+                });
+                if let Some((uri, diag)) = diag_conv::to_lsp(item, doc.as_ref(), tag_support) {
                     ecj_covered.insert(uri.clone());
                     by_uri.entry(uri).or_default().push(diag);
                 }
@@ -467,16 +473,17 @@ impl LanguageServer for JavaLanguageServer {
                 document_highlight_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                // `CodeActionHandler.createOptions`.
                 code_action_provider: Some(CodeActionProviderCapability::Options(
                     CodeActionOptions {
-                        code_action_kinds: Some(vec![
-                            CodeActionKind::QUICKFIX,
-                            CodeActionKind::from("quickassist"),
-                            CodeActionKind::REFACTOR,
-                            CodeActionKind::SOURCE,
-                            CodeActionKind::from("source.generate.accessors"),
-                        ]),
-                        resolve_provider: Some(false),
+                        code_action_kinds: Some(
+                            ["quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports"]
+                                .into_iter()
+                                .filter(|k| crate::features::client_caps::supported_code_action_kind(k))
+                                .map(CodeActionKind::from)
+                                .collect(),
+                        ),
+                        resolve_provider: Some(crate::features::client_caps::resolve_code_action()),
                         work_done_progress_options: Default::default(),
                     },
                 )),
@@ -612,6 +619,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
         let version = params.text_document.version;
+        if self.store.is_open(&uri) && !params.content_changes.is_empty() {
+            crate::correction::handler::document_changed(&uri);
+        }
         {
             let mut parser = self.parser.lock().await;
             self.store.apply_changes(&uri, version, params.content_changes, &mut parser);
@@ -1299,37 +1309,47 @@ impl LanguageServer for JavaLanguageServer {
         };
 
         let bridge_diags = params.context.diagnostics.iter()
+            .filter(|d| d.source.as_deref() == Some(diag_conv::SERVER_SOURCE_ID))
             .map(|d| to_bridge_diag(uri, d))
-            .collect();
+            .collect::<Vec<_>>();
+        let has_java_problems = !bridge_diags.is_empty();
 
-        let mut lsp_actions: Vec<CodeActionOrCommand> = Vec::new();
+        // jdt.ls `CodeActionHandler` (Rust port).
+        let env = self.format_env().await;
+        let cenv = crate::correction::edit::Env { dispatcher: &self.dispatcher, format: &env, lifecycle: &self.lifecycle };
+        let mut lsp_actions = crate::correction::handler::code_actions(&cenv, &params).await;
 
-        if let Ok(BridgeResponse::CodeActions { actions, .. }) =
-            self.dispatcher.code_action(uri, bridge_range, bridge_diags).await
-        {
-            lsp_actions.extend(
-                ca_conv::to_lsp(&actions)
-                    .into_iter()
-                    .map(CodeActionOrCommand::CodeAction),
-            );
+        // Corrections not ported to Rust yet still come from the bridge.
+        if crate::features::client_caps::supported_code_action_kind(CodeActionKind::QUICKFIX.as_str()) {
+            if let Ok(BridgeResponse::CodeActions { actions, .. }) =
+                self.dispatcher.code_action(uri, bridge_range, bridge_diags).await
+            {
+                let titles: std::collections::HashSet<String> = lsp_actions
+                    .iter()
+                    .map(|a| match a {
+                        CodeActionOrCommand::CodeAction(c) => c.title.clone(),
+                        CodeActionOrCommand::Command(c) => c.title.clone(),
+                    })
+                    .collect();
+                lsp_actions.extend(
+                    ca_conv::to_lsp(&actions)
+                        .into_iter()
+                        .filter(|a| a.kind.as_ref().is_some_and(|kind| {
+                            (kind.as_str() != CodeActionKind::QUICKFIX.as_str() || has_java_problems)
+                                && params.context.only.as_ref().is_none_or(|only| only.is_empty() || only.iter().any(|requested| kind.as_str().starts_with(requested.as_str())))
+                        }))
+                        .filter(|a| !titles.contains(&a.title) && !crate::correction::handler::is_superseded_legacy_action(&a.title))
+                        .map(CodeActionOrCommand::CodeAction),
+                );
+            }
         }
+        Ok(Some(lsp_actions))
+    }
 
-        // Organize Imports — always offered (ECJ code action also includes it, but this
-        // ensures it appears even when the ECJ organizeImports call returns no edits).
-        if let Ok(BridgeResponse::WorkspaceEdit { changes, .. }) =
-            self.dispatcher.organize_imports(uri).await
-        {
-            let org_edit = ca_conv::workspace_edit_from_bridge(&changes);
-            lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: "Organize Imports".to_owned(),
-                kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
-                edit: Some(org_edit),
-                is_preferred: Some(true),
-                ..Default::default()
-            }));
-        }
-
-        Ok(if lsp_actions.is_empty() { None } else { Some(lsp_actions) })
+    async fn code_action_resolve(&self, params: CodeAction) -> LspResult<CodeAction> {
+        let env = self.format_env().await;
+        let cenv = crate::correction::edit::Env { dispatcher: &self.dispatcher, format: &env, lifecycle: &self.lifecycle };
+        Ok(crate::correction::handler::resolve(&cenv, params).await)
     }
 
     // ── Formatting ─────────────────────────────────────────────────────────────

@@ -54,7 +54,7 @@ impl LspClient {
         let mut child = Command::new(bin)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(if std::env::var_os("JDTLS_TEST_STDERR").is_some() { Stdio::inherit() } else { Stdio::null() })
             .spawn()
             .expect("failed to spawn jdtls-rust");
 
@@ -166,6 +166,9 @@ impl LspClient {
             "params": {
                 "capabilities": {
                     "textDocument": {
+                        "codeAction": {
+                            "codeActionLiteralSupport": { "codeActionKind": { "valueSet": [""] } }
+                        },
                         "completion": {
                             "completionItem": {
                                 "snippetSupport": true
@@ -2401,7 +2404,7 @@ fn ecj_code_action_organize_imports_skips_java_lang() {
     let action = actions.iter().find(|a| {
         a["title"].as_str()
             .or_else(|| a["right"]["title"].as_str())
-            .is_some_and(|t| t == "Organize Imports")
+            .is_some_and(|t| t == "Organize imports")
     });
     assert!(action.is_some(), "expected Organize Imports action, got: {actions:?}");
 

@@ -83,7 +83,7 @@ fn get_code_actions(ws: &mut Workspace, uri: &str, diagnostics: &[Value]) -> Vec
 }
 
 #[test]
-#[ignore = "needs CodeActionHandler port (code action worker): context.only = [quickfix] isn't applied, so source/quick assists are returned too"]
+#[ignore = "needs the unimplemented-method quick-fix processor; kind filtering is implemented but the expected quick fix is missing"]
 fn test_unimplemented_methods() {
     let mut ws = workspace();
     let root = ws.new_empty_project(&Default::default());

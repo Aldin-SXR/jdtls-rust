@@ -39,6 +39,25 @@ public class FormatterService {
     }
 
     /**
+     * {@code ToolFactory.createCodeFormatter(options)} ({@code M_FORMAT_EXISTING},
+     * as {@code ASTRewriteFormatter} uses it): the options as given.
+     */
+    public List<BridgeFormatEdit> formatExisting(String source, int kind, int offset, int length,
+                                                 int indentationLevel, String lineSeparator,
+                                                 Map<String, String> options) {
+        CodeFormatter formatter = new DefaultCodeFormatter(new HashMap<>(options == null ? Map.of() : options));
+        TextEdit edit = formatter.format(kind, source, offset, length, indentationLevel, lineSeparator);
+        if (edit == null) {
+            return null;
+        }
+        List<BridgeFormatEdit> out = new ArrayList<>();
+        for (TextEdit child : edit.getChildren()) {
+            flatten(child, out);
+        }
+        return out;
+    }
+
+    /**
      * {@code ToolFactory.createCodeFormatter(options, M_FORMAT_NEW)} without the
      * extension-point lookup (no OSGi here).
      */

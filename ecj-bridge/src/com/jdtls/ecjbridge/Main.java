@@ -353,6 +353,17 @@ public class Main {
                     yield new ErrorResponse(req.id, ex.toString());
                 }
             }
+            case "semanticAst" -> SemanticAstService.handle(req);
+            case "formatBatch" -> {
+                List<List<BridgeFormatEdit>> results = new ArrayList<>();
+                for (FormatJob job : req.jobs == null ? List.<FormatJob>of() : req.jobs) {
+                    results.add(formatter.formatExisting(job.source, job.kind, job.offset, job.length,
+                        job.indentationLevel, req.lineSeparator, req.options));
+                }
+                yield new FormatBatchResponse(req.id, results);
+            }
+            case "compiledClasses" -> new CompiledClassesResponse(req.id, compiler.compiledClasses(
+                req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.names));
             case "shutdown" -> new OkResponse(req.id);
             default -> new ErrorResponse(req.id, "Unknown method: " + req.method);
         };

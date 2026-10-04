@@ -3,8 +3,8 @@
 How far jdtls-rust is from eclipse.jdt.ls parity, measured against the upstream test
 suite. For how the port is done, see [PORTING.md](PORTING.md).
 
-* **Branch:** `jdtls-parity`, including the verified lifecycle/init/file-event
-  and binary-editor integrations. `main` is unchanged.
+* **Branch:** `jdtls-parity`, including the verified lifecycle/init/file-event,
+  binary-editor and initial correction integrations. `main` is unchanged.
 * **Reference:** eclipse.jdt.ls 1.58.0. The upstream checkout is 1.58.0-SNAPSHOT
   (2026-04-10), and the oracle in `.oracle/` is the 1.58.0 release.
 * **Last updated:** 2026-10-04.
@@ -16,26 +16,27 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 459 | 22.0% |
-| Passing | 422 | 20.2% |
+| Ported | 478 | 22.9% |
+| Passing | 441 | 21.1% |
 | Ported but `#[ignore]`d | 37 | 1.8% |
-| Not ported yet | 1,628 | 78.0% |
+| Not ported yet | 1,609 | 77.1% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 602 passed,
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 626 passed,
 0 failed and 38 ignored. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
-`tests/binary_editor_regressions.rs`, 5 tests) and unit
+`tests/binary_editor_regressions.rs`, 5 tests;
+`tests/correction_regressions.rs`, 3 tests) and unit
 tests that aren't ports.
 
 ## By upstream area
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 399 | 380 | 44% |
+| handlers | 871 | 410 | 391 | 45% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 21 | 3 | 1% |
-| correction | 604 | 0 | 0 | 0% |
+| correction | 604 | 8 | 8 | 1% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
 | preferences | 53 | 0 | 0 | 0% |
@@ -54,6 +55,7 @@ tests that aren't ports.
 |---|---|---:|---:|---:|---|
 | handlers/BuildWorkspaceHandlerTest | `handlers_build_workspace_handler_test` | 5 | 5 | 0 | 5/5 |
 | handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 9 | 1 | 9/9 active; `outgoing_calls_src` resolves into the real JDK's `src.zip` (environment) |
+| handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 11 | 11 | 0 | 11/11 |
 | handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 13 | 1 | 13/13 active; Runnable exposes 3 lenses with the real JDK's sources (environment) |
 | handlers/DocumentHighlightHandlerTest | `handlers_document_highlight_handler_test` | 5 | 5 | 0 | pass |
 | handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` | 19 | 17 | 2 | 17/17 active cases |
@@ -79,6 +81,9 @@ tests that aren't ports.
 | handlers/WorkspaceDiagnosticsHandlerTest | `handlers_workspace_diagnostics_handler_test` | 2 | 2 | 0 | 2/2 (package deletion and diagnostic filtering) |
 | handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` | 1 | 1 | 0 | 1/1 (unknown-command error) |
 | handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 15 | 4 | 15/15 |
+| correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
+| correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
+| correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
 | commands/DiagnosticsCommandTest | `commands_diagnostics_command_test` | 2 | 2 | 0 | 2/2 |
 | commands/TypeHierarchyCommandTest | `commands_type_hierarchy_command_test` | 5 | 5 | 0 | 5/5 |
 | javadoc/JavaDoc2MarkdownConverterTest | unit tests in `src/javadoc/converter.rs` | 19 | 19 | 0 | n/a (unit tests) |
@@ -165,6 +170,47 @@ one corrected environment classification). Binary Java model parity still needs
 broader coverage of generated enum/record members and unusual or mismatched
 source attachments; this integration does not claim exhaustive class-file parity.
 
+## Correction integration evidence
+
+The saved quick-fix infrastructure is integrated. Nineteen substantive upstream
+ports pass against both Rust and jdt.ls 1.58.0: eight correction cases and eleven
+`CodeActionHandlerTest` cases. The correction assertions retain exact titles,
+generated serial IDs and resulting source; the handler ports retain upstream
+fixtures, diagnostic inputs, kind restrictions and edit assertions.
+
+* The bridge exports resolved JDT nodes, bindings, compiler problems and class
+  bytes. Rust navigates the AST, computes rewrites and imports, constructs edits,
+  orders ported proposals and handles action resolution.
+* Ported processors cover serial IDs, redundant interfaces, unnecessary casts,
+  unterminated strings and superfluous semicolons. Compiler-ignore edits into an
+  external settings file are exercised by the redundant-interface fixture.
+* Diagnostic conversion preserves raw problem IDs, arguments, UTF-16 ranges and
+  client-supported tags. Lifecycle reconciliation converts against the current
+  buffer; builds convert against the saved snapshot.
+* Java diagnostic filtering and requested action-kind filtering are applied to
+  the compatibility bridge. Import actions use the upstream label and selection
+  rules; Rust combines unused-import removals and missing-import candidates in
+  one edit. Unused imports can be removed without a diagnostic in the request.
+* Non-project fixes consult the current lifecycle diagnostics mode. Deferred
+  actions resolve into edits, and a change to the active correction document
+  invalidates stored proposals. Three own regression tests verify these flows
+  against the oracle, including mixed import additions and removals.
+* The older editor harness now advertises the literal-action capability its
+  code-action assertions require, and expects the upstream `Organize imports`
+  label. Its 95 tests pass. The minimal lms-monaco capability fixture is retained.
+* **Remaining:** most correction processors are still unported, including several
+  empty scaffolds. The compatibility bridge still supplies unported fixes,
+  refactors and generation actions, with incomplete ordering/metadata/resolve
+  parity. Import candidate search still uses the old bridge implementation;
+  ambiguous imports, sorting, wildcards and static imports need dedicated ports.
+  Active AST tracking across other editor handlers, invalid proposal errors,
+  snippet edits and full project-setting refresh on compiler-ignore actions also
+  remain. The two lifecycle quick-fix tests stay ignored with their assertions;
+  unimplemented-method generation is missing even though kind filtering is fixed.
+
+This raises passing upstream ports from 422 to 441. The two correction helper unit
+tests and three own regressions are excluded from the upstream-port count.
+
 ## Known differences from jdt.ls
 
 * **JDT version.** The bridge uses JDT/ECJ 3.44.0, while jdt.ls 1.58 uses 3.46. One
@@ -192,12 +238,11 @@ source attachments; this integration does not claim exhaustive class-file parity
 ## Not merged yet
 
 These branches hold work in progress that was interrupted by API session limits. Each
-was saved as a WIP commit and **hasn't been built or tested**.
+was saved as a WIP commit and has not been verified in the integrated branch.
 
 | Branch | Area | Ahead of `jdtls-parity` | State |
 |---|---|---|---|
-| `worktree-agent-a1a367cb061d797a4` (`3a27dfc`) | Completion: JDT `CompletionEngine` running in the bridge without the Java model, plus the Rust conversion layer | 7 commits, about 11k lines | stopped while comparing JDT 3.46 with 3.44; no tests ported yet |
-| `worktree-agent-afcd3c34fa679aeb8` (`52a2d64`) | Quick-fix infrastructure: semantic AST, Rust ASTRewrite and ImportRewrite, CodeActionHandler, quick-fix test harness | 3 commits, about 18k lines | stopped while writing its first test files |
+| `worktree-agent-a1a367cb061d797a4` (`3a27dfc`) | Completion: JDT `CompletionEngine` running in the bridge without the Java model, plus the Rust conversion layer | 7 commits, about 11k lines | stopped while comparing JDT 3.46 with 3.44; 62 substantive completion tests saved (7 ignored), integration and oracle verification pending |
 | `worktree-agent-a1e31779b8b46b008` (`af6a7a8`) | Project import: Eclipse and Maven importers to match m2e and jdt.ls, Maven downloads, a Gradle decision | 4 commits, about 7k lines | stopped while starting MavenProjectImporterTest |
 
 ## Largest remaining work
@@ -208,7 +253,7 @@ was saved as a WIP commit and **hasn't been built or tested**.
 | Completion (CompletionHandlerTest 156, LazyResolve 20, Chain 12, Postfix 29) | 217 | 10% |
 | Project managers | 211 | 10% |
 | Refactoring | 119 | 6% |
-| Remaining handlers: code actions, code generation, organize imports, paste, save actions, workspace markers and other lifecycle/init cases | about 250 | 12% |
+| Remaining handlers: code actions, code generation, organize imports, paste, save actions, workspace markers and other lifecycle/init cases | about 239 | 11% |
 | Core utilities, preferences, commands and the rest | about 220 | 11% |
 
 ## Updating this file
@@ -216,13 +261,13 @@ was saved as a WIP commit and **hasn't been built or tested**.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
 Add the ports that live as unit tests in `src/` (InlayHintFilterManagerTest 7,
 JavaDoc2Markdown 19, JavaDoc2PlainText 2, JavaDocImageExtraction 1, InitHandler 2).
-Exclude `lifecycle_regressions.rs` and `binary_editor_regressions.rs`, which are
-our regression suites, and empty placeholders (these are not ports). Upstream counts
+Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
+`correction_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.

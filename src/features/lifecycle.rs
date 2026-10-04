@@ -235,7 +235,7 @@ impl Lifecycle {
 
     /// Whether only syntax-like problems are reported for `uri`
     /// (`DiagnosticsState.isOnlySyntaxReported`).
-    fn is_only_syntax_reported(&self, uri: &Url) -> bool {
+    pub fn is_only_syntax_reported(&self, uri: &Url) -> bool {
         let st = self.state();
         st.error_levels.get(uri).copied().unwrap_or(st.global_syntax_only.unwrap_or(true))
     }
@@ -316,6 +316,11 @@ impl Lifecycle {
                 code: Some(id.to_string()),
                 category_id: 0,
                 tags: None,
+                problem_id: None,
+                source_start: None,
+                source_end: None,
+                source_line: None,
+                arguments: None,
             });
         }
         for d in items.into_iter().filter(|d| d.uri == key) {
@@ -324,7 +329,9 @@ impl Lifecycle {
                 problems.push(d);
             }
         }
-        Some(problems.iter().filter_map(diag_conv::to_lsp).map(|(_, d)| d).collect())
+        let doc = diag_conv::Doc16::new(&content);
+        let tag_support = crate::features::client_caps::diagnostic_tags();
+        Some(problems.iter().filter_map(|d| diag_conv::to_lsp(d, Some(&doc), tag_support)).map(|(_, d)| d).collect())
     }
 
     // ── Default-project package links ───────────────────────────────────────
@@ -534,7 +541,8 @@ impl Lifecycle {
             match self.dispatcher.compile_units(ctx, Some(roots), expected).await {
                 Ok(items) => {
                     for d in items.into_iter().filter(|d| own.contains(&d.uri)) {
-                        if let Some((u, diag)) = diag_conv::to_lsp(&d) {
+                        let doc = disk.get(&d.uri).map(|text| diag_conv::Doc16::new(text));
+                        if let Some((u, diag)) = diag_conv::to_lsp(&d, doc.as_ref(), crate::features::client_caps::diagnostic_tags()) {
                             built.entry(u).or_default().push(diag);
                         }
                     }

@@ -59,6 +59,28 @@ public class BridgeProtocol {
         public int contextOffset = -1;
         public String fallbackName;
         public boolean description;
+        // formatBatch
+        public List<FormatJob> jobs;
+    }
+
+    /** One {@code CodeFormatter.format} call of a {@code formatBatch} request. */
+    public static class FormatJob {
+        public String source;
+        public int kind, offset, length, indentationLevel;
+    }
+
+    public static class FormatBatchResponse extends Response {
+        public List<List<BridgeFormatEdit>> results; // null entries: the formatter returned null
+        public FormatBatchResponse(long id, List<List<BridgeFormatEdit>> results) {
+            this.id = id; this.method = "formatBatch"; this.results = results;
+        }
+    }
+
+    public static class CompiledClassesResponse extends Response {
+        public Map<String, String> classes; // binary name (a/b/C$D) -> base64 class file
+        public CompiledClassesResponse(long id, Map<String, String> classes) {
+            this.id = id; this.method = "compiledClasses"; this.classes = classes;
+        }
     }
 
     public static class BridgeRange {
@@ -217,6 +239,10 @@ public class BridgeProtocol {
         public String code;
         public int categoryId;   // CategorizedProblem.CAT_* constant
         public List<Integer> tags;
+        // Raw IProblem data (Rust shapes the LSP diagnostic: DiagnosticsHandler.toDiagnosticsArray)
+        public Integer problemId;
+        public Integer sourceStart, sourceEnd, sourceLine;
+        public List<String> arguments;
     }
 
     public static class BridgeCompletion {
