@@ -30,6 +30,7 @@ tempfile = "3"         # extract embedded JAR to tmp at startup
 roxmltree = "0.20"
 walkdir = "2"
 tower-service = "0.3" # wrap the LSP service (lenient document URIs)
+ureq = { version = "2", default-features = false, features = ["tls"] } # Maven artifact downloads
 
 [build-dependencies]
 # nothing needed unless we add JAR embedding later

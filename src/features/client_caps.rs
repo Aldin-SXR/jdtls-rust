@@ -28,3 +28,8 @@ pub fn symbol_tags() -> bool {
     })
     .unwrap_or(false)
 }
+
+/// `ClientPreferences.isWorkspaceChangeWatchedFilesDynamicRegistered`.
+pub fn watched_files_dynamic_registration() -> bool {
+    with(|c| c.workspace.as_ref()?.did_change_watched_files.as_ref()?.dynamic_registration).unwrap_or(false)
+}

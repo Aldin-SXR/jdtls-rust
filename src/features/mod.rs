@@ -14,6 +14,7 @@ pub mod java_element;
 pub mod java_model;
 pub mod navigation;
 pub mod preferences;
+pub mod project_commands;
 pub mod rename;
 pub mod scanner;
 pub mod selection_range;

@@ -234,6 +234,10 @@ impl Dispatcher {
         let mut items = Vec::new();
         let mut last_id = 0;
         for target in targets {
+            // JDT does not build a project whose build path has errors.
+            if target.as_deref().and_then(|n| ws.project(n)).is_some_and(|p| p.has_build_path_errors() || !p.is_java()) {
+                continue;
+            }
             let RequestContext { files, classpath, source_level, options } =
                 self.context_for_project(&ws, target.as_deref(), false).await;
             if files.is_empty() {

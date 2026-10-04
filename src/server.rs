@@ -59,11 +59,19 @@ fn to_bridge_diag(uri: &Url, d: &Diagnostic) -> BridgeDiagnostic {
     }
 }
 
+/// URIs whose last published diagnostics were non-empty (so a later build
+/// that clears them publishes an empty list, like jdt.ls' marker deltas).
+static PUBLISHED: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashSet<Url>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
 /// Collect tree-sitter and ECJ diagnostics for every open document and push
 /// them to the client.  Shared by `spawn_compile_loop` and `publish_diagnostics_for_all`.
-async fn publish_diagnostics(store: &DocumentStore, dispatcher: &Dispatcher, client: &Client) {
+/// Returns whether any workspace project has error markers
+/// (`BuildWorkspaceStatus.WITH_ERROR`).
+async fn publish_diagnostics(store: &DocumentStore, dispatcher: &Dispatcher, client: &Client) -> bool {
     let snapshots = store.snapshots();
     let mut by_uri: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
+    let mut has_errors = false;
 
     // Run ECJ first — it is the authoritative source for Java diagnostics.
     // Track which URIs ECJ produced diagnostics for; tree-sitter diagnostics
@@ -95,12 +103,80 @@ async fn publish_diagnostics(store: &DocumentStore, dispatcher: &Dispatcher, cli
     }
 
     // Ensure every open document gets an entry (clears stale diagnostics).
-    for state in &snapshots {
+    for state in snapshots.iter().filter(|s| s.open) {
         by_uri.entry(state.uri.clone()).or_default();
     }
+    {
+        let ws = dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner());
+        for (uri, diags) in &by_uri {
+            if ws.project_for_uri(uri).is_some() && diags.iter().any(|d| d.severity == Some(DiagnosticSeverity::ERROR)) {
+                has_errors = true;
+            }
+        }
+        // Project-level markers (build path problems, build files).
+        for (uri, diags) in crate::features::project_commands::project_marker_diagnostics(&ws) {
+            if diags.iter().any(|d| d["severity"] == 1) {
+                has_errors = true;
+            }
+            if let Ok(u) = Url::parse(&uri) {
+                let d: Vec<Diagnostic> = diags.into_iter().filter_map(|d| serde_json::from_value(d).ok()).collect();
+                by_uri.entry(u).or_default().extend(d);
+            }
+        }
+    }
+    // Clear what was reported before and is clean now.
+    let previous: Vec<Url> = PUBLISHED.lock().unwrap().iter().cloned().collect();
+    for uri in previous {
+        by_uri.entry(uri).or_default();
+    }
     for (uri, diags) in by_uri {
+        {
+            let mut published = PUBLISHED.lock().unwrap();
+            if diags.is_empty() {
+                published.remove(&uri);
+            } else {
+                published.insert(uri.clone());
+            }
+        }
         client.publish_diagnostics(uri, diags, None).await;
     }
+    has_errors
+}
+
+/// The last `workspace/didChangeWatchedFiles` registration (`ProjectsManager.watchers`).
+static WATCHERS: once_cell::sync::Lazy<std::sync::Mutex<Option<(String, Value)>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
+
+/// `StandardProjectsManager.registerWatchers()`: (re-)register the file
+/// watchers when the patterns changed.
+async fn register_watchers(client: &Client, dispatcher: &Dispatcher, config: &RwLock<Config>) {
+    if !crate::features::client_caps::watched_files_dynamic_registration() {
+        return;
+    }
+    let ws = dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let settings = import_settings(&*config.read().await);
+    let options = crate::features::project_commands::watcher_registration(&ws, &settings.referenced_libraries.include);
+    let previous = {
+        let guard = WATCHERS.lock().unwrap();
+        if guard.as_ref().is_some_and(|(_, o)| *o == options) {
+            return;
+        }
+        guard.clone()
+    };
+    let id = previous.as_ref().map(|(id, _)| id.clone()).unwrap_or_else(|| format!("{:032x}", std::process::id() as u128 ^ 0x5eed_0000_0000_0000_0000_0000_0000_0000));
+    let id = format!("{}-{}-{}-{}-{}", &id[0..8], &id[8..12], &id[12..16], &id[16..20], &id[20..32]).chars().take(36).collect::<String>();
+    let id = if id.len() < 36 { "00000000-0000-4000-8000-000000000001".to_owned() } else { id };
+    let _ = client
+        .unregister_capability(vec![Unregistration { id: id.clone(), method: "workspace/didChangeWatchedFiles".to_owned() }])
+        .await;
+    let _ = client
+        .register_capability(vec![Registration {
+            id: id.clone(),
+            method: "workspace/didChangeWatchedFiles".to_owned(),
+            register_options: Some(options.clone()),
+        }])
+        .await;
+    *WATCHERS.lock().unwrap() = Some((id, options));
 }
 
 /// jdt.ls `language/status` notification.
@@ -211,7 +287,7 @@ impl JavaLanguageServer {
     /// source files with the document store.
     async fn reimport_workspace(&self) {
         let roots = self.roots.read().await.clone();
-        let settings = import_settings(self.config.read().await.settings.as_ref());
+        let settings = import_settings(&*self.config.read().await);
         let ws = tokio::task::spawn_blocking(move || crate::project::Workspace::import(&roots, &settings))
             .await
             .unwrap_or_default();
@@ -221,6 +297,9 @@ impl JavaLanguageServer {
         let files: Vec<Url> = ws.java_files().into_keys().filter_map(|p| Url::from_file_path(p).ok()).collect();
         self.store.set_workspace_files(files);
         *self.dispatcher.workspace.write().unwrap_or_else(|e| e.into_inner()) = ws;
+        if WATCHERS.lock().unwrap().is_some() {
+            register_watchers(&self.client, &self.dispatcher, &self.config).await;
+        }
     }
 
     async fn format_env(&self) -> formatting::FormatEnv<'_> {
@@ -242,8 +321,18 @@ impl JavaLanguageServer {
     /// Compile all open files and publish diagnostics to the client immediately.
     /// Used on demand (e.g. after a workspace-wide action); the background loop
     /// in `spawn_compile_loop` handles the normal debounced case.
-    async fn publish_diagnostics_for_all(&self) {
-        publish_diagnostics(&self.store, &self.dispatcher, &self.client).await;
+    async fn publish_diagnostics_for_all(&self) -> bool {
+        publish_diagnostics(&self.store, &self.dispatcher, &self.client).await
+    }
+
+    /// `java/buildWorkspace` (`BuildWorkspaceHandler.buildWorkspace`):
+    /// 0 FAILED, 1 SUCCEED, 2 WITH_ERROR, 3 CANCELLED.
+    pub async fn build_workspace(&self, _force_rebuild: Value) -> LspResult<i32> {
+        if !self.dispatcher.is_ecj_ready().await {
+            return Ok(0);
+        }
+        let has_errors = self.publish_diagnostics_for_all().await;
+        Ok(if has_errors { 2 } else { 1 })
     }
 
     fn dedupe_completion_items(items: Vec<CompletionItem>) -> Vec<CompletionItem> {
@@ -302,19 +391,12 @@ impl LanguageServer for JavaLanguageServer {
         }
 
         // Import workspace projects (Gradle → Maven → Eclipse → invisible).
-        let mut roots: Vec<std::path::PathBuf> = params
-            .workspace_folders
-            .iter()
-            .flatten()
-            .filter_map(|f| f.uri.to_file_path().ok())
-            .collect();
+        // `BaseInitHandler.handleInitializationOptions`: the root paths are
+        // `initializationOptions.workspaceFolders`, else `rootUri`/`rootPath`,
+        // else the jdt.ls workspace location.
+        let mut roots: Vec<std::path::PathBuf> = self.config.read().await.root_paths.clone();
         if roots.is_empty() {
-            #[allow(deprecated)]
-            if let Some(p) = params.root_uri.as_ref().and_then(|u| u.to_file_path().ok()) {
-                roots.push(p);
-            } else if let Some(p) = params.root_path.as_ref() {
-                roots.push(std::path::PathBuf::from(p));
-            }
+            roots.push(crate::project::canonicalize_lenient(&data_dir()));
         }
         *self.roots.write().await = roots;
         self.reimport_workspace().await;
@@ -324,6 +406,7 @@ impl LanguageServer for JavaLanguageServer {
         let store = Arc::clone(&self.store);
         let client = self.client.clone();
         let compile_tx = self.compile_tx.clone();
+        let config = Arc::clone(&self.config);
         tokio::spawn(async move {
             if let Err(e) = dispatcher.start_ecj().await {
                 error!("Failed to start ecj-bridge: {e}");
@@ -340,6 +423,7 @@ impl LanguageServer for JavaLanguageServer {
                         message: "ServiceReady".into(),
                     })
                     .await;
+                register_watchers(&client, &dispatcher, &config).await;
                 // Trigger a compile for anything opened meanwhile — use a fresh
                 // increment so the watch always fires.
                 let next = (*compile_tx.borrow()).wrapping_add(1);
@@ -435,6 +519,9 @@ impl LanguageServer for JavaLanguageServer {
                         "java.project.refreshDiagnostics".to_owned(),
                         "java.project.rebuild".to_owned(),
                         "java.project.getSettings".to_owned(),
+                        "java.project.getClasspaths".to_owned(),
+                        "java.project.isTestFile".to_owned(),
+                        "java.project.listSourcePaths".to_owned(),
                         "java.edit.stringFormatting".to_owned(),
                         "java.navigate.openTypeHierarchy".to_owned(),
                         "java.navigate.resolveTypeHierarchy".to_owned(),
@@ -1341,16 +1428,39 @@ impl LanguageServer for JavaLanguageServer {
                 Ok(Some(uri.map(Value::String).unwrap_or(Value::Null)))
             }
             "java.project.getAll" => {
-                // jdt.ls `ProjectCommand.getAllJavaProjects`: `File.toURI()` of
-                // every Java project folder, in workspace (name) order.
+                // jdt.ls `ProjectCommand.getAllJavaProjects` / `getAllProjects`
+                // (`{"includeNonJava": true}`): `File.toURI()` of every
+                // project's real folder, in workspace (name) order.
+                let include_non_java = params
+                    .arguments
+                    .first()
+                    .and_then(json_model)
+                    .and_then(|v| v.get("includeNonJava").and_then(Value::as_bool))
+                    .unwrap_or(false);
                 let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
-                let mut projects: Vec<&crate::project::Project> = ws.projects.iter().collect();
-                projects.sort_by(|a, b| a.name.cmp(&b.name));
-                let uris: Vec<Value> = projects
-                    .iter()
-                    .map(|p| Value::String(crate::project::java_file_uri(&p.root, true)))
-                    .collect();
-                Ok(Some(Value::Array(uris)))
+                Ok(Some(crate::features::project_commands::get_all(&ws, include_non_java)))
+            }
+            "java.project.getClasspaths" => {
+                let uri = params.arguments.first().and_then(Value::as_str).unwrap_or_default().to_owned();
+                let scope = params
+                    .arguments
+                    .get(1)
+                    .and_then(json_model)
+                    .and_then(|v| v.get("scope").and_then(Value::as_str).map(str::to_owned))
+                    .unwrap_or_else(|| "runtime".to_owned());
+                let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+                crate::features::project_commands::get_classpaths(&ws, &uri, &scope).map(Some).map_err(internal_error)
+            }
+            "java.project.isTestFile" => {
+                let uri = params.arguments.first().and_then(Value::as_str).unwrap_or_default().to_owned();
+                let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+                crate::features::project_commands::is_test_file(&ws, &uri).map(|b| Some(Value::Bool(b))).map_err(internal_error)
+            }
+            "java.project.listSourcePaths" => {
+                let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+                let cfg = self.config.read().await.clone();
+                let env = crate::features::project_commands::Env { ws: &ws, vm_home: vm_home(&cfg), root_paths: &cfg.root_paths };
+                Ok(Some(crate::features::project_commands::list_source_paths(&env)))
             }
             "java.edit.stringFormatting" => {
                 // (content, options map or null, version)
@@ -1369,17 +1479,34 @@ impl LanguageServer for JavaLanguageServer {
                 Ok(Some(Value::String(formatting::string_formatting(&env, content, options, version).await)))
             }
             "java.project.getSettings" => {
-                // (uri, keys): JDT option keys only.
-                let uri = params.arguments.first().and_then(Value::as_str).and_then(|s| Url::parse(s).ok());
+                // `ProjectCommand.getProjectSettings(uri, keys)`.
+                let uri = params.arguments.first().and_then(Value::as_str).unwrap_or_default().to_owned();
                 let keys: Vec<String> = params
                     .arguments
                     .get(1)
-                    .and_then(Value::as_array)
+                    .and_then(json_model)
+                    .and_then(|v| v.as_array().cloned())
                     .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
                     .unwrap_or_default();
-                let Some(uri) = uri else { return Ok(None) };
-                let env = self.format_env().await;
-                Ok(Some(Value::Object(formatting::project_option_settings(&env, &uri, &keys).await)))
+                let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+                let cfg = self.config.read().await.clone();
+                let vm = vm_home(&cfg);
+                let vm_version = vm.as_deref().and_then(crate::project::vm_version);
+                let formatter = formatting::options::workspace_formatter_options(&cfg.format, &cfg.root_paths);
+                let env = crate::features::project_commands::Env { ws: &ws, vm_home: vm, root_paths: &cfg.root_paths };
+                let option = |p: &crate::project::Project, key: &str| -> Option<String> {
+                    if let Some(v) = p.options.get(key) {
+                        return Some(v.clone());
+                    }
+                    if let Some(v) = cfg.compiler_options.get(key) {
+                        return Some(v.clone());
+                    }
+                    if let Some(v) = formatter.get(key) {
+                        return Some(v.clone());
+                    }
+                    crate::project::effective_option(p, key, vm_version.as_deref())
+                };
+                crate::features::project_commands::get_settings(&env, &uri, &keys, option).map(Some).map_err(internal_error)
             }
             "java.navigate.openTypeHierarchy" => {
                 Ok(crate::features::type_hierarchy::open_type_hierarchy(&self.dispatcher, &params.arguments).await)
@@ -1493,27 +1620,60 @@ fn is_build_descriptor(name: &str) -> bool {
     )
 }
 
-/// Project import settings from a jdt.ls `settings` object.
-fn import_settings(settings: Option<&Value>) -> crate::project::ImportSettings {
-    let mut s = crate::project::ImportSettings::jdtls_defaults();
-    let Some(v) = settings else { return s };
-    if let Some(ex) = setting_string_array(v, &["java", "import", "exclusions"]) {
-        s.exclusions = ex;
+/// `JSONUtility.toModel`: a JSON value, or a JSON-encoded string.
+fn json_model(v: &Value) -> Option<Value> {
+    match v {
+        Value::String(s) => serde_json::from_str(s).ok(),
+        Value::Null => None,
+        other => Some(other.clone()),
     }
-    if let Some(b) = setting_value(v, &["java", "import", "maven", "enabled"]).and_then(Value::as_bool) {
-        s.maven_enabled = b;
-    }
-    if let Some(b) = setting_value(v, &["java", "import", "gradle", "enabled"]).and_then(Value::as_bool) {
-        s.gradle_enabled = b;
-    }
-    if let Some(sp) = setting_string_array(v, &["java", "project", "sourcePaths"]) {
-        s.source_paths = sp;
-    }
-    if let Some(libs) = setting_string_array(v, &["java", "project", "referencedLibraries"]) {
-        s.referenced_libraries = libs;
-    } else if let Some(libs) = setting_string_array(v, &["java", "project", "referencedLibraries", "include"]) {
-        s.referenced_libraries = libs;
-    }
+}
+
+/// A `CoreException` thrown from a delegate command.
+fn internal_error(message: String) -> tower_lsp::jsonrpc::Error {
+    tower_lsp::jsonrpc::Error { code: tower_lsp::jsonrpc::ErrorCode::InternalError, message: message.into(), data: None }
+}
+
+/// The jdt.ls workspace directory (`-data`), or a per-process temporary one.
+pub(crate) fn data_dir() -> std::path::PathBuf {
+    crate::config::DATA_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("jdtls-rust-workspace-{}", std::process::id())))
+}
+
+/// The default VM's home (`JavaRuntime.getDefaultVMInstall()`).
+pub(crate) fn vm_home(cfg: &Config) -> Option<std::path::PathBuf> {
+    let from = |h: &str| {
+        let p = std::path::PathBuf::from(h);
+        p.join("bin").join("java").is_file().then(|| crate::project::canonicalize_lenient(&p))
+    };
+    cfg.java_home
+        .as_deref()
+        .and_then(from)
+        .or_else(|| std::env::var("JAVA_HOME").ok().as_deref().and_then(from))
+        .or_else(|| {
+            let out = std::process::Command::new("/usr/libexec/java_home").output().ok()?;
+            from(String::from_utf8_lossy(&out.stdout).trim())
+        })
+}
+
+/// Project import settings: the jdt.ls `settings` plus the initialization
+/// options that drive import (`triggerFiles`, `projectConfigurations`).
+fn import_settings(cfg: &Config) -> crate::project::ImportSettings {
+    let mut s = crate::project::ImportSettings::from_settings(cfg.settings.as_ref());
+    let to_paths = |uris: &[String]| -> Vec<std::path::PathBuf> {
+        uris.iter()
+            .filter_map(|u| Url::parse(u).ok())
+            .filter_map(|u| u.to_file_path().ok())
+            .map(|p| crate::project::canonicalize_lenient(&p))
+            .collect()
+    };
+    s.trigger_files = cfg.trigger_files.as_deref().map(to_paths).unwrap_or_default();
+    s.project_configurations = cfg.project_configurations.as_deref().map(to_paths);
+    s.data_dir = Some(data_dir());
+    s.vm_home = vm_home(cfg);
+    s.vm_version = s.vm_home.as_deref().and_then(crate::project::vm_version);
     s
 }
 

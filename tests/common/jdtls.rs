@@ -42,12 +42,14 @@ pub struct LspClient {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<Value>,
-    next_id: u64,
+    pub(crate) next_id: u64,
     /// Notifications received while waiting for something else.
     pub notifications: Vec<Value>,
     /// Canned results for server→client requests, by method
     /// (e.g. `workspace/executeClientCommand`).
     pub request_results: BTreeMap<String, Value>,
+    /// Every server→client request received (e.g. `client/registerCapability`).
+    pub server_requests: Vec<Value>,
 }
 
 fn read_message(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Value> {
@@ -88,7 +90,12 @@ impl LspClient {
             c.arg(data);
             c
         } else {
-            Command::new(env!("CARGO_BIN_EXE_jdtls-rust"))
+            let mut c = Command::new(env!("CARGO_BIN_EXE_jdtls-rust"));
+            // Like jdt.ls: `-data <workspace>` is the server's metadata area.
+            if let Some(d) = data_dir {
+                c.arg("-data").arg(d.join("workspace"));
+            }
+            c
         };
         let mut child = cmd
             .stdin(Stdio::piped())
@@ -106,7 +113,7 @@ impl LspClient {
                 }
             }
         });
-        Self { child, stdin, rx, next_id: 1, notifications: Vec::new(), request_results: BTreeMap::new() }
+        Self { child, stdin, rx, next_id: 1, notifications: Vec::new(), request_results: BTreeMap::new(), server_requests: Vec::new() }
     }
 
     pub fn send(&mut self, msg: &Value) {
@@ -121,6 +128,7 @@ impl LspClient {
 
     /// Handle a server→client request (respond with `null`/defaults).
     fn answer_server_request(&mut self, msg: &Value) {
+        self.server_requests.push(msg.clone());
         let id = msg["id"].clone();
         let canned = msg["method"].as_str().and_then(|m| self.request_results.get(m)).cloned();
         let result = match msg["method"].as_str() {
@@ -188,8 +196,8 @@ impl Drop for LspClient {
 pub struct Workspace {
     _tmp: tempfile::TempDir,
     pub dir: PathBuf,
-    roots: Vec<PathBuf>,
-    client: Option<LspClient>,
+    pub(crate) roots: Vec<PathBuf>,
+    pub(crate) client: Option<LspClient>,
     pub settings: Value,
     pub init_options: Value,
     pub capabilities: Value,
@@ -230,7 +238,7 @@ impl Workspace {
         self
     }
 
-    fn add_root(&mut self, root: PathBuf) {
+    pub(crate) fn add_root(&mut self, root: PathBuf) {
         if self.roots.contains(&root) {
             return;
         }
@@ -332,6 +340,13 @@ impl Workspace {
                 init["javaHome"] = json!(java_home());
             }
             init["settings"] = self.settings.clone();
+            // vscode-java sends the workspace folders in the initialization
+            // options too; jdt.ls takes its root paths from there
+            // (`BaseInitHandler`), falling back to `rootUri`.
+            if init.get("workspaceFolders").is_none() {
+                let uris: Vec<Value> = self.roots.iter().map(|r| json!(Url::from_file_path(r).unwrap().to_string())).collect();
+                init["workspaceFolders"] = Value::Array(uris);
+            }
             c.request(
                 "initialize",
                 json!({

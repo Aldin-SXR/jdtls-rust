@@ -23,7 +23,8 @@ pub struct FileDetector {
 impl FileDetector {
     pub fn new(root: &Path, file_names: &[&str]) -> Self {
         Self {
-            root: root.to_path_buf(),
+            // `Paths.get` drops trailing separators.
+            root: root.components().collect(),
             file_names: file_names.iter().map(|s| s.to_string()).collect(),
             max_depth: 5,
             include_nested: true,
@@ -33,6 +34,13 @@ impl FileDetector {
 
     pub fn include_nested(mut self, v: bool) -> Self {
         self.include_nested = v;
+        self
+    }
+
+    /// `maxDepth`: directories deeper than this are not visited.
+    pub fn max_depth(mut self, depth: usize) -> Self {
+        assert!(depth > 0, "maxDepth must be > 0");
+        self.max_depth = depth;
         self
     }
 
@@ -53,16 +61,35 @@ impl FileDetector {
                 glob_to_regex(pat).map(|r| (include, r))
             })
             .collect();
-        let has_inclusion = matchers.iter().any(|(inc, _)| *inc);
+        let has_inclusion = self.exclusions.iter().any(|e| e.starts_with('!'));
         let mut found = Vec::new();
-        self.walk(&self.root, 0, &matchers, has_inclusion, &mut found);
+        if self.root.is_dir() {
+            let mut ancestors = Vec::new();
+            self.walk(&self.root, 0, &matchers, has_inclusion, &mut ancestors, &mut found);
+        }
         found
     }
 
-    fn walk(&self, dir: &Path, depth: usize, matchers: &[(bool, Regex)], has_inclusion: bool, found: &mut Vec<PathBuf>) {
-        // Files.walkFileTree(maxDepth=5) pre-visits directories at depth < maxDepth.
+    /// `Files.walkFileTree(dir, FOLLOW_LINKS, maxDepth, visitor)`: directories
+    /// at depth < maxDepth are pre-visited; a link back to an ancestor is a
+    /// `FileSystemLoopException`, which the visitor skips.
+    fn walk(
+        &self,
+        dir: &Path,
+        depth: usize,
+        matchers: &[(bool, Regex)],
+        has_inclusion: bool,
+        ancestors: &mut Vec<(u64, u64)>,
+        found: &mut Vec<PathBuf>,
+    ) {
         if depth >= self.max_depth {
             return;
+        }
+        let key = file_key(dir);
+        if let Some(k) = key {
+            if ancestors.contains(&k) {
+                return;
+            }
         }
         if is_excluded(dir, matchers) {
             if !has_inclusion {
@@ -75,16 +102,29 @@ impl FileDetector {
             }
         }
         let Ok(entries) = std::fs::read_dir(dir) else { return };
-        let mut subdirs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
+        let mut subdirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
         subdirs.sort();
+        if let Some(k) = key {
+            ancestors.push(k);
+        }
         for sub in subdirs {
-            self.walk(&sub, depth + 1, matchers, has_inclusion, found);
+            self.walk(&sub, depth + 1, matchers, has_inclusion, ancestors, found);
+        }
+        if key.is_some() {
+            ancestors.pop();
         }
     }
+}
+
+#[cfg(unix)]
+fn file_key(p: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_key(_p: &Path) -> Option<(u64, u64)> {
+    None
 }
 
 fn is_excluded(dir: &Path, matchers: &[(bool, Regex)]) -> bool {
@@ -169,4 +209,9 @@ mod tests {
         assert!(r.is_match("/a/node_modules/x"));
         assert!(!r.is_match("/a/node_modules"));
     }
+}
+
+/// A directory path used as an exclusion pattern (jdt.ls escapes `\` only).
+pub fn path_pattern(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "\\\\")
 }

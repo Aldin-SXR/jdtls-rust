@@ -5,22 +5,35 @@
 
 use super::detect::FileDetector;
 use super::maven::{Dep, Model, Resolver};
-use super::{compliance_options, normalize_java_version, project_prefs, source_attachment, ImportSettings, Library, Project, ProjectKind, SourceFolder};
+use super::{
+    compliance_options, normalize_java_version, project_prefs, source_attachment, ClasspathEntry, EntryKind, ImportSettings, Library,
+    Project, ProjectKind, SourceFolder, Workspace,
+};
 use regex::Regex;
 use std::path::{Path, PathBuf};
 
 const BUILD_FILES: &[&str] = &["build.gradle", "settings.gradle", "build.gradle.kts", "settings.gradle.kts"];
 
-pub fn import(root: &Path, settings: &ImportSettings, claimed: &[PathBuf]) -> Vec<Project> {
-    let mut detector = FileDetector::new(root, BUILD_FILES)
-        .include_nested(false)
-        .add_exclusions(["**/build", "**/bin"])
-        .add_exclusions(&settings.exclusions);
-    for c in claimed {
-        detector = detector.add_exclusions([c.to_string_lossy().replace('\\', "\\\\")]);
-    }
+pub fn import(root: &Path, settings: &ImportSettings, ws: &Workspace, configs: Option<&[PathBuf]>) -> Vec<Project> {
+    let dirs: Vec<PathBuf> = match configs {
+        Some(files) => files
+            .iter()
+            .filter(|f| f.file_name().is_some_and(|n| BUILD_FILES.contains(&n.to_string_lossy().as_ref())))
+            .filter_map(|f| f.parent().map(Path::to_path_buf))
+            .collect(),
+        None => {
+            let mut detector = FileDetector::new(root, BUILD_FILES)
+                .include_nested(false)
+                .add_exclusions(["**/build", "**/bin"])
+                .add_exclusions(&settings.exclusions);
+            for p in ws.projects.iter().filter(|p| p.kind != ProjectKind::Invisible) {
+                detector = detector.add_exclusions([p.location.to_string_lossy().replace('\\', "\\\\")]);
+            }
+            detector.scan()
+        }
+    };
     let mut out = Vec::new();
-    for dir in detector.scan() {
+    for dir in dirs {
         let dir = super::canonicalize_lenient(&dir);
         out.extend(import_build(&dir));
     }
@@ -101,15 +114,47 @@ fn load(dir: &Path, name: &str, script: &str, root_script: Option<&str>) -> Proj
     }
 
     let (libraries, project_deps) = dependencies(script);
-    Project {
-        name: name.to_owned(),
-        root: dir.to_path_buf(),
-        kind: ProjectKind::Gradle,
-        source_folders,
-        libraries,
-        project_deps,
-        options,
+    let mut p = Project::new(name, dir, ProjectKind::Gradle);
+    p.natures = vec![super::JAVA_NATURE.to_owned(), super::GRADLE_NATURE.to_owned()];
+    p.options = options;
+    p.output = Some(dir.join("bin/default"));
+    p.build_files = BUILD_FILES.iter().map(|f| dir.join(f)).filter(|f| f.is_file()).collect();
+    for sf in source_folders {
+        let mut e = ClasspathEntry::new(EntryKind::Source, p.full_path(&sf.path));
+        if sf.is_test {
+            e.attributes.push(("gradle_scope".into(), "test".into()));
+            e.attributes.push(("gradle_used_by_scope".into(), "test".into()));
+            e.attributes.push(("test".into(), "true".into()));
+            e.output = Some(dir.join("bin/test"));
+        } else {
+            e.attributes.push(("gradle_scope".into(), "main".into()));
+            e.attributes.push(("gradle_used_by_scope".into(), "main,test".into()));
+            e.output = Some(dir.join("bin/main"));
+        }
+        e.location = Some(sf.path);
+        p.classpath.push(e);
     }
+    p.classpath.push(ClasspathEntry::new(EntryKind::Container, super::JRE_CONTAINER));
+    let mut container = ClasspathEntry::new(EntryKind::Container, super::GRADLE_CONTAINER);
+    for lib in libraries {
+        let mut e = ClasspathEntry::new(EntryKind::Library, lib.path.to_string_lossy().into_owned());
+        if lib.is_test {
+            e.attributes.push(("gradle_used_by_scope".into(), "test".into()));
+            e.attributes.push(("test".into(), "true".into()));
+        } else {
+            e.attributes.push(("gradle_used_by_scope".into(), "main,test".into()));
+        }
+        e.location = Some(lib.path);
+        e.source_attachment = lib.source;
+        container.children.push(e);
+    }
+    for dep in project_deps {
+        let mut e = ClasspathEntry::new(EntryKind::Project, format!("/{dep}"));
+        e.attributes.push(("gradle_used_by_scope".into(), "main,test".into()));
+        container.children.push(e);
+    }
+    p.classpath.push(container);
+    p
 }
 
 fn source_set_dirs(script: &str, set: &str) -> Vec<String> {
