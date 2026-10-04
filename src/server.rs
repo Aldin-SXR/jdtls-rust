@@ -98,7 +98,9 @@ async fn publish_diagnostics(store: &DocumentStore, dispatcher: &Dispatcher, cli
             let diags = state.tree.as_ref()
                 .map(|t| syntax_diagnostics::collect(t))
                 .unwrap_or_default();
-            by_uri.entry(state.uri.clone()).or_default().extend(diags);
+            if !diags.is_empty() {
+                by_uri.entry(state.uri.clone()).or_default().extend(diags);
+            }
         }
     }
 
@@ -208,7 +210,13 @@ pub struct JavaLanguageServer {
     roots: Arc<RwLock<Vec<std::path::PathBuf>>>,
     /// Client capabilities relevant to rename (resource operations).
     rename_client: Arc<RwLock<crate::features::rename::RenameClient>>,
+    /// Standalone files opened under a root that created an invisible
+    /// project (`DocumentLifeCycleHandler.resolveCompilationUnit`).
+    extra_triggers: Arc<RwLock<Vec<std::path::PathBuf>>>,
 }
+
+#[path = "server_projects.rs"]
+mod projects;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ClientFlavor {
@@ -242,6 +250,7 @@ impl JavaLanguageServer {
             compile_tx,
             roots: Arc::new(RwLock::new(Vec::new())),
             rename_client: Arc::new(RwLock::new(Default::default())),
+            extra_triggers: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -287,8 +296,9 @@ impl JavaLanguageServer {
     /// source files with the document store.
     async fn reimport_workspace(&self) {
         let roots = self.roots.read().await.clone();
-        let settings = import_settings(&*self.config.read().await);
-        let ws = tokio::task::spawn_blocking(move || crate::project::Workspace::import(&roots, &settings))
+        let settings = self.current_import_settings().await;
+        let previous = self.workspace_snapshot();
+        let ws = tokio::task::spawn_blocking(move || crate::project::Workspace::import_with_previous(&roots, &settings, Some(&previous)))
             .await
             .unwrap_or_default();
         for p in &ws.projects {
@@ -522,6 +532,7 @@ impl LanguageServer for JavaLanguageServer {
                         "java.project.getClasspaths".to_owned(),
                         "java.project.isTestFile".to_owned(),
                         "java.project.listSourcePaths".to_owned(),
+                        "java.project.resolveSourceAttachment".to_owned(),
                         "java.edit.stringFormatting".to_owned(),
                         "java.navigate.openTypeHierarchy".to_owned(),
                         "java.navigate.resolveTypeHierarchy".to_owned(),
@@ -574,6 +585,7 @@ impl LanguageServer for JavaLanguageServer {
                 &mut parser,
             );
         }
+        self.on_document_opened(&doc.uri).await;
         let next = (*self.compile_tx.borrow()).wrapping_add(1);
         let _ = self.compile_tx.send(next);
     }
@@ -614,55 +626,14 @@ impl LanguageServer for JavaLanguageServer {
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
-        navigation::update_settings(&params.settings);
-        let (restart_ecj, refresh_inlay_hints) = {
-            let mut config = self.config.write().await;
-            let old_inlay_hints = config.inlay_hints.clone();
-            let restart = merge_config_settings(&mut config, &params.settings);
-            (restart, config.inlay_hint_refresh_support && old_inlay_hints.needs_refresh(&config.inlay_hints))
-        };
-        if refresh_inlay_hints {
-            let client = self.client.clone();
-            tokio::spawn(async move {
-                let _ = client.inlay_hint_refresh().await;
-            });
-        }
-
-        if restart_ecj {
-            if let Err(e) = self.dispatcher.restart_ecj().await {
-                error!("Failed to restart ecj-bridge after config change: {e}");
-            }
-        }
-
-        let next = (*self.compile_tx.borrow()).wrapping_add(1);
-        let _ = self.compile_tx.send(next);
+        let old_import_settings = self.current_import_settings().await;
+        self.did_change_configuration_inner(params).await;
+        let new_import_settings = self.current_import_settings().await;
+        self.on_import_settings_changed(&old_import_settings, &new_import_settings).await;
     }
 
     async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
-        {
-            let mut folders = self.workspace_folders.write().await;
-            folders.retain(|folder| !params.event.removed.iter().any(|removed| removed.uri == folder.uri));
-            for added in &params.event.added {
-                if !folders.iter().any(|folder| folder.uri == added.uri) {
-                    folders.push(added.clone());
-                }
-            }
-            let mut roots = self.roots.write().await;
-            for removed in &params.event.removed {
-                if let Ok(p) = removed.uri.to_file_path() {
-                    roots.retain(|r| r != &p);
-                }
-            }
-            for added in &params.event.added {
-                if let Ok(p) = added.uri.to_file_path() {
-                    if !roots.contains(&p) {
-                        roots.push(p);
-                    }
-                }
-            }
-        }
-        self.reimport_workspace().await;
-        self.request_compile();
+        self.did_change_workspace_folders_inner(params).await;
     }
 
     async fn did_create_files(&self, _params: CreateFilesParams) {
@@ -700,6 +671,8 @@ impl LanguageServer for JavaLanguageServer {
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         let mut should_recompile = false;
         let mut reimport = false;
+        let changed_paths: Vec<std::path::PathBuf> =
+            params.changes.iter().filter_map(|c| crate::project::uri_to_path(&c.uri)).collect();
         for change in params.changes {
             let name = change.uri.path().rsplit('/').next().unwrap_or("").to_owned();
             if is_build_descriptor(&name) {
@@ -728,6 +701,8 @@ impl LanguageServer for JavaLanguageServer {
 
         if reimport {
             self.reimport_workspace().await;
+            should_recompile = true;
+        } else if self.on_files_changed(&changed_paths).await {
             should_recompile = true;
         }
         if should_recompile {
@@ -1450,6 +1425,12 @@ impl LanguageServer for JavaLanguageServer {
                     .unwrap_or_else(|| "runtime".to_owned());
                 let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
                 crate::features::project_commands::get_classpaths(&ws, &uri, &scope).map(Some).map_err(internal_error)
+            }
+            "java.project.resolveSourceAttachment" => {
+                let request = params.arguments.first().and_then(json_model);
+                let class_file = request.as_ref().and_then(|r| r.get("classFileUri")).and_then(Value::as_str).map(str::to_owned);
+                let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+                Ok(Some(crate::features::project_commands::resolve_source_attachment(&ws, class_file.as_deref())))
             }
             "java.project.isTestFile" => {
                 let uri = params.arguments.first().and_then(Value::as_str).unwrap_or_default().to_owned();
@@ -2482,5 +2463,59 @@ mod tests {
         assert!(is_after_numeric_literal_dot("return 0x1f.", 12));
         assert!(!is_after_numeric_literal_dot("return value.", 13));
         assert!(!is_after_numeric_literal_dot("return this.", 12));
+    }
+}
+
+impl JavaLanguageServer {
+    async fn did_change_configuration_inner(&self, params: DidChangeConfigurationParams) {
+        navigation::update_settings(&params.settings);
+        let (restart_ecj, refresh_inlay_hints) = {
+            let mut config = self.config.write().await;
+            let old_inlay_hints = config.inlay_hints.clone();
+            let restart = merge_config_settings(&mut config, &params.settings);
+            (restart, config.inlay_hint_refresh_support && old_inlay_hints.needs_refresh(&config.inlay_hints))
+        };
+        if refresh_inlay_hints {
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                let _ = client.inlay_hint_refresh().await;
+            });
+        }
+
+        if restart_ecj {
+            if let Err(e) = self.dispatcher.restart_ecj().await {
+                error!("Failed to restart ecj-bridge after config change: {e}");
+            }
+        }
+
+        let next = (*self.compile_tx.borrow()).wrapping_add(1);
+        let _ = self.compile_tx.send(next);
+    }
+
+    async fn did_change_workspace_folders_inner(&self, params: DidChangeWorkspaceFoldersParams) {
+        {
+            let mut folders = self.workspace_folders.write().await;
+            folders.retain(|folder| !params.event.removed.iter().any(|removed| removed.uri == folder.uri));
+            for added in &params.event.added {
+                if !folders.iter().any(|folder| folder.uri == added.uri) {
+                    folders.push(added.clone());
+                }
+            }
+            let mut roots = self.roots.write().await;
+            for removed in &params.event.removed {
+                if let Ok(p) = removed.uri.to_file_path() {
+                    roots.retain(|r| r != &p);
+                }
+            }
+            for added in &params.event.added {
+                if let Ok(p) = added.uri.to_file_path() {
+                    if !roots.contains(&p) {
+                        roots.push(p);
+                    }
+                }
+            }
+        }
+        self.reimport_workspace().await;
+        self.request_compile();
     }
 }

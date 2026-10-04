@@ -38,7 +38,7 @@ pub const JAVA_NATURE: &str = "org.eclipse.jdt.core.javanature";
 pub const MAVEN_NATURE: &str = "org.eclipse.m2e.core.maven2Nature";
 pub const GRADLE_NATURE: &str = "org.eclipse.buildship.core.gradleprojectnature";
 /// `UnmanagedFolderNature.NATURE_ID` (invisible projects).
-pub const UNMANAGED_FOLDER_NATURE: &str = "org.eclipse.jdt.ls.core.unmanagedFolder";
+pub const UNMANAGED_FOLDER_NATURE: &str = "org.eclipse.jdt.ls.unmanagedFolderNature";
 
 pub const JRE_CONTAINER: &str = "org.eclipse.jdt.launching.JRE_CONTAINER";
 pub const MAVEN_CONTAINER: &str = "org.eclipse.m2e.MAVEN2_CLASSPATH_CONTAINER";
@@ -429,6 +429,13 @@ impl Workspace {
     /// in order Gradle (300) → Maven (400) → Eclipse (1000) → Invisible
     /// (1500); each skips the folders of projects already in the workspace.
     pub fn import(roots: &[PathBuf], settings: &ImportSettings) -> Self {
+        Self::import_with_previous(roots, settings, None)
+    }
+
+    /// [`Workspace::import`] keeping the invisible projects of `previous`
+    /// (jdt.ls persists them in its workspace and only updates them
+    /// incrementally).
+    pub fn import_with_previous(roots: &[PathBuf], settings: &ImportSettings, previous: Option<&Workspace>) -> Self {
         let roots: Vec<PathBuf> = roots.iter().map(|r| canonicalize_lenient(r)).collect();
         let mut ws = Workspace { projects: Vec::new(), default_project: None, roots: roots.clone(), vm_version: settings.vm_version.clone() };
         if roots.is_empty() {
@@ -454,6 +461,13 @@ impl Workspace {
             }
             for p in eclipse::import(root, settings, &ws, configs.as_deref()) {
                 ws.add(p);
+            }
+            if let Some(prev) = previous.and_then(|w| w.projects.iter().find(|p| p.kind == ProjectKind::Invisible && p.root == *root)) {
+                if ws.visible_projects_under(root).is_empty() {
+                    ws.default_project = previous.and_then(|w| w.default_project.clone()).or(ws.default_project.take());
+                    ws.add(prev.clone());
+                    continue;
+                }
             }
             if configs.is_none() && !settings.trigger_files.is_empty() {
                 ws.default_project.get_or_insert_with(|| settings.workspace_location(DEFAULT_PROJECT_NAME));

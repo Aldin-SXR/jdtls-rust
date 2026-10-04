@@ -24,7 +24,7 @@ pub const M2E_SELECTED_PROFILES: &str = "org.eclipse.m2e.core.selectedProfiles";
 pub const JAVA_NATURE: &str = "org.eclipse.jdt.core.javanature";
 pub const MAVEN_NATURE: &str = "org.eclipse.m2e.core.maven2Nature";
 pub const GRADLE_NATURE: &str = "org.eclipse.buildship.core.gradleprojectnature";
-pub const UNMANAGED_FOLDER_NATURE: &str = "org.eclipse.jdt.ls.core.unmanagedFolder";
+pub const UNMANAGED_FOLDER_NATURE: &str = "org.eclipse.jdt.ls.unmanagedFolderNature";
 
 /// `IClasspathEntry.CPE_*`.
 pub const CPE_LIBRARY: u64 = 1;
@@ -244,11 +244,35 @@ impl Workspace {
         self.request("java/buildWorkspace", json!(force_rebuild))
     }
 
+    /// `waitForBackgroundJobs()`: a workspace build waits for the workspace
+    /// jobs scheduled before it (they hold the workspace rule), and the
+    /// diagnostics they cause are flushed.
+    pub fn wait_for_background_jobs(&mut self) {
+        self.published_diagnostics();
+    }
+
     /// Latest published diagnostics per URI after a workspace build: the
     /// markers `WorkspaceDiagnosticsHandler` reports to the client.
     pub fn published_diagnostics(&mut self) -> BTreeMap<String, Vec<Value>> {
         self.build_workspace(false);
         self.wait_idle();
+        if super::jdtls::is_oracle() {
+            // jdt.ls publishes marker changes from resource-change jobs that can
+            // run after the build request returned: wait until it is quiet.
+            let count = |c: &mut super::jdtls::LspClient| {
+                c.notifications.iter().filter(|m| m["method"] == "textDocument/publishDiagnostics").count()
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                let before = count(self.client());
+                let c = self.client();
+                c.recv_until(Duration::from_millis(1500), |_| false);
+                let after = count(self.client());
+                if after == before || std::time::Instant::now() > deadline {
+                    break;
+                }
+            }
+        }
         let c = self.client();
         let mut out: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for m in &c.notifications {
@@ -320,7 +344,7 @@ impl Workspace {
             .map(|(p, t)| json!({ "uri": Url::from_file_path(p).unwrap().to_string(), "type": t }))
             .collect();
         self.client().notify("workspace/didChangeWatchedFiles", json!({ "changes": changes }));
-        self.wait_idle();
+        self.wait_for_background_jobs();
     }
 
     /// Server→client requests received so far for `method`

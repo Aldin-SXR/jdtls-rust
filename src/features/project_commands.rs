@@ -262,6 +262,9 @@ pub fn list_source_paths(env: &Env) -> Value {
         for e in p.classpath.iter().filter(|e| e.kind == EntryKind::Source) {
             let Some(loc) = e.location.clone().or_else(|| p.location_of(&e.path)) else { continue };
             let project_type = if p.kind == ProjectKind::Invisible { "Workspace" } else { build_tool_name(p) };
+            // `rawLocation.append(<empty relative path>)` keeps a trailing separator.
+            let is_root = e.path == format!("/{}", p.name) || e.path == format!("/{}/{WORKSPACE_LINK}", p.name);
+            let slash = |s: String| if is_root && !s.ends_with('/') { format!("{s}/") } else { s };
             let display = env
                 .root_paths
                 .iter()
@@ -270,8 +273,8 @@ pub fn list_source_paths(env: &Env) -> Value {
                 .map(|rel| rel.to_string_lossy().into_owned())
                 .unwrap_or_else(|| location_string(&loc));
             data.push(json!({
-                "path": location_string(&loc),
-                "displayPath": display,
+                "path": slash(location_string(&loc)),
+                "displayPath": slash(display),
                 "classpathEntry": e.path,
                 "projectName": p.name,
                 "projectType": project_type,
@@ -523,4 +526,43 @@ pub fn project_marker_diagnostics(ws: &Workspace) -> Vec<(String, Vec<Value>)> {
 /// `ProjectUtils.getProjectRealFolder` of an invisible project's link.
 pub fn workspace_link(p: &Project) -> PathBuf {
     p.location.join(WORKSPACE_LINK)
+}
+
+/// `SourceAttachmentCommand.resolveSourceAttachment([{classFileUri}])`.
+pub fn resolve_source_attachment(ws: &Workspace, class_file_uri: Option<&str>) -> Value {
+    let error = |m: String| json!({ "errorMessage": m });
+    let Some(uri) = class_file_uri else { return error("The parameter is missing.".to_owned()) };
+    let Some(r) = crate::classfile::ClassFileRef::parse(uri) else {
+        return error(format!("Cannot find the class file {uri}"));
+    };
+    let project = ws.project(&r.project);
+    let roots: Vec<(String, PathBuf)> = ws.projects.iter().map(|p| (p.name.clone(), p.root.clone())).collect();
+    let jar = crate::classfile::resolve_root_path(&r.root_path, project.map(|p| p.root.as_path()), &roots);
+    let Some(project) = project else { return error(format!("Cannot find the class file {uri}")) };
+    // A raw library entry, or an entry of a container.
+    for e in &project.classpath {
+        match e.kind {
+            EntryKind::Library | EntryKind::Variable if e.location.as_deref() == Some(jar.as_path()) => {
+                return json!({ "attributes": {
+                    "jarPath": location_string(&jar),
+                    "sourceAttachmentPath": e.source_attachment.as_deref().map(location_string),
+                    "canEditEncoding": true,
+                } });
+            }
+            EntryKind::Container if e.children.iter().any(|c| c.location.as_deref() == Some(jar.as_path())) => {
+                let name = if e.path.starts_with(crate::project::MAVEN_CONTAINER) {
+                    "Maven Dependencies"
+                } else if e.path.starts_with(crate::project::GRADLE_CONTAINER) {
+                    "Project and External Dependencies"
+                } else {
+                    "JRE System Library"
+                };
+                return error(format!(
+                    "The JAR of this class file belongs to container '{name}' which does not allow modifications to source attachments on its entries."
+                ));
+            }
+            _ => {}
+        }
+    }
+    error(format!("Cannot find the ClasspathEntry for the JAR '{}' of this class file", location_string(&jar)))
 }

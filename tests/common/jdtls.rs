@@ -322,7 +322,7 @@ impl Workspace {
 
     /// Round-trip a cheap request so preceding notifications are processed.
     pub fn wait_idle(&mut self) {
-        let c = self.client.as_mut().unwrap();
+        let c = self.client();
         c.request("workspace/executeCommand", json!({ "command": "java.project.getAll", "arguments": [] }));
     }
 

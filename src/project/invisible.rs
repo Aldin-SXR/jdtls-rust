@@ -521,7 +521,13 @@ pub fn ant_pattern(pattern: &str) -> Option<regex::Regex> {
         let last = i + 1 == segs.len();
         if *seg == "**" {
             if last {
-                re.push_str(".*");
+                // `dir/**` also matches `dir` itself.
+                if re.ends_with('/') {
+                    re.pop();
+                    re.push_str("(?:/.*)?");
+                } else {
+                    re.push_str(".*");
+                }
             } else {
                 re.push_str("(?:[^/]*/)*");
             }
@@ -572,4 +578,109 @@ mod tests {
         assert_eq!(declared_package("/* c */\npackage a.b ;\nclass X{}"), "a.b");
         assert_eq!(declared_package("class X{}"), "");
     }
+}
+
+// ─── Incremental updates of an existing invisible project ────────────────────
+
+/// `getOutputPath(javaProject, outputPath, isUpdate=true)`.
+pub fn update_output_path(project: &Project, output: Option<&str>) -> Result<PathBuf, String> {
+    let output = output.map(str::trim).unwrap_or("");
+    if Path::new(output).is_absolute() {
+        return Err("The output path must be a relative path to the workspace.".to_owned());
+    }
+    if output.is_empty() {
+        return Ok(project.location.join("bin"));
+    }
+    let full = project.root.join(output);
+    if project.output.as_deref() == Some(full.as_path()) {
+        return Ok(full);
+    }
+    if full.is_dir() && std::fs::read_dir(&full).map(|mut d| d.next().is_some()).unwrap_or(false) {
+        return Err("Cannot set the output path to a folder which is not empty, please provide a new path.".to_owned());
+    }
+    Ok(full)
+}
+
+/// `InvisibleProjectImporter.getSourcePaths(sourcePaths, workspaceLinkFolder)`.
+pub fn source_paths_from_preferences(project: &Project, paths: Option<&[String]>) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    let mut seen = Vec::new();
+    for p in paths.unwrap_or(&[]).iter().map(|p| p.trim().to_owned()) {
+        if seen.contains(&p) {
+            continue;
+        }
+        seen.push(p.clone());
+        if Path::new(&p).is_absolute() {
+            return Err("The source path must be a relative path to the workspace.".to_owned());
+        }
+        let folder = if p.is_empty() { project.root.clone() } else { project.root.join(&p) };
+        if folder.is_dir() {
+            out.push(folder);
+        }
+    }
+    Ok(out)
+}
+
+/// Replace the source entries (`resolveClassPathEntries` + `setRawClasspath`).
+pub fn set_source_paths(project: &mut Project, sources: &[PathBuf], output: &Path) {
+    let entries = resolve_source_entries(project, sources, &[], output);
+    project.classpath.retain(|e| e.kind != EntryKind::Source);
+    // Non-source entries first, then the sources; the libraries added by the
+    // classpath update job stay last.
+    let libs: Vec<ClasspathEntry> = project.classpath.iter().filter(|e| e.kind == EntryKind::Library).cloned().collect();
+    project.classpath.retain(|e| e.kind != EntryKind::Library);
+    project.classpath.extend(entries);
+    project.classpath.extend(libs);
+    project.output = Some(output.to_path_buf());
+    project.derive_views();
+}
+
+/// `InvisibleProjectPreferenceChangeListener` for a `java.project.sourcePaths` change.
+pub fn apply_source_paths_preference(project: &mut Project, paths: Option<&[String]>, output: Option<&str>) -> Result<(), String> {
+    let sources = source_paths_from_preferences(project, paths)?;
+    let output = update_output_path(project, output)?;
+    set_source_paths(project, &sources, &output);
+    Ok(())
+}
+
+/// `InvisibleProjectPreferenceChangeListener` for a `java.project.outputPath` change.
+pub fn apply_output_path_preference(project: &mut Project, output: Option<&str>) -> Result<(), String> {
+    let output = update_output_path(project, output)?;
+    project.output = Some(output);
+    Ok(())
+}
+
+/// `BaseDocumentLifeCycleHandler.needInferSourceRoot`: the unit is not on
+/// the classpath, or every unit of its package folder declares an
+/// unexpected package.
+pub fn needs_source_root_inference(project: &Project, unit: &Path) -> bool {
+    let Some(sf) = project.source_folder_for(unit) else { return true };
+    let Some(dir) = unit.parent() else { return false };
+    let expected: String = dir
+        .strip_prefix(&sf.path)
+        .map(|r| r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("."))
+        .unwrap_or_default();
+    let units: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "java")).collect())
+        .unwrap_or_default();
+    !units.is_empty() && units.iter().all(|u| std::fs::read_to_string(u).map(|t| declared_package(&t) != expected).unwrap_or(false))
+}
+
+/// `InvisibleProjectImporter.inferSourceRoot(javaProject, unitPath)`:
+/// whether a source root was added.
+pub fn infer_source_root(project: &mut Project, unit: &Path, roots: &[PathBuf], settings: &ImportSettings) -> bool {
+    let Some(root) = roots.iter().find(|r| project.root.starts_with(r)).cloned() else { return false };
+    let package = package_name(unit, &root);
+    let Some(source_dir) = infer_source_directory(unit, &package) else { return false };
+    if !source_dir.starts_with(&root) || is_part_of_mature_project(&source_dir) {
+        return false;
+    }
+    let mut sources: Vec<PathBuf> = project.classpath.iter().filter(|e| e.kind == EntryKind::Source).filter_map(|e| e.location.clone()).collect();
+    if sources.contains(&source_dir) {
+        return false;
+    }
+    sources.insert(0, source_dir);
+    let Ok(output) = output_path(project, settings.output_path.as_deref()) else { return false };
+    set_source_paths(project, &sources, &output);
+    true
 }
