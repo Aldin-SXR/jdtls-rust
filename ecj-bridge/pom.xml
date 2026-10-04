@@ -42,14 +42,19 @@
       <artifactId>gson</artifactId>
       <version>2.10.1</version>
     </dependency>
-
-    <!-- Java formatter (optional — gracefully degrades if absent) -->
+    <!-- FernFlower decompiler (jdt.ls FernFlowerDecompiler content provider) -->
     <dependency>
-      <groupId>com.google.googlejavaformat</groupId>
-      <artifactId>google-java-format</artifactId>
-      <version>1.22.0</version>
+      <groupId>com.jetbrains.intellij.java</groupId>
+      <artifactId>java-decompiler-engine</artifactId>
+      <version>253.29346.240</version>
     </dependency>
   </dependencies>
+  <repositories>
+    <repository>
+      <id>jetbrains-intellij</id>
+      <url>https://www.jetbrains.com/intellij-repository/releases/</url>
+    </repository>
+  </repositories>
 
   <build>
     <sourceDirectory>src</sourceDirectory>

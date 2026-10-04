@@ -30,8 +30,14 @@ fn hover_at(ws: &mut Workspace, uri: &str, line: u32, character: u32) -> Value {
     )
 }
 
+/// lsp4j's `HoverTypeAdapter` writes a one-element list as that element and
+/// reads it back as a one-element list.
 fn contents(hover: &Value) -> Vec<Value> {
-    hover["contents"].as_array().cloned().unwrap_or_else(|| panic!("contents is not a list: {hover}"))
+    match &hover["contents"] {
+        Value::Array(a) => a.clone(),
+        v @ (Value::String(_) | Value::Object(_)) => vec![v.clone()],
+        _ => panic!("no hover contents: {hover}"),
+    }
 }
 
 /// `getRight()`: a MarkedString.
@@ -134,7 +140,6 @@ fn test_missing_unit() {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile/source attachment support (aspose-words jar from Maven)"]
 fn test_invalid_javadoc() {
     let mut ws = setup();
     ws.import_projects(&["maven/aspose"]);
@@ -219,7 +224,6 @@ fn test_hover_over_null_element() {
 }
 
 #[test]
-#[ignore = "needs Maven dependency download (commons-cli 1.4 is not in the local repository) and jar source attachment"]
 fn test_hover_on_package_with_javadoc() {
     let mut ws = setup();
     ws.import_projects(&["maven/salut2"]);
@@ -237,11 +241,18 @@ fn test_hover_on_package_with_javadoc() {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile/source attachment support (hover inside java.lang.Exception's class file)"]
 fn test_hover_throwable() {
     let mut ws = setup();
-    let uri = "jdt://contents/java.base/java.lang/Exception.class";
-    let hover = hover_at(&mut ws, uri, 0, 0);
+    let uri_string = ws.class_file_uri("hello", "java.lang.Exception");
+    let contents_text = ws.request("java/classFileContents", json!({ "uri": uri_string }));
+    let contents_text = contents_text.as_str().expect("class file contents").to_owned();
+    // FindReplaceDocumentAdapter.find(0, "Throwable", forward, caseSensitive)
+    let offset = contents_text.find("Throwable").expect("Throwable in Exception source");
+    let before = &contents_text[..offset];
+    let line = before.matches('\n').count() as u32;
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    let character = before[line_start..].encode_utf16().count() as u32;
+    let hover = hover_at(&mut ws, &uri_string, line, character);
     assert!(!hover.is_null());
     assert!(!contents(&hover).is_empty(), "Unexpected hover ");
 }
@@ -258,7 +269,7 @@ fn test_hover_unresolved_type() {
 }
 
 #[test]
-#[ignore = "needs attached Javadoc jar support (commons-primitives-1.0-javadoc.jar from Maven)"]
+
 fn test_hover_with_attached_javadoc() {
     let mut ws = setup();
     ws.import_projects(&["maven/attached-javadoc"]);
@@ -410,7 +421,7 @@ fn test_hover_javadoc_snippet2() {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile/source attachment support (link to String in the rtstubs.jar test JDK)"]
+#[ignore = "expects upstream's fake test JDK (rtstubs.jar); with a real JDK the link is jdt://contents/java.base/... (jdt.ls 1.58 fails it the same way)"]
 fn test_hover_javadoc_link_plain() {
     let mut ws = setup();
     let root = java_project(&mut ws, "java18");
@@ -495,10 +506,24 @@ Example: \"Latn\" (Latin), \"Cyrl\" (Cyrillic)  ";
 }
 
 #[test]
-#[ignore = "needs attached Javadoc support (javadoc_location classpath attribute on java-doc-0.0.1-SNAPSHOT.jar)"]
 fn test_hover_on_package_with_new_javadoc() {
     let mut ws = setup();
     ws.import_projects(&["eclipse/remote-javadoc"]);
+    // First we need to attach our custom Javadoc to java-doc-0.0.1-SNAPSHOT.jar:
+    // IJavaProject.setRawClasspath persists the javadoc_location attribute in .classpath
+    let project_root = ws.project_root("remote-javadoc");
+    let javadoc_path = format!(
+        "file:{}/",
+        fixtures_dir().join("testresources/java-doc/apidocs").to_string_lossy()
+    );
+    let classpath_file = project_root.join(".classpath");
+    let classpath = std::fs::read_to_string(&classpath_file).unwrap().replace(
+        "<classpathentry kind=\"lib\" path=\"java-doc-0.0.1-SNAPSHOT.jar\"/>",
+        &format!(
+            "<classpathentry kind=\"lib\" path=\"java-doc-0.0.1-SNAPSHOT.jar\">\n\t\t<attributes>\n\t\t\t<attribute name=\"javadoc_location\" value=\"{javadoc_path}\"/>\n\t\t</attributes>\n\t</classpathentry>"
+        ),
+    );
+    std::fs::write(&classpath_file, classpath).unwrap();
     let uri = file_uri(&ws, "remote-javadoc", "src/main/java/foo/bar/Bar.java");
     let hover = hover_at(&mut ws, &uri, 2, 14);
     assert!(!hover.is_null());
@@ -508,7 +533,7 @@ fn test_hover_on_package_with_new_javadoc() {
 }
 
 #[test]
-#[ignore = "needs jdt:// classfile/source attachment support (JDK 10 source link: Source: *[Java 10](jdt:/...)*)"]
+#[ignore = "expects the upstream test JDK to be Java 10 (Source: *[Java 10](...)*); the JDK here is newer (jdt.ls 1.58 fails it the same way)"]
 fn test_hover_on_java10var() {
     let mut ws = setup();
     ws.import_projects(&["eclipse/java10"]);
@@ -558,7 +583,6 @@ fn test_no_link_when_class_content_unsupported() {
 }
 
 #[test]
-#[ignore = "needs Maven dependency download (commons-lang3 3.5 is not in the local repository) and jdt:// classfile support"]
 fn test_link_when_class_content_supported() {
     let mut ws = setup();
     test_class_content_support(&mut ws, r"Uses \[WordUtils\]\(jdt:.*\)");

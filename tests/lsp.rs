@@ -729,6 +729,20 @@ fn javac_bin() -> String {
 }
 
 /// Unique `file://` URI for a test (avoids collisions between parallel tests).
+/// All text of a jdt.ls hover: `contents` is a MarkedString, or a list of
+/// MarkedStrings (`{ language, value }` or plain strings).
+fn hover_text(hover: &Value) -> String {
+    fn text(v: &Value) -> String {
+        match v {
+            Value::String(s) => s.clone(),
+            Value::Array(a) => a.iter().map(text).collect::<Vec<_>>().join("\n"),
+            Value::Object(o) => o.get("value").and_then(Value::as_str).unwrap_or("").to_owned(),
+            _ => String::new(),
+        }
+    }
+    text(&hover["contents"])
+}
+
 fn test_uri(name: &str) -> String {
     format!("file:///tmp/jdtls-test-{name}.java")
 }
@@ -1709,10 +1723,7 @@ fn ecj_hover_method_signature() {
 
     // Line 1: "    public int foo(String s) { return 0; }" — cursor on "foo" (col 15)
     let result = c.hover(&uri, 1, 15);
-    let text = result["contents"]["value"]
-        .as_str()
-        .or_else(|| result["contents"].as_str())
-        .unwrap_or("");
+    let text = &hover_text(&result);
     assert!(
         text.contains("foo") && text.contains("String"),
         "hover should contain method signature with 'foo' and 'String', got: {text:?}"
@@ -1742,10 +1753,7 @@ fn ecj_hover_field_type() {
 
     // Line 1: "    private String myField = ..." — cursor on "myField" (col 19)
     let result = c.hover(&uri, 1, 19);
-    let text = result["contents"]["value"]
-        .as_str()
-        .or_else(|| result["contents"].as_str())
-        .unwrap_or("");
+    let text = &hover_text(&result);
     assert!(
         text.contains("myField") || text.contains("String"),
         "hover should mention field name or type, got: {text:?}"
@@ -1848,8 +1856,8 @@ fn ecj_signature_help_multiple_methods() {
     assert_eq!(result["activeParameter"], 1, "expected second argument to be active, got: {result:?}");
     assert_eq!(
         signatures[result["activeSignature"].as_u64().unwrap_or(0) as usize]["label"],
-        "int foo(int s, String t)",
-        "expected best overload to be the two-parameter int/String method"
+        "foo(int s, String t) : int",
+        "expected best overload to be the two-parameter int/String method (jdt.ls label format)"
     );
 }
 
@@ -1961,24 +1969,33 @@ fn ecj_format_returns_edits() {
     }
 
     let edits = c.format(&uri);
-    if edits.is_empty() {
-        // google-java-format requires --add-exports flags on JVM 17+ to access
-        // javac internals; if the formatter initialised without them it silently
-        // disables itself and returns no edits.  Treat as skip, not failure.
-        eprintln!("INFO ecj_format_returns_edits — formatter returned no edits (may need --add-exports flags for this JVM)");
-        return;
-    }
     // Every edit must have a range and newText
     for edit in &edits {
         assert!(edit["range"].is_object(), "edit must have a range");
         assert!(edit["newText"].is_string(), "edit must have newText");
     }
-    // The formatted output should contain proper indentation
-    let new_text = edits[0]["newText"].as_str().unwrap_or("");
-    assert!(
-        new_text.contains("  void") || new_text.contains("    void"),
-        "formatted code should indent method body, got: {new_text:?}"
+    // jdt.ls (Eclipse formatter) returns small whitespace edits; applied
+    // they give the Eclipse-formatted file.
+    assert_eq!(
+        apply_text_edits(src, &edits),
+        "class E {\n    void go() {\n        int x = 1;\n    }\n}"
     );
+}
+
+/// Apply LSP edits (ranges refer to the original text, ASCII only).
+fn apply_text_edits(text: &str, edits: &[Value]) -> String {
+    let starts: Vec<usize> = std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1)).collect();
+    let off = |p: &Value| starts[p["line"].as_u64().unwrap() as usize] + p["character"].as_u64().unwrap() as usize;
+    let mut spans: Vec<(usize, usize, String)> = edits
+        .iter()
+        .map(|e| (off(&e["range"]["start"]), off(&e["range"]["end"]), e["newText"].as_str().unwrap().to_owned()))
+        .collect();
+    spans.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut out = text.to_owned();
+    for (s, e, t) in spans {
+        out.replace_range(s..e, &t);
+    }
+    out
 }
 
 /// Formatting already-correct code → no edits (idempotent).
@@ -1989,8 +2006,8 @@ fn ecj_format_idempotent() {
     c.initialize();
 
     let uri = test_uri("ecj_format_idem");
-    // google-java-format style: 2-space indent, non-public class
-    let src = "class E {\n  void go() {\n    int x = 1;\n  }\n}\n";
+    // Eclipse (jdt.ls default) style with 4-space indentation
+    let src = "class E {\n    void go() {\n        int x = 1;\n    }\n}\n";
     c.open(&uri, src);
 
     if !ecj_ready(&mut c, &uri) {
@@ -1999,19 +2016,20 @@ fn ecj_format_idempotent() {
     }
 
     let edits = c.format(&uri);
-    // If the source is already in google-java-format style, no edits should be returned.
-    // Every edit that IS returned must be structurally valid.
-    for edit in &edits {
-        assert!(edit["range"].is_object(), "edit must have a range");
-        assert!(edit["newText"].is_string(), "edit must have newText");
-    }
+    // Already formatted: jdt.ls returns no edits.
+    assert!(edits.is_empty(), "expected no edits, got: {edits:?}");
 }
 
 /// On-type formatting should return edits for badly-formatted Java when typing `;`.
 #[test]
 fn ui_on_type_formatting_returns_edits() {
     let mut c = LspClient::spawn();
-    c.initialize();
+    // jdt.ls: on-type formatting is off unless `java.format.onType.enabled`.
+    c.initialize_with_options(json!({
+        "javaHome": java_home(),
+        "sourceCompatibility": "21",
+        "settings": { "java": { "format": { "onType": { "enabled": true } } } }
+    }));
 
     let uri = test_uri("ui_on_type_formatting");
     let src = "class E {\nvoid go() {\nint x=1;\n}\n}";
@@ -2028,7 +2046,7 @@ fn ui_on_type_formatting_returns_edits() {
 
 // ─── Syntax-only: document symbols & goto-definition ─────────────────────────
 
-/// A class with a field and method → hierarchical document symbols returned.
+/// A class with a field and method → document symbols returned.
 /// (from jdtls DocumentSymbolHandlerTest#testDocumentSymbolsOnPlainFile)
 #[test]
 fn syntax_document_symbols_class_members() {
@@ -2047,21 +2065,16 @@ fn syntax_document_symbols_class_members() {
     let syms = c.document_symbols(&uri);
     assert!(!syms.is_empty(), "expected at least one document symbol, got none");
 
-    // Find the class symbol (may be at top level or nested)
-    fn find_sym<'a>(syms: &'a [Value], name: &str) -> Option<&'a Value> {
-        syms.iter().find(|s| s["name"].as_str() == Some(name))
+    // This client does not advertise `hierarchicalDocumentSymbolSupport`, so
+    // jdt.ls answers with flat SymbolInformations, methods labelled by
+    // `JavaElementLabels` (`someMethod()`).
+    fn find_sym<'a>(syms: &'a [Value], name: &str, container: &str) -> Option<&'a Value> {
+        syms.iter().find(|s| s["name"].as_str() == Some(name) && s["containerName"].as_str() == Some(container))
     }
 
-    let class_sym = find_sym(&syms, "E").expect("expected class symbol 'E'");
-    let children = class_sym["children"].as_array().cloned().unwrap_or_default();
-    assert!(
-        find_sym(&children, "someField").is_some(),
-        "expected 'someField' in class children, got: {children:?}"
-    );
-    assert!(
-        find_sym(&children, "someMethod").is_some(),
-        "expected 'someMethod' in class children, got: {children:?}"
-    );
+    assert!(find_sym(&syms, "E", "jdtls-test-syntax_symbols.java").is_some(), "expected class symbol 'E', got: {syms:?}");
+    assert!(find_sym(&syms, "someField", "E").is_some(), "expected 'someField' in class E, got: {syms:?}");
+    assert!(find_sym(&syms, "someMethod()", "E").is_some(), "expected 'someMethod()' in class E, got: {syms:?}");
 }
 
 /// Cursor on a method call → goto-definition jumps to the method declaration in the same file.
@@ -2142,7 +2155,9 @@ fn ecj_inlay_hint_char_literal() {
         return;
     }
 
-    let hints = c.inlay_hints(&uri, 0, 10);
+    // jdt.ls: a range end past the last line maps to offset -1 (no hints), so
+    // request a range inside the document.
+    let hints = c.inlay_hints(&uri, 0, 5);
     // Expect a hint labelled "c:" near line 3
     let labels: Vec<&str> = hints.iter()
         .filter_map(|h| h["label"].as_str())
@@ -2176,7 +2191,9 @@ fn ecj_inlay_hint_null_literal() {
         return;
     }
 
-    let hints = c.inlay_hints(&uri, 0, 10);
+    // jdt.ls: a range end past the last line maps to offset -1 (no hints), so
+    // request a range inside the document.
+    let hints = c.inlay_hints(&uri, 0, 5);
     let labels: Vec<&str> = hints.iter()
         .filter_map(|h| h["label"].as_str())
         .collect();
@@ -2210,12 +2227,58 @@ fn ecj_inlay_hint_no_hint_for_variable_arg() {
         return;
     }
 
-    let hints = c.inlay_hints(&uri, 0, 10);
+    // jdt.ls: a range end past the last line maps to offset -1 (no hints), so
+    // request a range inside the document.
+    let hints = c.inlay_hints(&uri, 0, 5);
     // Variable expressions should NOT produce a hint
     assert!(
         hints.is_empty(),
         "expected no inlay hints for variable arg, got: {hints:?}"
     );
+}
+
+/// `java.inlayHints.*` settings changed through `workspace/didChangeConfiguration`
+/// apply to the next request: mode `all`, then an exclusion pattern.
+#[test]
+fn ecj_inlay_hint_settings_via_did_change_configuration() {
+    let mut c = LspClient::spawn();
+    c.initialize();
+
+    let uri = test_uri("ecj_inlay_settings");
+    let src = indoc(r#"
+        class Foo {
+            void foo(String s) {}
+            void bar() {
+                String myVar = "hello";
+                foo(myVar);
+            }
+        }
+    "#);
+    c.open(&uri, &src);
+
+    if !ecj_ready(&mut c, &uri) {
+        eprintln!("SKIP ecj_inlay_hint_settings_via_did_change_configuration — ECJ not ready");
+        return;
+    }
+
+    assert!(c.inlay_hints(&uri, 0, 6).is_empty(), "literals mode by default");
+
+    let change = |c: &mut LspClient, settings: Value| {
+        c.send_raw(&json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeConfiguration",
+            "params": { "settings": settings }
+        }));
+    };
+    change(&mut c, json!({ "java": { "inlayHints": { "parameterNames": { "enabled": "all" } } } }));
+    let hints = c.inlay_hints(&uri, 0, 6);
+    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    assert_eq!(labels, vec!["s:"], "{hints:?}");
+    assert_eq!(hints[0]["position"], json!({ "line": 4, "character": 12 }));
+
+    change(&mut c, json!({ "java": { "inlayHints": { "parameterNames": { "exclusions": ["*.foo(*)"] } } } }));
+    let hints = c.inlay_hints(&uri, 0, 6);
+    assert!(hints.is_empty(), "excluded by *.foo(*): {hints:?}");
 }
 
 // ─── ECJ: code actions ────────────────────────────────────────────────────────
@@ -2410,9 +2473,10 @@ fn ecj_code_action_remove_all_unused_imports() {
 
 // ─── ECJ: rename ─────────────────────────────────────────────────────────────
 
-/// Prepare rename should return the selected identifier range and placeholder.
+/// Prepare rename returns the range of the selected name (jdt.ls
+/// `PrepareRenameHandler` answers with a plain `Range`, no placeholder).
 #[test]
-fn ui_prepare_rename_returns_placeholder() {
+fn ui_prepare_rename_returns_range() {
     let mut c = LspClient::spawn();
     c.initialize();
 
@@ -2427,9 +2491,17 @@ fn ui_prepare_rename_returns_placeholder() {
     "#);
     c.open(&uri, &src);
 
+    if !ecj_ready(&mut c, &uri) {
+        eprintln!("SKIP ui_prepare_rename_returns_range — ECJ not ready");
+        return;
+    }
+
     let result = c.prepare_rename(&uri, 3, 9);
-    assert_eq!(result["placeholder"], "count");
-    assert!(result["range"].is_object(), "expected prepareRename range, got: {result:?}");
+    assert_eq!(
+        result,
+        json!({ "start": { "line": 3, "character": 8 }, "end": { "line": 3, "character": 13 } }),
+        "expected the range of 'count', got: {result:?}"
+    );
 }
 
 /// Linked editing should return all ranges for the current symbol in the file.
@@ -2713,7 +2785,7 @@ fn ecj_call_hierarchy_prepare() {
     let items = c.prepare_call_hierarchy(&uri, 1, 9);
     assert!(!items.is_empty(), "expected prepare to return at least one item for 'foo'");
     let name = items[0]["name"].as_str().unwrap_or("");
-    assert_eq!(name, "foo", "prepared item should be 'foo', got: {name:?}");
+    assert_eq!(name, "foo() : void", "prepared item should be jdt.ls label for foo, got: {name:?}");
 }
 
 /// Incoming calls to `foo` → `bar` appears as a caller.
@@ -2752,7 +2824,7 @@ fn ecj_call_hierarchy_incoming() {
         .filter_map(|c| c["from"]["name"].as_str())
         .collect();
     assert!(
-        callers.contains(&"bar"),
+        callers.contains(&"bar() : void"),
         "expected 'bar' as a caller of 'foo', got: {callers:?}"
     );
 }
@@ -2794,7 +2866,7 @@ fn ecj_call_hierarchy_outgoing() {
         .filter_map(|c| c["to"]["name"].as_str())
         .collect();
     assert!(
-        callees.contains(&"foo"),
+        callees.contains(&"foo() : void"),
         "expected 'foo' as a callee of 'bar', got: {callees:?}"
     );
 }
@@ -2979,6 +3051,40 @@ fn syntax_selection_ranges() {
     assert!(found_class, "expected ancestor selection range to cover class body");
 }
 
+/// Syntax-level handlers on a virtual (`untitled:`) document.
+#[test]
+fn virtual_document_syntax_handlers() {
+    let mut c = LspClient::spawn();
+    c.initialize();
+
+    let uri = "untitled:Virtual";
+    let src = indoc(r#"
+        public class Virtual {
+            /**
+             * Doc
+             */
+            public void foo() {
+                if (true) {
+                }
+            }
+        }
+    "#);
+    c.open(uri, &src);
+
+    let ranges = c.folding_ranges(uri);
+    assert!(ranges.iter().any(|r| r["startLine"] == 0 && r["endLine"] == 8), "class folding range, got {ranges:?}");
+    assert!(ranges.iter().any(|r| r["startLine"] == 1 && r["endLine"] == 3 && r["kind"] == "comment"), "javadoc folding range, got {ranges:?}");
+
+    let syms = c.document_symbols(uri);
+    assert!(syms.iter().any(|s| s["name"] == "foo()" && s["containerName"] == "Virtual"), "symbols: {syms:?}");
+
+    let sel = c.selection_ranges(uri, vec![(4, 17)]);
+    assert_eq!(sel[0]["range"]["start"], json!({ "line": 4, "character": 16 }), "selection: {sel:?}");
+
+    let data = c.semantic_tokens(uri);
+    assert!(data.chunks(5).any(|t| t[3] == 7), "expected a method token, got {data:?}");
+}
+
 /// Semantic tokens for a method declaration.
 /// (from jdtls SemanticTokensHandlerTest#testSemanticTokens_Methods)
 #[test]
@@ -2994,17 +3100,13 @@ fn ecj_semantic_tokens() {
     "#);
     c.open(&uri, &src);
 
-    // Tree-sitter tokens are available immediately
+    // Like jdt.ls, the server waits for the compiler before answering.
     let data = c.semantic_tokens(&uri);
     assert!(!data.is_empty(), "expected some semantic tokens");
 
     // The data is delta-encoded: [deltaLine, deltaStart, length, tokenType, tokenModifiers]
-    // "public" is at 0,0, length 6. type 15 (MODIFIER)
-    // "class" is at 0,7, length 5. type 14 (KEYWORD)
-    // "E" is at 0,13, length 1. type 2 (CLASS)
-    // ...
-    // "void" is at 1,11, length 4. type 14 (KEYWORD)
-    // "foo" is at 1,16, length 3. type 12 (METHOD)
+    // with the jdt.ls legend (`TokenType`): "public" and "class" are MODIFIER (11),
+    // "E" is CLASS (1), "foo" at 1,16, length 3, is METHOD (7).
 
     let mut found_foo = false;
     let mut curr_line = 0;
@@ -3022,11 +3124,11 @@ fn ecj_semantic_tokens() {
             curr_char += delta_start;
         }
 
-        if curr_line == 1 && curr_char == 16 && length == 3 && token_type == 12 {
+        if curr_line == 1 && curr_char == 16 && length == 3 && token_type == 7 {
             found_foo = true;
         }
     }
-    assert!(found_foo, "expected semantic token for method 'foo' at 1:16 (type 12)");
+    assert!(found_foo, "expected semantic token for method 'foo' at 1:16 (type 7)");
 }
 
 /// Goto implementation: interface method → class implementation.
@@ -3137,7 +3239,7 @@ fn ecj_code_lens_usages() {
     assert!(!lenses.is_empty(), "expected at least one code lens");
 
     let resolved: Vec<Value> = lenses.iter()
-        .filter(|l| l["data"]["tag"].as_str() == Some("references"))
+        .filter(|l| l["data"][2].as_str() == Some("references"))
         .map(|l| c.resolve_code_lens(l))
         .collect();
     assert!(
@@ -3167,15 +3269,15 @@ fn ecj_code_lens_zero_references() {
 
     let lenses = c.code_lens(&uri);
     let zero = lenses.iter()
-        .filter(|l| l["data"]["tag"].as_str() == Some("references"))
+        .filter(|l| l["data"][2].as_str() == Some("references"))
         .map(|l| c.resolve_code_lens(l))
         .find(|l| l["command"]["title"].as_str() == Some("0 references"));
     assert!(zero.is_some(), "expected a resolved 0-reference lens, got: {lenses:?}");
     let zero = zero.unwrap();
     assert_eq!(
         zero["command"]["command"],
-        "editor.action.showReferences",
-        "0-reference lens should still invoke showReferences"
+        "java.show.references",
+        "0-reference lens should still invoke showReferences (jdt.ls CodeLensHandler)"
     );
     let refs = zero["command"]["arguments"][2].as_array().cloned().unwrap_or_default();
     assert!(refs.is_empty(), "0-reference lens should carry an empty reference list, got: {zero:?}");
@@ -3206,7 +3308,7 @@ fn ecj_code_lens_lms_monaco_shape() {
 
     let lenses = c.code_lens(&uri);
     let lens = lenses.iter()
-        .filter(|l| l["data"]["tag"].as_str() == Some("references"))
+        .filter(|l| l["data"][2].as_str() == Some("references"))
         .map(|l| c.resolve_code_lens(l))
         .find(|l| l["command"]["title"].as_str() == Some("1 reference"));
     assert!(lens.is_some(), "expected resolved 1-reference lens, got: {lenses:?}");
@@ -3251,7 +3353,7 @@ fn ecj_code_lens_cross_class_reference() {
 
     let lenses = c.code_lens(&uri);
     let resolved: Vec<Value> = lenses.iter()
-        .filter(|l| l["data"]["tag"].as_str() == Some("references"))
+        .filter(|l| l["data"][2].as_str() == Some("references"))
         .map(|l| c.resolve_code_lens(l))
         .collect();
     assert!(
@@ -3289,7 +3391,7 @@ fn ecj_code_lens_method_name_same_as_variable() {
 
     let lenses = c.code_lens(&uri);
     let resolved: Vec<Value> = lenses.iter()
-        .filter(|l| l["data"]["tag"].as_str() == Some("references"))
+        .filter(|l| l["data"][2].as_str() == Some("references"))
         .map(|l| c.resolve_code_lens(l))
         .collect();
     assert!(
@@ -3382,10 +3484,6 @@ fn syntax_range_formatting() {
 
     // Format the entire file range (lines 0 to 5)
     let edits = c.range_formatting(&uri, 0, 0, 5, 0);
-    if edits.is_empty() {
-        eprintln!("INFO syntax_range_formatting — formatter returned no edits (may need --add-exports flags for this JVM)");
-        return;
-    }
     assert!(!edits.is_empty(), "expected range formatting to return edits for messy code");
 }
 
@@ -3801,10 +3899,7 @@ fn ecj_hover_after_astral_char_uses_utf16_positions() {
 
     let prefix = "        String emoji = \"😀\"; ";
     let hover = c.hover(&uri, 2, utf16_len(prefix));
-    let value = hover["contents"]["value"]
-        .as_str()
-        .or_else(|| hover["contents"].as_str())
-        .unwrap_or("");
+    let value = &hover_text(&hover);
     assert!(
         value.contains("Math") || value.contains("abs"),
         "expected hover on Math.abs after astral char, got: {hover:?}"

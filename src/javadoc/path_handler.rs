@@ -80,6 +80,37 @@ pub fn validated_html_src_attribute(text: &str, package_dir: Option<&Path>) -> S
     text.to_owned()
 }
 
+/// The jar entry and extracted file name for a relative `src` in `text`
+/// (the jar branch of `getValidatedHTMLSrcAttribute`): `(src, entry, file name)`.
+pub fn jar_image_candidate(text: &str, package: &str) -> Option<(String, String, String)> {
+    let (start, end) = extract_source_path_from_html_tag(text)?;
+    let src_path = &text[start..end];
+    if is_path_absolute(src_path) || package.is_empty() {
+        return None;
+    }
+    let file_name = Path::new(src_path).file_name()?.to_string_lossy().into_owned();
+    let fragment_path = format!("{}/", package.split('.').collect::<Vec<_>>().join("/"));
+    let entry = format!("{fragment_path}{}", src_path.replace('\\', "/"));
+    Some((src_path.to_owned(), entry, file_name))
+}
+
+/// `text` with its `src` value replaced.
+pub fn replace_src(text: &str, uri: &str) -> String {
+    match extract_source_path_from_html_tag(text) {
+        Some((start, end)) => format!("{}{}{}", &text[..start], uri, &text[end..]),
+        None => text.to_owned(),
+    }
+}
+
+/// `JavaDocHTMLPathHandler.EXTRACTED_JAR_IMAGES_FOLDER`: under the server's
+/// state location (`$JDTLS_DATA_DIR`, else `<tmp>/jdtls-rust`).
+pub fn extracted_jar_images_folder() -> std::path::PathBuf {
+    let state = std::env::var_os("JDTLS_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("jdtls-rust"));
+    state.join("extracted-jar-images")
+}
+
 #[cfg(test)]
 mod java_doc_image_extraction_test {
     //! `JavaDocImageExtractionTest.testIsAbsolutePath` (the rest of the class

@@ -65,11 +65,21 @@ pub struct JavaDoc2HtmlTextReader {
     quote_char: char,
     in_comment: bool,
     comment_buffer: String,
+    /// `JdtLsJavaDoc2HTMLTextReader` (true) or plain `CoreJavaDoc2HTMLTextReader`.
+    jdtls: bool,
 }
 
 impl JavaDoc2HtmlTextReader {
+    /// The base `CoreJavaDoc2HTMLTextReader` (`<dl>/<dt>/<dd>` sections).
+    pub fn core(input: &str) -> Self {
+        let mut r = Self::new(input);
+        r.jdtls = false;
+        r
+    }
+
     pub fn new(input: &str) -> Self {
         JavaDoc2HtmlTextReader {
+            jdtls: true,
             input: input.chars().collect(),
             pos: 0,
             buffer: Vec::new(),
@@ -155,6 +165,9 @@ impl JavaDoc2HtmlTextReader {
 
     /// `JdtLsJavaDoc2HTMLTextReader.computeSubstitution`
     fn compute_substitution(&mut self, c: i32) -> Option<String> {
+        if !self.jdtls {
+            return self.super_compute_substitution(c);
+        }
         let ch = to_char(c);
         if self.in_comment {
             self.comment_buffer.push(ch);
@@ -329,9 +342,10 @@ impl JavaDoc2HtmlTextReader {
         i
     }
 
-    fn print_definitions(buffer: &mut String, list: &[String], firstword: bool) {
+    fn print_definitions(buffer: &mut String, list: &[String], firstword: bool, jdtls: bool) {
+        let (start, end) = if jdtls { ("<li>", "</li>") } else { ("<dd>", "</dd>") };
         for s in list {
-            buffer.push_str("<li>");
+            buffer.push_str(start);
             if !firstword {
                 buffer.push_str(s);
             } else {
@@ -348,22 +362,33 @@ impl JavaDoc2HtmlTextReader {
                     buffer.push_str("</b>");
                 }
             }
-            buffer.push_str("</li>");
+            buffer.push_str(end);
         }
     }
 
-    fn print_list(buffer: &mut String, tag: &str, elements: &[String], firstword: bool) {
-        if !elements.is_empty() {
+    fn print_list(buffer: &mut String, tag: &str, elements: &[String], firstword: bool, jdtls: bool) {
+        if !elements.is_empty() && !jdtls {
+            buffer.push_str("<dt>");
+            buffer.push_str(tag);
+            buffer.push_str("</dt>");
+            Self::print_definitions(buffer, elements, firstword, false);
+        } else if !elements.is_empty() {
             buffer.push_str("<li><b>");
             buffer.push_str(tag);
             buffer.push_str("</b><ul>");
-            Self::print_definitions(buffer, elements, firstword);
+            Self::print_definitions(buffer, elements, firstword, true);
             buffer.push_str("</ul></li>");
         }
     }
 
-    fn print_content(buffer: &mut String, tag: &str, content: &Option<String>) {
-        if let Some(c) = content {
+    fn print_content(buffer: &mut String, tag: &str, content: &Option<String>, jdtls: bool) {
+        if let (Some(c), false) = (content, jdtls) {
+            buffer.push_str("<dt>");
+            buffer.push_str(tag);
+            buffer.push_str("</dt><dd>");
+            buffer.push_str(c);
+            buffer.push_str("</dd>");
+        } else if let Some(c) = content {
             buffer.push_str("<li><b>");
             buffer.push_str(tag);
             buffer.push_str("</b><ul><li>");
@@ -373,6 +398,20 @@ impl JavaDoc2HtmlTextReader {
     }
 
     fn print_rest(&self, buffer: &mut String) {
+        if !self.jdtls {
+            for p in &self.rest {
+                buffer.push_str("<dt>");
+                if let Some(t) = &p.tag {
+                    buffer.push_str(t);
+                }
+                buffer.push_str("</dt><dd>");
+                if let Some(c) = &p.content {
+                    buffer.push_str(c);
+                }
+                buffer.push_str("</dd>");
+            }
+            return;
+        }
         for p in &self.rest {
             buffer.push_str("<li>");
             if let Some(t) = &p.tag {
@@ -388,15 +427,16 @@ impl JavaDoc2HtmlTextReader {
     }
 
     fn print_simple_tag(&self) -> String {
-        let mut buffer = String::from("<ul>");
-        Self::print_list(&mut buffer, "See Also:", &self.sees, false);
-        Self::print_list(&mut buffer, "Parameters:", &self.parameters, true);
-        Self::print_content(&mut buffer, "Returns:", &self.return_);
-        Self::print_list(&mut buffer, "Throws:", &self.exceptions, false);
-        Self::print_list(&mut buffer, "Author:", &self.authors, false);
-        Self::print_list(&mut buffer, "Since:", &self.since, false);
+        let j = self.jdtls;
+        let mut buffer = String::from(if j { "<ul>" } else { "<dl>" });
+        Self::print_list(&mut buffer, "See Also:", &self.sees, false, j);
+        Self::print_list(&mut buffer, "Parameters:", &self.parameters, true, j);
+        Self::print_content(&mut buffer, "Returns:", &self.return_, j);
+        Self::print_list(&mut buffer, "Throws:", &self.exceptions, false, j);
+        Self::print_list(&mut buffer, "Author:", &self.authors, false, j);
+        Self::print_list(&mut buffer, "Since:", &self.since, false, j);
         self.print_rest(&mut buffer);
-        buffer.push_str("</ul>");
+        buffer.push_str(if j { "</ul>" } else { "</dl>" });
         buffer
     }
 

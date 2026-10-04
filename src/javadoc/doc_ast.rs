@@ -16,6 +16,8 @@ pub struct DocSource {
     pub raw: String,
     /// The compilation unit declaring the documented element.
     pub uri: Option<String>,
+    /// Or the class file whose attached source declares it.
+    pub class_file: Option<crate::classfile::ClassFileDesc>,
     /// `Javadoc.tags()` (node ids).
     pub tags: Vec<usize>,
     pub nodes: Vec<DocNode>,
@@ -115,26 +117,13 @@ pub struct Location {
     pub uri: Option<String>,
     /// 0-based line of the element name.
     pub line: Option<u32>,
-    pub class_file: Option<ClassFileRef>,
+    pub class_file: Option<crate::classfile::ClassFileDesc>,
 }
 
 impl Location {
     pub fn is_empty(&self) -> bool {
         self.uri.is_none() && self.class_file.is_none()
     }
-}
-
-/// A class file and the package fragment root it comes from.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ClassFileRef {
-    pub package_name: String,
-    pub class_file_name: String,
-    /// Jar/folder path, or the JDK home for `jrt` roots.
-    pub root: Option<String>,
-    /// `archive`, `folder` or `jrt`.
-    pub root_kind: Option<String>,
-    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

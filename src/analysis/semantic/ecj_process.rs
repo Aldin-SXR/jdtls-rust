@@ -125,13 +125,15 @@ impl EcjProcess {
         let id = match &req {
             BridgeRequest::Compile { id, .. }
             | BridgeRequest::Complete { id, .. }
-            | BridgeRequest::Hover { id, .. }
             | BridgeRequest::HoverInfo { id, .. }
+            | BridgeRequest::ExtractJarEntry { id, .. }
+            | BridgeRequest::ReadJarEntry { id, .. }
             | BridgeRequest::Navigate { id, .. }
             | BridgeRequest::FindReferences { id, .. }
             | BridgeRequest::CodeAction { id, .. }
-            | BridgeRequest::SignatureHelp { id, .. }
-            | BridgeRequest::Rename { id, .. }
+            | BridgeRequest::SignatureHelpData { id, .. }
+            | BridgeRequest::RenameTarget { id, .. }
+            | BridgeRequest::RenameOccurrences { id, .. }
             | BridgeRequest::OrganizeImports { id, .. }
             | BridgeRequest::Format { id, .. }
             | BridgeRequest::InlayHints { id, .. }
@@ -142,6 +144,11 @@ impl EcjProcess {
             | BridgeRequest::CallHierarchyPrepare { id, .. }
             | BridgeRequest::CallHierarchyIncoming { id, .. }
             | BridgeRequest::CallHierarchyOutgoing { id, .. }
+            | BridgeRequest::NavData { id, .. }
+            | BridgeRequest::ClassFileContents { id, .. }
+            | BridgeRequest::ClassFileInfo { id, .. }
+            | BridgeRequest::AstBindings { id, .. }
+            | BridgeRequest::SemanticSearch { id, .. }
             | BridgeRequest::Shutdown { id } => *id,
         };
 

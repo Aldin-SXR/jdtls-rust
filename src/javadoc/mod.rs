@@ -12,6 +12,8 @@
 #![allow(dead_code)]
 
 pub mod access;
+pub mod attached;
+pub mod comment_reader;
 pub mod converter;
 pub mod doc_ast;
 pub mod html;

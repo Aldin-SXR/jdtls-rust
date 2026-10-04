@@ -20,6 +20,16 @@ pub struct RequestContext {
     pub options: BTreeMap<String, String>,
 }
 
+/// Result of [`Dispatcher::inlay_hint_data`].
+pub struct InlayHintData {
+    pub response: BridgeResponse,
+    /// The document text the bridge offsets refer to.
+    pub source: String,
+    /// Package implied by the document's location in a source folder (the
+    /// JDT package fragment), when it lies in one.
+    pub folder_package: Option<String>,
+}
+
 pub struct Dispatcher {
     pub store: Arc<DocumentStore>,
     pub workspace: Arc<std::sync::RwLock<Workspace>>,
@@ -78,6 +88,12 @@ impl Dispatcher {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    /// Send a raw bridge request (used by feature modules that build their
+    /// own requests, e.g. `features::navigation`).
+    pub async fn send_request(&self, req: BridgeRequest) -> Result<BridgeResponse> {
+        self.send(req).await
+    }
+
     async fn send(&self, req: BridgeRequest) -> Result<BridgeResponse> {
         let guard = self.ecj.read().await;
         let ecj = guard.as_ref().ok_or_else(|| anyhow!("ecj-bridge not started"))?;
@@ -92,6 +108,72 @@ impl Dispatcher {
         let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
         let project = uri.and_then(|u| ws.project_for_uri(u)).map(|p| p.name.clone());
         self.context_for_project(&ws, project.as_deref(), uri.is_none()).await
+    }
+
+    /// Context for the workspace project named `name` (the default project
+    /// when no such project exists).
+    pub async fn context_for_project_name(&self, name: &str) -> RequestContext {
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let project = ws.project(name).map(|p| p.name.clone());
+        self.context_for_project(&ws, project.as_deref(), false).await
+    }
+
+    /// Contexts of the other projects whose closure includes the project
+    /// owning `uri` (they may reference its elements).
+    pub async fn dependent_contexts(&self, uri: &Url) -> Vec<RequestContext> {
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(owner) = ws.project_for_uri(uri).map(|p| p.name.clone()) else { return Vec::new() };
+        let mut out = Vec::new();
+        for p in &ws.projects {
+            if p.name != owner && ws.project_closure(p).iter().any(|c| c.name == owner) {
+                out.push(self.context_for_project(&ws, Some(&p.name), false).await);
+            }
+        }
+        out
+    }
+
+    /// One context per imported project plus the default project, each with
+    /// the URIs of the files the project itself owns (its closure's other
+    /// files are only visible for binding resolution).
+    pub async fn project_contexts(&self) -> Vec<(Option<String>, RequestContext, Vec<String>)> {
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut targets: Vec<Option<String>> = ws.projects.iter().map(|p| Some(p.name.clone())).collect();
+        targets.push(None);
+        let mut out = Vec::new();
+        for target in targets {
+            let ctx = self.context_for_project(&ws, target.as_deref(), false).await;
+            let mut owned: Vec<String> = ctx
+                .files
+                .keys()
+                .filter(|u| {
+                    let owner = Url::parse(u).ok().and_then(|u| ws.project_for_uri(&u)).map(|p| p.name.clone());
+                    owner == target
+                })
+                .cloned()
+                .collect();
+            owned.sort();
+            out.push((target, ctx, owned));
+        }
+        out
+    }
+
+    /// `SemanticIndexService` query against `ctx`.
+    pub async fn semantic_search(&self, ctx: &RequestContext, query: serde_json::Value) -> Result<serde_json::Value> {
+        match self
+            .send(BridgeRequest::SemanticSearch {
+                id: next_id(),
+                files: ctx.files.clone(),
+                classpath: ctx.classpath.clone(),
+                source_level: ctx.source_level.clone(),
+                options: ctx.options.clone(),
+                query,
+            })
+            .await?
+        {
+            BridgeResponse::SemanticSearch { result, .. } => Ok(result),
+            BridgeResponse::Error { message, .. } => Err(anyhow!(message)),
+            other => Err(anyhow!("unexpected bridge response {other:?}")),
+        }
     }
 
     /// Context for the named project, or for the default project when `None`
@@ -201,24 +283,23 @@ impl Dispatcher {
         }).await
     }
 
-    pub async fn hover(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
-        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
-        self.send(BridgeRequest::Hover {
-            id: next_id(),
-            files,
-            classpath,
-            source_level,
-            options,
-            uri: uri.to_string(),
-            offset,
-        }).await
-    }
-
     /// Element data for hover at a UTF-16 position (see `features::hover`).
     /// `standalone` is the disk content of a file the store does not know
     /// (jdt.ls resolves such files into the default project).
-    pub async fn hover_info(&self, uri: &Url, line: u32, character: u32, standalone: Option<String>) -> Result<BridgeResponse> {
-        let RequestContext { mut files, classpath, source_level, options } = self.context_for(Some(uri)).await;
+    pub async fn hover_info(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        standalone: Option<String>,
+        class_file: Option<(crate::classfile::ClassFileDesc, String)>,
+        source_attachments: HashMap<String, String>,
+    ) -> Result<BridgeResponse> {
+        let RequestContext { mut files, classpath, source_level, options } = match &class_file {
+            Some((_, project)) => self.context_for_project_name(project).await,
+            None => self.context_for(Some(uri)).await,
+        };
+        let class_file = class_file.map(|(d, _)| d);
         if let Some(content) = standalone {
             files.insert(uri.to_string(), content);
         }
@@ -231,7 +312,15 @@ impl Dispatcher {
             uri: uri.to_string(),
             line,
             character,
+            class_file,
+            source_attachments,
         }).await
+    }
+
+    /// Resolved DOM and bindings of `uri` (data for semantic tokens).
+    pub async fn ast_bindings(&self, uri: &Url) -> Result<BridgeResponse> {
+        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
+        self.send(BridgeRequest::AstBindings { id: next_id(), files, classpath, source_level, options, uri: uri.to_string() }).await
     }
 
     pub async fn navigate(&self, uri: &Url, offset: usize, kind: NavKind) -> Result<BridgeResponse> {
@@ -275,30 +364,60 @@ impl Dispatcher {
         }).await
     }
 
-    pub async fn signature_help(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {
+    pub async fn signature_help_data(
+        &self,
+        uri: &Url,
+        search_offset: Option<usize>,
+        context_offset: Option<usize>,
+        fallback_name: Option<String>,
+        description: bool,
+    ) -> Result<BridgeResponse> {
         let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
-        self.send(BridgeRequest::SignatureHelp {
+        self.send(BridgeRequest::SignatureHelpData {
             id: next_id(),
             files,
             classpath,
             source_level,
             options,
+            uri: uri.to_string(),
+            search_offset: search_offset.map_or(-1, |o| o as i64),
+            context_offset: context_offset.map_or(-1, |o| o as i64),
+            fallback_name,
+            description,
+        }).await
+    }
+
+    /// The element at `offset` (UTF-16) in `uri`, resolved against the
+    /// project owning `uri`.
+    pub async fn rename_target(&self, uri: &Url, offset: usize, ctx: &RequestContext) -> Result<BridgeResponse> {
+        self.send(BridgeRequest::RenameTarget {
+            id: next_id(),
+            files: ctx.files.clone(),
+            classpath: ctx.classpath.clone(),
+            source_level: ctx.source_level.clone(),
+            options: ctx.options.clone(),
             uri: uri.to_string(),
             offset,
         }).await
     }
 
-    pub async fn rename(&self, uri: &Url, offset: usize, new_name: String) -> Result<BridgeResponse> {
-        let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
-        self.send(BridgeRequest::Rename {
+    /// Occurrences of `names` (and of `package_name`) in `uris`.
+    pub async fn rename_occurrences(
+        &self,
+        ctx: &RequestContext,
+        uris: Vec<String>,
+        names: Vec<String>,
+        package_name: Option<String>,
+    ) -> Result<BridgeResponse> {
+        self.send(BridgeRequest::RenameOccurrences {
             id: next_id(),
-            files,
-            classpath,
-            source_level,
-            options,
-            uri: uri.to_string(),
-            offset,
-            new_name,
+            files: ctx.files.clone(),
+            classpath: ctx.classpath.clone(),
+            source_level: ctx.source_level.clone(),
+            options: ctx.options.clone(),
+            uris,
+            names,
+            package_name,
         }).await
     }
 
@@ -326,27 +445,90 @@ impl Dispatcher {
         }).await
     }
 
-    pub async fn inlay_hints(&self, uri: &Url) -> Result<BridgeResponse> {
+    /// Inlay-hint binding data for `uri` (see `features::inlay_hints`).
+    pub async fn inlay_hint_data(&self, uri: &Url, format_parameters: bool) -> Result<InlayHintData> {
         let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
-        self.send(BridgeRequest::InlayHints {
-            id: next_id(),
-            files,
-            classpath,
-            source_level,
-            options,
-            uri: uri.to_string(),
-        }).await
+        let source = files.get(uri.as_str()).cloned().unwrap_or_default();
+        let (sourcepath, folder_package) = {
+            let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner());
+            let path = crate::project::uri_to_path(uri);
+            match path.as_deref().and_then(|p| ws.project_for_path(p).map(|proj| (p, proj))) {
+                Some((path, project)) => {
+                    let sourcepath = ws
+                        .project_closure(project)
+                        .iter()
+                        .flat_map(|p| p.source_folders.iter())
+                        .filter(|sf| sf.path.is_dir())
+                        .map(|sf| sf.path.to_string_lossy().into_owned())
+                        .collect();
+                    let package = project.source_folder_for(path).and_then(|sf| {
+                        let dir = path.parent()?.strip_prefix(&sf.path).ok()?;
+                        let segments: Vec<String> =
+                            dir.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+                        Some(segments.join("."))
+                    });
+                    (sourcepath, package)
+                }
+                None => (Vec::new(), None),
+            }
+        };
+        let response = self
+            .send(BridgeRequest::InlayHints {
+                id: next_id(),
+                files,
+                classpath,
+                source_level,
+                options,
+                uri: uri.to_string(),
+                sourcepath,
+                format_parameters,
+            })
+            .await?;
+        Ok(InlayHintData { response, source, folder_package })
     }
 
-    pub async fn format(&self, uri: &Url, tab_size: u32, insert_spaces: bool) -> Result<BridgeResponse> {
-        let state = self.store.get(uri).ok_or_else(|| anyhow!("document not open"))?;
-        self.send(BridgeRequest::Format {
+    /// Run the Eclipse formatter on `source` (see `BridgeRequest::Format`).
+    /// `Ok(None)` when the formatter returned `null`.
+    pub async fn format_source(
+        &self,
+        source: &str,
+        format_kind: i32,
+        offset: usize,
+        length: usize,
+        line_separator: &str,
+        options: BTreeMap<String, String>,
+    ) -> Result<Option<Vec<super::semantic::protocol::BridgeFormatEdit>>> {
+        match self.send(BridgeRequest::Format {
             id: next_id(),
-            source: state.content_string(),
-            uri: uri.to_string(),
-            tab_size,
-            insert_spaces,
-        }).await
+            source: source.to_owned(),
+            format_kind,
+            offset,
+            length,
+            indentation_level: 0,
+            line_separator: line_separator.to_owned(),
+            options,
+        }).await? {
+            BridgeResponse::FormatEdits { edits, .. } => Ok(edits),
+            BridgeResponse::Error { message, .. } => Err(anyhow!(message)),
+            other => Err(anyhow!("unexpected format response: {other:?}")),
+        }
+    }
+
+    /// The JDT options (and source level) of the project owning `uri`,
+    /// without collecting its sources: `context_for(..).options`.
+    pub async fn options_for(&self, uri: Option<&Url>) -> (BTreeMap<String, String>, String) {
+        let cfg = self.config.read().await.clone();
+        let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner());
+        let mut options = crate::project::jdtls_default_options();
+        options.extend(cfg.compiler_options.clone());
+        match uri.and_then(|u| ws.project_for_uri(u)) {
+            Some(project) => {
+                options.extend(project.options.clone());
+                let level = project.compliance().map(str::to_owned).unwrap_or_else(|| cfg.source_compatibility.clone());
+                (options, level)
+            }
+            None => (options, cfg.source_compatibility.clone()),
+        }
     }
 
     pub async fn type_hierarchy_prepare(&self, uri: &Url, offset: usize) -> Result<BridgeResponse> {

@@ -48,6 +48,8 @@ pub struct TypeLabel {
     pub name: String,
     pub anonymous_super: Option<String>,
     pub type_parameters: Option<Vec<String>>,
+    /// Bounds of `type_parameters` (unresolved declarations only).
+    pub type_parameter_bounds: Option<Vec<Vec<TypeRef>>>,
     pub type_arguments: Option<Vec<TypeRef>>,
 }
 
@@ -66,7 +68,10 @@ pub struct MethodLabel {
     pub is_constructor: bool,
     pub declaring_type: TypeLabel,
     pub type_parameters: Option<Vec<String>>,
+    pub type_parameter_bounds: Option<Vec<Vec<TypeRef>>>,
     pub type_arguments: Option<Vec<TypeRef>>,
+    /// Type arguments of the parameterized declaring type of a constructor.
+    pub constructor_type_arguments: Option<Vec<TypeRef>>,
     pub return_type: Option<TypeRef>,
     pub parameters: Vec<ParamLabel>,
     pub varargs: bool,
@@ -163,12 +168,20 @@ fn type_arguments(buf: &mut String, args: &[TypeRef]) {
     buf.push('>');
 }
 
-fn type_parameter_names(buf: &mut String, names: &[String]) {
+fn type_parameter_names(buf: &mut String, names: &[String], bounds: Option<&Vec<Vec<TypeRef>>>) {
     if names.is_empty() {
         return;
     }
     buf.push('<');
-    buf.push_str(&names.join(COMMA_STRING));
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            buf.push_str(COMMA_STRING);
+        }
+        match bounds.and_then(|b| b.get(i)) {
+            Some(b) => type_parameter_label(buf, n, b),
+            None => buf.push_str(n),
+        }
+    }
     buf.push('>');
 }
 
@@ -182,7 +195,9 @@ pub fn type_label(buf: &mut String, t: &TypeLabel, fully_qualified: bool, type_p
             buf.push('.');
         }
         for c in &t.containers {
-            if c.kind == "method" {
+            if c.kind == "field" {
+                buf.push_str(&c.name);
+            } else if c.kind == "method" {
                 // anonymous or local: appendElementLabel(parent, 0)
                 buf.push_str(&c.name);
                 buf.push('(');
@@ -208,7 +223,7 @@ pub fn type_label(buf: &mut String, t: &TypeLabel, fully_qualified: bool, type_p
         if let Some(args) = &t.type_arguments {
             type_arguments(buf, args);
         } else if let Some(names) = &t.type_parameters {
-            type_parameter_names(buf, names);
+            type_parameter_names(buf, names, t.type_parameter_bounds.as_ref());
         }
     }
 }
@@ -260,7 +275,7 @@ pub fn method_label(buf: &mut String, m: &MethodLabel, f: MethodFlags) {
             type_arguments(buf, args);
             buf.push(' ');
         } else if let Some(names) = m.type_parameters.as_ref().filter(|a| !a.is_empty()) {
-            type_parameter_names(buf, names);
+            type_parameter_names(buf, names, m.type_parameter_bounds.as_ref());
             buf.push(' ');
         }
     }
@@ -275,6 +290,12 @@ pub fn method_label(buf: &mut String, m: &MethodLabel, f: MethodFlags) {
         buf.push('.');
     }
     buf.push_str(&m.name);
+    // T_TYPE_PARAMETERS: constructor of a parameterized type
+    if f.pre_type_parameters && m.is_constructor {
+        if let Some(args) = &m.constructor_type_arguments {
+            type_arguments(buf, args);
+        }
+    }
     buf.push('(');
     if f.parameter_types || f.parameter_names {
         let n = m.parameters.len();

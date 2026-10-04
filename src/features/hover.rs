@@ -15,7 +15,8 @@ use tower_lsp::lsp_types::{Hover, HoverContents, LanguageString, MarkedString};
 
 use crate::javadoc::access::{self, DocElement, Env};
 use crate::javadoc::converter::javadoc_to_markdown;
-use crate::javadoc::doc_ast::{ClassFileRef, Constant, DocContext, DocSource, InheritData, Location};
+use crate::classfile::ClassFileDesc;
+use crate::javadoc::doc_ast::{Constant, DocContext, DocSource, InheritData, Location};
 use crate::javadoc::labels::{self, FieldLabel, MemberLabel, MethodFlags, MethodLabel, TypeLabel, TypeRef};
 use crate::javadoc::markdown_comment::MarkdownComment;
 
@@ -45,7 +46,15 @@ pub struct Element {
     // packages
     pub is_source: bool,
     pub source_uri: Option<String>,
-    pub class_file: Option<ClassFileRef>,
+    /// Folder of a source package fragment (for `package.html`).
+    pub package_dir: Option<String>,
+    pub class_file: Option<ClassFileDesc>,
+    pub is_enum: bool,
+    pub is_annotation: bool,
+    /// Attached Javadoc HTML of a binary element without source (filled by
+    /// the handler, `IMember.getAttachedJavadoc`).
+    #[serde(skip)]
+    pub attached_javadoc: Option<String>,
 }
 
 /// Client/server state hover depends on.
@@ -58,8 +67,10 @@ pub struct HoverEnv<'a> {
     pub project_name: &'a dyn Fn(&str) -> String,
     /// Source folder containing a source URI (`{@docRoot}`).
     pub source_folder: &'a dyn Fn(&str) -> Option<PathBuf>,
-    /// The JDK home (for "Java <version>").
-    pub java_home: Option<String>,
+    /// `JDTUtils.toUri(IClassFile)` of a class file seen from the hovered unit.
+    pub class_file_uri: &'a dyn Fn(&ClassFileDesc) -> String,
+    /// Images extracted from jars for the element's Javadoc (`src` → URI).
+    pub images: std::collections::HashMap<String, String>,
 }
 
 fn marked(language: &str, value: String) -> MarkedString {
@@ -67,28 +78,32 @@ fn marked(language: &str, value: String) -> MarkedString {
 }
 
 /// The hover for a `hoverInfo` bridge answer.
-pub fn hover(status: &str, element: Option<&Value>, env: &HoverEnv) -> Hover {
+pub fn hover(status: &str, element: Option<&Element>, env: &HoverEnv) -> Hover {
     let contents = match status {
         "ok" => element
-            .and_then(|e| match serde_json::from_value::<Element>(e.clone()) {
-                Ok(e) => Some(e),
-                Err(err) => {
-                    tracing::warn!("hover: bad element data: {err}");
-                    None
-                }
-            })
-            .map(|e| compute_hover(&e, env))
+            .map(|e| compute_hover(e, env))
             .unwrap_or_else(|| vec![MarkedString::String(String::new())]),
         "unresolved" => Vec::new(),
         // no element / no unit: `cancelled(res)` / `singletonList("")`
         _ => vec![MarkedString::String(String::new())],
     };
-    Hover { contents: HoverContents::Array(contents), range: None }
+    to_hover(contents)
+}
+
+/// lsp4j's `HoverTypeAdapter` writes a one-element contents list as the
+/// element itself.
+fn to_hover(mut contents: Vec<MarkedString>) -> Hover {
+    let contents = if contents.len() == 1 {
+        HoverContents::Scalar(contents.pop().unwrap())
+    } else {
+        HoverContents::Array(contents)
+    };
+    Hover { contents, range: None }
 }
 
 /// The hover for a document the server does not know (`unit == null`).
 pub fn empty_hover() -> Hover {
-    Hover { contents: HoverContents::Array(vec![MarkedString::String(String::new())]), range: None }
+    to_hover(vec![MarkedString::String(String::new())])
 }
 
 /// `HoverInfoProvider.computeHover` after element selection.
@@ -176,63 +191,11 @@ fn link_target(env: &HoverEnv, loc: &Location) -> String {
         return format!("{uri}#{}", loc.line.unwrap_or(0) + 1);
     }
     if let Some(cf) = &loc.class_file {
-        if let Some(uri) = class_file_uri(cf, env) {
-            return format!("{uri}#{}", loc.line.unwrap_or(0) + 1);
+        if env.class_file_support {
+            return format!("{}#{}", (env.class_file_uri)(cf), loc.line.unwrap_or(0) + 1);
         }
     }
     String::new()
-}
-
-/// `JDTUtils.toUri(IClassFile)` (only when the client supports class file
-/// contents).
-pub fn class_file_uri(cf: &ClassFileRef, env: &HoverEnv) -> Option<String> {
-    if !env.class_file_support {
-        return None;
-    }
-    let root = cf.root.as_deref()?;
-    let jar_name = match cf.root_kind.as_deref() {
-        Some("jrt") => cf.module.clone().unwrap_or_default(),
-        _ => Path::new(root).file_name()?.to_string_lossy().into_owned(),
-    };
-    // Class files of member types are named after their top-level type.
-    let top = cf.class_file_name.split('$').next().unwrap_or(&cf.class_file_name);
-    let file_name = if top.ends_with(".class") { top.to_owned() } else { format!("{top}.class") };
-    let mut path = format!("/{jar_name}");
-    if !cf.package_name.is_empty() {
-        path.push('/');
-        path.push_str(&cf.package_name);
-    }
-    path.push('/');
-    path.push_str(&file_name);
-    let root_handle = root.replace('/', "\\/");
-    let handle = format!("={}/{}<{}({}", env_project_placeholder(), root_handle, cf.package_name, cf.class_file_name);
-    let uri = format!("jdt://contents{}?{}", encode_uri_component(&path, false), encode_uri_component(&handle, true));
-    Some(uri.replace('(', "%28"))
-}
-
-fn env_project_placeholder() -> &'static str {
-    crate::project::DEFAULT_PROJECT_NAME
-}
-
-/// `java.net.URI` multi-argument constructor quoting (illegal characters only).
-fn encode_uri_component(s: &str, query: bool) -> String {
-    let mut out = String::new();
-    for c in s.chars() {
-        let ok = c.is_ascii_alphanumeric()
-            || "-_.!~*'()".contains(c)
-            || ";/?:@&=+$,".contains(c)
-            || (query && c == '[')
-            || (query && c == ']');
-        if ok {
-            out.push(c);
-        } else {
-            let mut b = [0u8; 4];
-            for byte in c.encode_utf8(&mut b).bytes() {
-                out.push_str(&format!("%{byte:02X}"));
-            }
-        }
-    }
-    out
 }
 
 /// `JavadocContentAccess2.getMarkdownContent(member)`
@@ -245,19 +208,26 @@ fn member_markdown(e: &Element, env: &HoverEnv) -> Option<String> {
         }
     }
     if !e.has_source {
-        // no source attachment: attached Javadoc is not supported
-        return None;
+        // no source attachment: the attached Javadoc (getAttachedJavadoc)
+        return e.attached_javadoc.as_deref().and_then(|html| javadoc_to_markdown(Some(html)));
     }
     let can_inherit = ctx.kind == "method" && !ctx.is_constructor;
-    let doc_root = e
-        .javadoc
-        .as_ref()
-        .and_then(|d| d.uri.clone())
-        .or_else(|| e.location.as_ref().and_then(|l| l.uri.clone()))
-        .and_then(|u| (env.source_folder)(&u))
-        .and_then(|p| url::Url::from_directory_path(&p).ok())
-        .map(|u| u.to_string());
-    let access_env = Env { inherit: e.inherit.as_ref(), doc_root, link: &link };
+    // handleDocRoot: the Javadoc base location of a binary member, else the
+    // source folder (`File.toURI().toASCIIString()`, i.e. `file:/...`).
+    let class_file = e.javadoc.as_ref().and_then(|d| d.class_file.as_ref());
+    let doc_root = match class_file {
+        Some(cf) if cf.module.is_some() => crate::classfile::jdk_javadoc_location(Path::new(&cf.root)),
+        Some(_) => None,
+        None => e
+            .javadoc
+            .as_ref()
+            .and_then(|d| d.uri.clone())
+            .or_else(|| e.location.as_ref().and_then(|l| l.uri.clone()))
+            .and_then(|u| (env.source_folder)(&u))
+            .and_then(|p| url::Url::from_directory_path(&p).ok())
+            .map(|u| u.to_string().replacen("file:///", "file:/", 1)),
+    };
+    let access_env = Env { inherit: e.inherit.as_ref(), doc_root, link: &link, images: &env.images };
     let type_key = e.inherit.as_ref().map(|i| i.start.as_str());
     let html = match &e.javadoc {
         Some(doc) => {
@@ -284,15 +254,16 @@ fn package_markdown(e: &Element, env: &HoverEnv) -> Option<String> {
             return Some(MarkdownComment::new(doc, &link).render());
         }
         let ctx = DocContext { kind: "package".to_owned(), ..Default::default() };
-        let access_env = Env { inherit: None, doc_root: None, link: &link };
+        let access_env = Env { inherit: None, doc_root: None, link: &link, images: &env.images };
         access::html_content(&access_env, DocElement { doc, ctx: &ctx, type_key: None }, false)
+    } else if let Some(attached) = &e.attached_javadoc {
+        // IPackageFragment.getAttachedJavadoc
+        Some(attached.clone())
     } else if e.is_source {
         let html = e
-            .source_uri
+            .package_dir
             .as_deref()
-            .and_then(|u| url::Url::parse(u).ok())
-            .and_then(|u| u.to_file_path().ok())
-            .and_then(|p| p.parent().map(|d| d.join("package.html")))
+            .map(|d| Path::new(d).join("package.html"))
             .and_then(|p| std::fs::read_to_string(p).ok());
         Some(html.unwrap_or_default())
     } else {
@@ -366,17 +337,13 @@ fn source_info(e: &Element, env: &HoverEnv) -> Option<String> {
     let info = if let Some(uri) = &source_uri {
         (env.project_name)(uri)
     } else if let Some(cf) = class_file {
-        match cf.root_kind.as_deref() {
-            Some("jrt") => {
-                let version = cf.root.as_deref().or(env.java_home.as_deref()).and_then(java_version).unwrap_or_default();
-                let mut s = format!("Java {version}");
-                if let Some(m) = &cf.module {
-                    s.push_str(&format!(" (module: {m})"));
-                }
-                s
-            }
-            Some("archive") => Path::new(cf.root.as_deref()?).file_name()?.to_string_lossy().into_owned(),
-            _ => return None,
+        if let Some(module) = &cf.module {
+            // isSystemLibrary: the JRE container; JrtPackageFragmentRoot adds the module
+            let home = std::path::Path::new(&cf.root).parent().and_then(|p| p.parent());
+            let version = home.and_then(|h| java_version(&h.to_string_lossy())).unwrap_or_default();
+            format!("Java {version} (module: {module})")
+        } else {
+            Path::new(&cf.root).file_name()?.to_string_lossy().into_owned()
         }
     } else {
         return None;
@@ -411,8 +378,17 @@ pub async fn handle(
     let pos = params.text_document_position_params.position;
     // JDTUtils.resolveTypeRoot: open/workspace documents, or a `.java` file
     // on disk outside every project.
+    let ws = dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let class_file = if crate::classfile::is_class_file_uri(uri) {
+        match crate::features::navigation::class_file_target(&ws, uri.as_str()) {
+            Some((desc, r)) => Some((desc, r.project)),
+            None => return Some(Some(empty_hover())),
+        }
+    } else {
+        None
+    };
     let mut standalone = None;
-    if dispatcher.store.get(uri).is_none() {
+    if class_file.is_none() && dispatcher.store.get(uri).is_none() {
         let disk = uri
             .to_file_path()
             .ok()
@@ -426,7 +402,15 @@ pub async fn handle(
     if !dispatcher.is_ecj_ready().await {
         return None;
     }
-    let response = match dispatcher.hover_info(uri, pos.line, pos.character, standalone).await {
+    let hovered_project = match &class_file {
+        Some((_, project)) => project.clone(),
+        None => ws
+            .project_for_uri(uri)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| crate::project::DEFAULT_PROJECT_NAME.to_owned()),
+    };
+    let attachments = crate::features::navigation::source_attachments(&ws);
+    let response = match dispatcher.hover_info(uri, pos.line, pos.character, standalone, class_file, attachments).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("hover error: {e}");
@@ -439,7 +423,25 @@ pub async fn handle(
         }
         return None;
     };
-    let ws = dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut element = element.and_then(|e| match serde_json::from_value::<Element>(e) {
+        Ok(e) => Some(e),
+        Err(err) => {
+            tracing::warn!("hover: bad element data: {err}");
+            None
+        }
+    });
+    let images = match &element {
+        Some(e) => extract_jar_images(dispatcher, &ws, &hovered_project, e).await,
+        None => Default::default(),
+    };
+    if let Some(e) = element.as_mut() {
+        let package_without_doc = e.kind == "package" && e.javadoc.is_none() && !e.is_source;
+        if (!e.has_source && matches!(e.kind.as_str(), "type" | "field")) || package_without_doc {
+            e.attached_javadoc = attached_javadoc(dispatcher, &ws, &hovered_project, e).await;
+        }
+    }
+    let class_file_uri =
+        |desc: &ClassFileDesc| -> String { crate::features::navigation::class_file_uri(&ws, &hovered_project, desc) };
     let project_name = |uri: &str| -> String {
         url::Url::parse(uri)
             .ok()
@@ -457,9 +459,157 @@ pub async fn handle(
         completion_markdown: config.completion_documentation_markdown,
         project_name: &project_name,
         source_folder: &source_folder,
-        java_home: config.java_home.clone(),
+        class_file_uri: &class_file_uri,
+        images,
     };
     Some(Some(hover(&status, element.as_ref(), &env)))
+}
+
+/// `javadoc_location` of a library of `project` (`CoreJavaDocLocations.getJavadocBaseLocation`).
+fn javadoc_location(ws: &crate::project::Workspace, project: &str, root: &Path) -> Option<String> {
+    let attributes = match ws.project(project) {
+        Some(p) if p.kind == crate::project::ProjectKind::Maven => p
+            .libraries
+            .iter()
+            .find(|l| l.path == root)
+            .map(|lib| crate::classfile::maven_attributes(root, lib.is_test, &crate::project::maven::local_repository()))
+            .unwrap_or_default(),
+        Some(p) => crate::classfile::eclipse_library_attributes(&p.root, root),
+        None => Vec::new(),
+    };
+    attributes.into_iter().find(|(k, _)| k == "javadoc_location").map(|(_, v)| v)
+}
+
+/// `BinaryType` / `BinaryField.getAttachedJavadoc`: the type's HTML page
+/// under the Javadoc base location, sliced by `JavadocContents`.
+async fn attached_javadoc(
+    dispatcher: &crate::analysis::dispatcher::Dispatcher,
+    ws: &crate::project::Workspace,
+    project: &str,
+    e: &Element,
+) -> Option<String> {
+    use crate::analysis::semantic::{BridgeRequest, BridgeResponse};
+    let cf = match e.kind.as_str() {
+        "package" => e.class_file.as_ref()?,
+        _ => e.location.as_ref()?.class_file.as_ref()?,
+    };
+    let base = javadoc_location(ws, project, Path::new(&cf.root))?;
+    let base = if base.ends_with('/') { base } else { format!("{base}/") };
+    let rel = if e.kind == "package" {
+        format!("{}/package-summary.html", cf.package_name.replace('.', "/"))
+    } else {
+        let type_qualified_name = cf.class_file_name.strip_suffix(".class")?.replace('$', ".");
+        format!("{}/{}.html", cf.package_name.replace('.', "/"), type_qualified_name)
+    };
+    let html = if let Some(archive) = base.strip_prefix("jar:").and_then(|_| jar_path_from_uri(&base)) {
+        let inner = base.split_once("!/").map(|(_, r)| r).unwrap_or("");
+        let entry = format!("{inner}{rel}");
+        match dispatcher
+            .send_request(BridgeRequest::ReadJarEntry {
+                id: crate::analysis::semantic::ecj_process::next_id(),
+                archive,
+                entry,
+            })
+            .await
+        {
+            Ok(BridgeResponse::ClassFileContents { contents, .. }) => contents,
+            _ => return None,
+        }
+    } else if base.starts_with("file:") {
+        let dir = url::Url::parse(&base).ok()?.to_file_path().ok()?;
+        std::fs::read_to_string(dir.join(&rel)).ok()?
+    } else {
+        // remote Javadoc locations are not fetched
+        return None;
+    };
+    let mut contents = crate::javadoc::attached::JavadocContents::for_html(&html);
+    match e.kind.as_str() {
+        "type" => contents.type_doc(e.is_enum, e.is_annotation),
+        "field" => contents.field_doc(&e.field.as_ref()?.name),
+        "package" => contents.package_doc(),
+        _ => None,
+    }
+}
+
+/// The jar branch of `JavaDocHTMLPathHandler.getValidatedHTMLSrcAttribute`:
+/// images of a binary member's Javadoc are extracted from its Javadoc jar,
+/// else its source jar, to `EXTRACTED_JAR_IMAGES_FOLDER/<jar>/<file>`.
+async fn extract_jar_images(
+    dispatcher: &crate::analysis::dispatcher::Dispatcher,
+    ws: &crate::project::Workspace,
+    project: &str,
+    e: &Element,
+) -> std::collections::HashMap<String, String> {
+    use crate::analysis::semantic::{BridgeRequest, BridgeResponse};
+    let mut out = std::collections::HashMap::new();
+    let Some(doc) = &e.javadoc else { return out };
+    let Some(cf) = &doc.class_file else { return out };
+    let root = PathBuf::from(&cf.root);
+    // CoreJavaDocLocations.getJavadocBaseLocation: the `javadoc_location` attribute
+    let attributes = match ws.project(project) {
+        Some(p) if p.kind == crate::project::ProjectKind::Maven => p
+            .libraries
+            .iter()
+            .find(|l| l.path == root)
+            .map(|lib| crate::classfile::maven_attributes(&root, lib.is_test, &crate::project::maven::local_repository()))
+            .unwrap_or_default(),
+        Some(p) => crate::classfile::eclipse_library_attributes(&p.root, &root),
+        None => Vec::new(),
+    };
+    let javadoc_jar = attributes.iter().find(|(k, _)| k == "javadoc_location").and_then(|(_, v)| jar_path_from_uri(v));
+    let _ = javadoc_location;
+    let source_jar = crate::features::navigation::source_attachments(ws).get(&cf.root).cloned();
+    let jar_root = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let jar_root = jar_root.strip_suffix(".jar").unwrap_or(&jar_root).to_owned();
+    for node in &doc.nodes {
+        let Some(text) = node.text.as_deref() else { continue };
+        if !node.is_text() || !crate::javadoc::path_handler::contains_html_tag(text) {
+            continue;
+        }
+        let Some((src, entry, file_name)) = crate::javadoc::path_handler::jar_image_candidate(text, &cf.package_name) else {
+            continue;
+        };
+        if out.contains_key(&src) {
+            continue;
+        }
+        let output = crate::javadoc::path_handler::extracted_jar_images_folder().join(&jar_root).join(&file_name);
+        for archive in javadoc_jar.iter().chain(source_jar.iter()) {
+            let fresh = match (std::fs::metadata(&output), std::fs::metadata(archive)) {
+                (Ok(o), Ok(a)) => match (o.created(), a.created()) {
+                    (Ok(oc), Ok(ac)) => ac <= oc,
+                    _ => true,
+                },
+                _ => false,
+            };
+            let ok = fresh
+                || matches!(
+                    dispatcher
+                        .send_request(BridgeRequest::ExtractJarEntry {
+                            id: crate::analysis::semantic::ecj_process::next_id(),
+                            archive: archive.clone(),
+                            entry: entry.clone(),
+                            output: output.to_string_lossy().into_owned(),
+                        })
+                        .await,
+                    Ok(BridgeResponse::Ok { .. })
+                );
+            if ok {
+                if let Some(uri) = crate::javadoc::path_handler::file_uri(&output) {
+                    out.insert(src.clone(), uri);
+                }
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// `JavaDocHTMLPathHandler.getJarPathFromURI`
+fn jar_path_from_uri(uri: &str) -> Option<String> {
+    let ssp = uri.split_once(':').map(|(_, r)| r)?;
+    let path = ssp.split_once(':').map(|(_, r)| r).unwrap_or(ssp);
+    let i = path.rfind(".jar")?;
+    Some(path[..i + 4].to_owned())
 }
 
 /// `IVMInstall2.getJavaVersion()` from `<home>/release`.

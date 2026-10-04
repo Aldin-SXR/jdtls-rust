@@ -72,6 +72,8 @@ pub struct Env<'a> {
     pub doc_root: Option<String>,
     /// Formats a resolved location as a link target (`uri#line`, or `""`).
     pub link: &'a dyn Fn(&Location) -> String,
+    /// Image `src` values extracted from jars (original `src` → file URI).
+    pub images: &'a HashMap<String, String>,
 }
 
 /// The element a Javadoc belongs to.
@@ -660,8 +662,16 @@ impl<'a> Access<'a> {
     fn handle_in_line_text_element(&mut self, te: usize, skip_leading_whitespace: bool, tag_element: Option<usize>) {
         let mut text = self.node(te).text().to_owned();
         if path_handler::contains_html_tag(&text) {
-            let dir = self.package_dir();
-            text = path_handler::validated_html_src_attribute(&text, dir.as_deref());
+            if self.el.doc.class_file.is_some() {
+                if let Some((start, end)) = path_handler::extract_source_path_from_html_tag(&text) {
+                    if let Some(uri) = self.env.images.get(&text[start..end]) {
+                        text = path_handler::replace_src(&text, uri);
+                    }
+                }
+            } else {
+                let dir = self.package_dir();
+                text = path_handler::validated_html_src_attribute(&text, dir.as_deref());
+            }
         }
         if skip_leading_whitespace {
             if let Some(c) = text.chars().next() {

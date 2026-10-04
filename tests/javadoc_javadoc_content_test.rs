@@ -28,7 +28,12 @@ fn element(ws: &mut Workspace, uri: &str, line: u32, character: u32) -> Vec<Valu
         "textDocument/hover",
         json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": character } }),
     );
-    hover["contents"].as_array().cloned().unwrap_or_else(|| panic!("no hover contents: {hover}"))
+    // lsp4j writes a one-element list as that element
+    match &hover["contents"] {
+        Value::Array(a) => a.clone(),
+        v @ (Value::String(_) | Value::Object(_)) => vec![v.clone()],
+        _ => panic!("no hover contents: {hover}"),
+    }
 }
 
 /// `computeSignature(element).getValue()`

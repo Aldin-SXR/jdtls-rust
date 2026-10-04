@@ -36,6 +36,9 @@ public class Main {
     private static final CompletionService COMPLETER = new CompletionService();
     private static final FormatterService FORMATTER = new FormatterService();
     private static final AstNavigationService NAVIGATION = new AstNavigationService();
+    private static final RenameBindingService RENAME = new RenameBindingService();
+    private static final SignatureHelpService SIGNATURE_HELP = new SignatureHelpService();
+    private static final SemanticIndexService SEMANTIC = new SemanticIndexService();
 
     public static void main(String[] args) throws Exception {
         LogManager.getLogManager().reset();
@@ -73,33 +76,38 @@ public class Main {
     private static void runSocketServer(String socketPathStr) throws Exception {
         java.net.UnixDomainSocketAddress addr =
             java.net.UnixDomainSocketAddress.of(socketPathStr);
+        java.nio.file.Path socketPath = java.nio.file.Path.of(socketPathStr);
+        java.nio.channels.ServerSocketChannel server;
 
-        // If another live bridge is already listening, exit immediately so the
-        // spawning Rust process connects to that one instead.
-        try (java.nio.channels.SocketChannel probe =
-                java.nio.channels.SocketChannel.open(addr)) {
-            LOG.info("Another ecj-bridge already running at " + socketPathStr + " — exiting.");
-            return;
-        } catch (IOException ignored) {
-            // No live bridge — clean up any stale socket file and bind.
-            java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(socketPathStr));
+        // Probe + stale-socket cleanup + bind under an exclusive file lock, so
+        // two bridges racing for the same socket can't both end up listening
+        // (the loser would delete the winner's socket file and orphan it).
+        try (java.nio.channels.FileChannel lockChannel = java.nio.channels.FileChannel.open(
+                java.nio.file.Path.of(socketPathStr + ".lock"),
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+             java.nio.channels.FileLock ignoredLock = lockChannel.lock()) {
+            // If another live bridge is already listening, exit so the
+            // spawning Rust process connects to that one instead.
+            try (java.nio.channels.SocketChannel probe = java.nio.channels.SocketChannel.open(addr)) {
+                LOG.info("Another ecj-bridge already running at " + socketPathStr + " — exiting.");
+                return;
+            } catch (IOException ignored) {
+                java.nio.file.Files.deleteIfExists(socketPath);
+            }
+            server = java.nio.channels.ServerSocketChannel.open(java.net.StandardProtocolFamily.UNIX);
+            server.bind(addr);
         }
 
-        try (java.nio.channels.ServerSocketChannel server =
-                java.nio.channels.ServerSocketChannel.open(
-                    java.net.StandardProtocolFamily.UNIX)) {
+        // Remove the socket file on exit so next launch starts fresh.
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                java.nio.file.Files.deleteIfExists(socketPath);
+            } catch (Exception ignored) {}
+        }));
+        startIdleWatchdog();
 
-            server.bind(addr);
-
-            // Remove the socket file on exit so next launch starts fresh.
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                try {
-                    java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(socketPathStr));
-                } catch (Exception ignored) {}
-            }));
-
-            LOG.info("ecj-bridge socket server listening at " + socketPathStr);
-
+        LOG.info("ecj-bridge socket server listening at " + socketPathStr);
+        try (server) {
             int clientId = 0;
             while (true) {
                 java.nio.channels.SocketChannel channel = server.accept();
@@ -108,14 +116,49 @@ public class Main {
                 t.setDaemon(true);
                 t.start();
             }
-        } catch (java.net.BindException e) {
-            // Lost the bind race to another process — let it serve.
-            LOG.info("Socket bind failed (another process won) — exiting: " + e.getMessage());
         }
+    }
+
+    private static final java.util.concurrent.atomic.AtomicInteger ACTIVE_CLIENTS =
+        new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicLong LAST_ACTIVITY =
+        new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
+
+    /**
+     * Exit once no client has been connected for `JDTLS_BRIDGE_IDLE_SECS`
+     * seconds (default 600; 0 disables), so daemons from old builds or
+     * finished sessions don't accumulate.
+     */
+    private static void startIdleWatchdog() {
+        long idleSecs = 600;
+        try {
+            String env = System.getenv("JDTLS_BRIDGE_IDLE_SECS");
+            if (env != null && !env.isBlank()) idleSecs = Long.parseLong(env.trim());
+        } catch (NumberFormatException ignored) {}
+        if (idleSecs <= 0) return;
+        final long idleMillis = idleSecs * 1000;
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(Math.min(idleMillis, 30_000));
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (ACTIVE_CLIENTS.get() == 0
+                        && System.currentTimeMillis() - LAST_ACTIVITY.get() >= idleMillis) {
+                    LOG.info("ecj-bridge idle for " + idleMillis / 1000 + "s with no clients — exiting.");
+                    System.exit(0);
+                }
+            }
+        }, "ecj-idle-watchdog");
+        t.setDaemon(true);
+        t.start();
     }
 
     /** Handle one client connection on its own thread. */
     private static void handleClient(java.nio.channels.SocketChannel channel, int id) {
+        ACTIVE_CLIENTS.incrementAndGet();
+        LAST_ACTIVITY.set(System.currentTimeMillis());
         LOG.info("ecj-bridge client " + id + " connected");
         try (channel) {
             BufferedReader reader = new BufferedReader(new InputStreamReader(
@@ -127,6 +170,8 @@ public class Main {
             LOG.log(Level.WARNING, "ecj-bridge client " + id + " error", e);
         }
         LOG.info("ecj-bridge client " + id + " disconnected");
+        LAST_ACTIVITY.set(System.currentTimeMillis());
+        ACTIVE_CLIENTS.decrementAndGet();
     }
 
     /** Core request/response loop shared by both stdio and socket modes. */
@@ -185,11 +230,6 @@ public class Main {
                     req.uri, req.offset, req.importPrefix);
                 yield new CompletionsResponse(req.id, items);
             }
-            case "hover" -> {
-                String hover = navigation.hover(
-                    req.files, orDefault(req.sourceLevel), orEmpty(req.classpath), req.uri, req.offset);
-                yield new HoverResponse(req.id, hover);
-            }
             case "hoverInfo" -> {
                 java.util.Map<String, Object> info = new java.util.LinkedHashMap<>();
                 info.put("id", req.id);
@@ -211,21 +251,16 @@ public class Main {
                 List<BridgeAction> actions = codeActions(req, compiler);
                 yield new CodeActionsResponse(req.id, actions);
             }
-            case "signatureHelp" -> {
-                AstNavigationService.SignatureResult result = navigation.signatureHelp(
-                    req.files, orDefault(req.sourceLevel), req.uri, req.offset);
-                yield new SignatureHelpResponse(
-                    req.id, result.signatures, result.activeSignature, result.activeParameter);
-            }
-            case "rename" -> {
-                List<BridgeFileEdit> edits = rename(req, compiler);
-                yield new WorkspaceEditResponse(req.id, edits);
-            }
-            case "inlayHints" -> {
-                List<BridgeInlayHint> hints = navigation.inlayHints(
-                    req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri);
-                yield new InlayHintsResponse(req.id, hints);
-            }
+            case "signatureHelpData" -> SIGNATURE_HELP.compute(
+                    req.id, req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri,
+                    req.searchOffset, req.contextOffset, req.fallbackName, req.description);
+            case "semanticSearch" -> new SemanticSearchResponse(req.id, SEMANTIC.request(
+                req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.query));
+            case "renameTarget" -> new RenameTargetResponse(req.id, RENAME.target(
+                req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uri, req.offset));
+            case "renameOccurrences" -> new RenameOccurrencesResponse(req.id, RENAME.occurrences(
+                req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uris, req.names, req.packageName));
+            case "inlayHints" -> new InlayHintsResponse(req.id, new InlayHintService().collect(req));
             case "codeLens" -> {
                 List<BridgeCodeLens> lenses = navigation.codeLens(
                     req.files, orDefault(req.sourceLevel), req.uri);
@@ -236,8 +271,9 @@ public class Main {
                 yield new TextEditsResponse(req.id, req.uri, edits);
             }
             case "format" -> {
-                List<BridgeTextEdit> edits = formatter.format(req.source, req.tabSize, req.insertSpaces);
-                yield new TextEditsResponse(req.id, req.uri, edits);
+                List<BridgeFormatEdit> edits = formatter.format(req.source, req.formatKind, req.offset,
+                    req.length, req.indentationLevel, req.lineSeparator, req.options);
+                yield new FormatEditsResponse(req.id, edits);
             }
             case "typeHierarchyPrepare" -> {
                 List<BridgeTypeHierarchyItem> items = navigation.prepareTypeHierarchy(
@@ -268,6 +304,54 @@ public class Main {
                 List<BridgeCallHierarchyOutgoingCall> calls = navigation.outgoingCalls(
                     req.files, orDefault(req.sourceLevel), req.uri, req.offset);
                 yield new CallHierarchyOutgoingCallsResponse(req.id, calls);
+            }
+            case "navData" -> NavigationDataService.navData(req);
+            case "classFileContents" -> NavigationDataService.classFileContents(req);
+            case "classFileInfo" -> NavigationDataService.classFileInfo(req);
+            case "astBindings" -> AstBindingsService.handle(req);
+            case "readJarEntry" -> {
+                // JavaElement.getURLContents for a jar: the charset of the
+                // HTML <meta> tag, else UTF-8
+                try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(req.archive)) {
+                    java.util.zip.ZipEntry e = zip.getEntry(req.entry);
+                    if (e == null) {
+                        yield new ErrorResponse(req.id, "missing entry " + req.entry);
+                    }
+                    byte[] bytes;
+                    try (java.io.InputStream in = zip.getInputStream(e)) {
+                        bytes = in.readAllBytes();
+                    }
+                    String head = new String(bytes, 0, Math.min(bytes.length, 4096), java.nio.charset.StandardCharsets.ISO_8859_1);
+                    java.util.regex.Matcher m = java.util.regex.Pattern
+                            .compile("(?i)<meta[^>]*charset=\\\"?([A-Za-z0-9_\\-]+)").matcher(head);
+                    java.nio.charset.Charset cs = java.nio.charset.StandardCharsets.UTF_8;
+                    if (m.find()) {
+                        try {
+                            cs = java.nio.charset.Charset.forName(m.group(1));
+                        } catch (Exception ignored) {
+                            // keep UTF-8
+                        }
+                    }
+                    yield new NavigationDataService.ClassFileContentsResponse(req.id, new String(bytes, cs));
+                } catch (java.io.IOException ex) {
+                    yield new ErrorResponse(req.id, ex.toString());
+                }
+            }
+            case "extractJarEntry" -> {
+                try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(req.archive)) {
+                    java.util.zip.ZipEntry e = zip.getEntry(req.entry);
+                    if (e == null) {
+                        yield new ErrorResponse(req.id, "missing entry " + req.entry);
+                    }
+                    java.nio.file.Path out = java.nio.file.Path.of(req.output);
+                    java.nio.file.Files.createDirectories(out.getParent());
+                    try (java.io.InputStream in = zip.getInputStream(e)) {
+                        java.nio.file.Files.copy(in, out, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    yield new OkResponse(req.id);
+                } catch (java.io.IOException ex) {
+                    yield new ErrorResponse(req.id, ex.toString());
+                }
             }
             case "shutdown" -> new OkResponse(req.id);
             default -> new ErrorResponse(req.id, "Unknown method: " + req.method);
@@ -2591,22 +2675,6 @@ public class Main {
         int start = lineStart(s, l), i = start;
         while (i < s.length() && (s.charAt(i) == ' ' || s.charAt(i) == '\t')) i++;
         return s.substring(start, i);
-    }
-
-    private static List<BridgeFileEdit> rename(Request r, CompilationService c) {
-        if (r.files == null || r.uri == null || r.newName == null) return List.of();
-        AstNavigationService nav = new AstNavigationService(); List<BridgeFileEdit> res = new ArrayList<>();
-        List<BridgeLocation> allRefs = nav.findReferences(r.files, orDefault(r.sourceLevel), r.uri, r.offset);
-        for (String furi : r.files.keySet()) {
-            List<BridgeLocation> refs = allRefs.stream().filter(l -> furi.equals(l.uri)).toList();
-            if (refs.isEmpty()) continue;
-            List<BridgeTextEdit> eds = new ArrayList<>();
-            for (var loc : refs) {
-                BridgeTextEdit e = new BridgeTextEdit(); e.startLine = loc.startLine; e.startChar = loc.startChar; e.endLine = loc.endLine; e.endChar = loc.endChar; e.newText = r.newName; eds.add(e);
-            }
-            BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = furi; fe.edits = eds; res.add(fe);
-        }
-        return res;
     }
 
     private static List<BridgeTextEdit> organizeImports(Request r, CompilationService c) {

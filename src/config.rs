@@ -16,8 +16,20 @@ pub struct Config {
     /// Java source/target compatibility level (default: "21").
     pub source_compatibility: String,
 
-    /// Formatter profile: "google" | "eclipse" (default: "eclipse").
-    pub formatter_profile: String,
+    /// `java.format.*` preferences (from `settings`).
+    #[serde(skip)]
+    pub format: crate::features::formatting::FormatSettings,
+
+    /// jdt.ls `extendedClientCapabilities` (e.g. `nonStandardJavaFormatting`).
+    pub extended_client_capabilities: Option<serde_json::Value>,
+
+    /// `initializationOptions.workspaceFolders` (URIs).
+    pub workspace_folders: Option<Vec<String>>,
+
+    /// jdt.ls `Preferences.getRootPaths()`: `workspaceFolders` from the
+    /// initialization options, else `rootUri`/`rootPath` (`BaseInitHandler`).
+    #[serde(skip)]
+    pub root_paths: Vec<std::path::PathBuf>,
 
     /// Maximum number of completion items to return.
     pub max_completions: usize,
@@ -29,13 +41,17 @@ pub struct Config {
     /// jdt.ls-style `settings` object (`{ "java": { ... } }`).
     pub settings: Option<serde_json::Value>,
 
-    /// `initializationOptions.extendedClientCapabilities`.
-    pub extended_client_capabilities: Option<serde_json::Value>,
-
     /// Client supports Markdown completion documentation
     /// (`ClientPreferences.isSupportsCompletionDocumentationMarkdown`).
     #[serde(skip)]
     pub completion_documentation_markdown: bool,
+    /// Inlay-hint preferences (`java.inlayHints.*`), from `settings`.
+    #[serde(skip)]
+    pub inlay_hints: crate::features::inlay_hints::InlayHintPreferences,
+
+    /// Client capability `workspace.inlayHint.refreshSupport`.
+    #[serde(skip)]
+    pub inlay_hint_refresh_support: bool,
 }
 
 impl Config {
@@ -46,25 +62,6 @@ impl Config {
             return Some(v);
         }
         path.split('.').try_fold(settings, |v, k| v.get(k))
-    }
-
-    /// Deep-merges a `workspace/didChangeConfiguration` settings object.
-    pub fn merge_settings(&mut self, settings: &serde_json::Value) {
-        fn merge(target: &mut serde_json::Value, src: &serde_json::Value) {
-            match (target, src) {
-                (serde_json::Value::Object(t), serde_json::Value::Object(s)) => {
-                    for (k, v) in s {
-                        merge(t.entry(k.clone()).or_insert(serde_json::Value::Null), v);
-                    }
-                }
-                (t, s) => *t = s.clone(),
-            }
-        }
-        if !settings.is_object() {
-            return;
-        }
-        let target = self.settings.get_or_insert_with(|| serde_json::json!({}));
-        merge(target, settings);
     }
 
     /// `extendedClientCapabilities.<name>` is `true`.
@@ -81,9 +78,6 @@ impl Config {
     pub fn with_defaults(mut self) -> Self {
         if self.source_compatibility.is_empty() {
             self.source_compatibility = "21".to_owned();
-        }
-        if self.formatter_profile.is_empty() {
-            self.formatter_profile = "eclipse".to_owned();
         }
         if self.max_completions == 0 {
             self.max_completions = 50;

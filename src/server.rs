@@ -5,16 +5,17 @@ use crate::analysis::semantic::code_action as ca_conv;
 use crate::analysis::semantic::completion as comp_conv;
 use crate::analysis::semantic::definition as def_conv;
 use crate::analysis::semantic::diagnostics as diag_conv;
-use crate::analysis::semantic::hover as hover_conv;
 use crate::analysis::semantic::protocol::{BridgeCallHierarchyItem, BridgeTypeHierarchyItem, BridgeRange, BridgeResponse, BridgeDiagnostic};
 use crate::analysis::semantic::NavKind;
 use crate::analysis::syntax::{
-    completion as syntax_completion, diagnostics as syntax_diagnostics, folding, outline,
-    navigation as syntax_navigation, selection, snippets, tokens,
+    completion as syntax_completion, diagnostics as syntax_diagnostics, outline,
+    navigation as syntax_navigation, snippets,
 };
 use crate::analysis::syntax::parser::JavaParser;
 use crate::config::Config;
+use crate::features::navigation;
 use crate::document_store::DocumentStore;
+use crate::features::formatting;
 use crate::handlers::text_document::pos_to_offset;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -128,6 +129,8 @@ pub struct JavaLanguageServer {
     compile_tx: watch::Sender<u64>,
     /// Workspace root folders used for project import.
     roots: Arc<RwLock<Vec<std::path::PathBuf>>>,
+    /// Client capabilities relevant to rename (resource operations).
+    rename_client: Arc<RwLock<crate::features::rename::RenameClient>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -138,6 +141,12 @@ enum ClientFlavor {
 }
 
 impl JavaLanguageServer {
+    /// jdt.ls `java/searchSymbols`.
+    pub async fn search_symbols(&self, params: crate::features::workspace_symbols::SearchSymbolParams) -> LspResult<Vec<SymbolInformation>> {
+        let p = params;
+        Ok(crate::features::workspace_symbols::search(&self.dispatcher, p.query.as_deref(), p.max_results, p.project_name.as_deref(), p.source_only).await)
+    }
+
     pub fn new(client: Client) -> Self {
         let config = Arc::new(RwLock::new(Config::default()));
         let store = Arc::new(DocumentStore::new());
@@ -155,6 +164,7 @@ impl JavaLanguageServer {
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             compile_tx,
             roots: Arc::new(RwLock::new(Vec::new())),
+            rename_client: Arc::new(RwLock::new(Default::default())),
         }
     }
 
@@ -188,6 +198,12 @@ impl JavaLanguageServer {
         });
     }
 
+    /// `java/classFileContents` (jdt.ls extension).
+    pub async fn class_file_contents(&self, params: Value) -> LspResult<String> {
+        let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
+        Ok(navigation::class_file_contents(&self.dispatcher, uri).await)
+    }
+
     // ── Utilities ─────────────────────────────────────────────────────────────
 
     /// (Re-)import all projects under the workspace roots and register their
@@ -204,6 +220,17 @@ impl JavaLanguageServer {
         let files: Vec<Url> = ws.java_files().into_keys().filter_map(|p| Url::from_file_path(p).ok()).collect();
         self.store.set_workspace_files(files);
         *self.dispatcher.workspace.write().unwrap_or_else(|e| e.into_inner()) = ws;
+    }
+
+    async fn format_env(&self) -> formatting::FormatEnv<'_> {
+        let cfg = self.config.read().await;
+        formatting::FormatEnv {
+            dispatcher: &self.dispatcher,
+            client: &self.client,
+            settings: cfg.format.clone(),
+            roots: cfg.root_paths.clone(),
+            extended_client_capabilities: cfg.extended_client_capabilities.clone(),
+        }
     }
 
     fn request_compile(&self) {
@@ -237,7 +264,11 @@ impl JavaLanguageServer {
 impl LanguageServer for JavaLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
         *self.client_flavor.write().await = detect_client_flavor(params.client_info.as_ref());
+        crate::features::client_caps::set(&params.capabilities);
+        crate::features::preferences::init(&params);
         *self.workspace_folders.write().await = params.workspace_folders.clone().unwrap_or_default();
+        navigation::init_preferences(params.initialization_options.as_ref());
+        *self.rename_client.write().await = crate::features::rename::RenameClient::from_capabilities(&params.capabilities);
 
         // Parse initializationOptions
         if let Some(opts) = params.initialization_options {
@@ -253,6 +284,23 @@ impl LanguageServer for JavaLanguageServer {
             let mut cfg = Config::default().with_defaults();
             cfg.completion_documentation_markdown = completion_markdown(&params.capabilities);
             *self.config.write().await = cfg;
+        }
+        self.config.write().await.inlay_hint_refresh_support = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|w| w.inlay_hint.as_ref())
+            .and_then(|i| i.refresh_support)
+            .unwrap_or(false);
+        {
+            let mut cfg = self.config.write().await;
+            #[allow(deprecated)]
+            let root_paths = formatting::options::jdtls_root_paths(
+                cfg.workspace_folders.as_deref(),
+                params.root_uri.as_ref(),
+                params.root_path.as_deref(),
+            );
+            cfg.root_paths = root_paths;
         }
 
         // Import workspace projects (Gradle → Maven → Eclipse → invisible).
@@ -302,7 +350,7 @@ impl LanguageServer for JavaLanguageServer {
         });
         self.spawn_compile_loop();
 
-        let token_legend = tokens::legend();
+        let token_legend = crate::features::semantic_tokens::legend();
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -370,7 +418,7 @@ impl LanguageServer for JavaLanguageServer {
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
                             legend: token_legend,
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            full: Some(SemanticTokensFullOptions::Delta { delta: Some(false) }),
                             range: Some(false),
                             work_done_progress_options: Default::default(),
                         },
@@ -384,9 +432,14 @@ impl LanguageServer for JavaLanguageServer {
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec![
                         "java.project.getAll".to_owned(),
+                        "jdtls-rust.classFileUri".to_owned(),
                         "jdtls-rust.refreshDiagnostics".to_owned(),
                         "java.project.refreshDiagnostics".to_owned(),
                         "java.project.rebuild".to_owned(),
+                        "java.project.getSettings".to_owned(),
+                        "java.edit.stringFormatting".to_owned(),
+                        "java.navigate.openTypeHierarchy".to_owned(),
+                        "java.navigate.resolveTypeHierarchy".to_owned(),
                     ],
                     work_done_progress_options: Default::default(),
                 }),
@@ -476,10 +529,19 @@ impl LanguageServer for JavaLanguageServer {
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
-        let restart_ecj = {
+        navigation::update_settings(&params.settings);
+        let (restart_ecj, refresh_inlay_hints) = {
             let mut config = self.config.write().await;
-            merge_config_settings(&mut config, &params.settings)
+            let old_inlay_hints = config.inlay_hints.clone();
+            let restart = merge_config_settings(&mut config, &params.settings);
+            (restart, config.inlay_hint_refresh_support && old_inlay_hints.needs_refresh(&config.inlay_hints))
         };
+        if refresh_inlay_hints {
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                let _ = client.inlay_hint_refresh().await;
+            });
+        }
 
         if restart_ecj {
             if let Err(e) = self.dispatcher.restart_ecj().await {
@@ -789,82 +851,16 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {
         let cfg = self.config.read().await.clone();
-        if let Some(result) = crate::features::hover::handle(&self.dispatcher, &cfg, &params).await {
-            return Ok(result);
-        }
-        let uri = &params.text_document_position_params.text_document.uri;
-        let pos = params.text_document_position_params.position;
-
-        let (offset, content, tree) = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => (
-                pos_to_offset(&s.content, pos).unwrap_or(0),
-                s.content_string(),
-                s.tree.clone(),
-            ),
-        };
-
-        if self.dispatcher.is_ecj_ready().await {
-            match self.dispatcher.hover(uri, offset).await {
-                Ok(BridgeResponse::Hover { contents, .. }) if !contents.is_empty() => {
-                    return Ok(Some(hover_conv::to_lsp(&contents)));
-                }
-                Ok(BridgeResponse::Error { message, .. }) => {
-                    warn!("hover ECJ error: {message}");
-                }
-                Err(e) => warn!("hover error: {e}"),
-                _ => {}
-            }
-        }
-
-        Ok(tree
-            .as_ref()
-            .and_then(|tree| syntax_navigation::hover_markdown(tree, &content, offset))
-            .map(|markdown| hover_conv::to_lsp(&markdown)))
+        Ok(crate::features::hover::handle(&self.dispatcher, &cfg, &params).await.flatten())
     }
 
     // ── Signature Help ────────────────────────────────────────────────────────
 
     async fn signature_help(&self, params: SignatureHelpParams) -> LspResult<Option<SignatureHelp>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let pos = params.text_document_position_params.position;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.signature_help(uri, offset).await {
-            Ok(BridgeResponse::SignatureHelp { signatures, active_signature, active_parameter, .. }) => {
-                let sigs: Vec<SignatureInformation> = signatures.iter().map(|s| {
-                    SignatureInformation {
-                        label: s.label.clone(),
-                        documentation: s.documentation.as_ref().map(|d| {
-                            Documentation::MarkupContent(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: d.clone(),
-                            })
-                        }),
-                        parameters: Some(s.parameters.iter().map(|p| ParameterInformation {
-                            label: ParameterLabel::Simple(p.label.clone()),
-                            documentation: p.documentation.as_ref().map(|d| {
-                                Documentation::MarkupContent(MarkupContent {
-                                    kind: MarkupKind::Markdown,
-                                    value: d.clone(),
-                                })
-                            }),
-                        }).collect()),
-                        active_parameter: None,
-                    }
-                }).collect();
-                Ok(Some(SignatureHelp {
-                    signatures: sigs,
-                    active_signature: Some(active_signature),
-                    active_parameter: Some(active_parameter),
-                }))
-            }
-            _ => Ok(None),
-        }
+        use crate::features::signature_help;
+        let settings = signature_help::Settings::from_settings(self.config.read().await.settings.as_ref());
+        let doc = params.text_document_position_params;
+        Ok(Some(signature_help::signature_help(&self.dispatcher, &doc.text_document.uri, doc.position, settings).await))
     }
 
     // ── Definition / Declaration / Type Definition / Implementation ───────────
@@ -872,6 +868,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn goto_definition(&self, params: GotoDefinitionParams) -> LspResult<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
+        if let Some(locs) = navigation::definition(&self.dispatcher, uri, pos).await {
+            return Ok(Some(GotoDefinitionResponse::Array(locs)));
+        }
         let (offset, content, tree) = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => (
@@ -905,6 +904,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn goto_declaration(&self, params: GotoDeclarationParams) -> LspResult<Option<GotoDeclarationResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
+        if let Some(locs) = navigation::declaration(&self.dispatcher, uri, pos).await {
+            return Ok(Some(GotoDefinitionResponse::Array(locs)));
+        }
         let (offset, content, tree) = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => (
@@ -938,6 +940,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn goto_type_definition(&self, params: GotoTypeDefinitionParams) -> LspResult<Option<GotoTypeDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
+        if let Some(locs) = navigation::type_definition(&self.dispatcher, uri, pos).await {
+            return Ok(locs.map(GotoDefinitionResponse::Array));
+        }
         let offset = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
@@ -956,6 +961,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn goto_implementation(&self, params: GotoImplementationParams) -> LspResult<Option<GotoImplementationResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
+        if let Some(locs) = navigation::implementation(&self.dispatcher, uri, pos).await {
+            return Ok(Some(GotoDefinitionResponse::Array(locs)));
+        }
         let offset = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
@@ -976,6 +984,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn references(&self, params: ReferenceParams) -> LspResult<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
+        if let Some(locs) = navigation::references(&self.dispatcher, uri, pos, params.context.include_declaration).await {
+            return Ok(Some(locs));
+        }
         let (offset, content, tree) = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => (
@@ -1016,6 +1027,9 @@ impl LanguageServer for JavaLanguageServer {
     async fn document_highlight(&self, params: DocumentHighlightParams) -> LspResult<Option<Vec<DocumentHighlight>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
+        if let Some(highlights) = navigation::document_highlight(&self.dispatcher, uri, pos).await {
+            return Ok(Some(highlights));
+        }
         let (offset, content, tree) = match self.store.get(uri) {
             None => return Ok(None),
             Some(s) => (
@@ -1061,35 +1075,12 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn document_symbol(&self, params: DocumentSymbolParams) -> LspResult<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let state = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => s,
-        };
-        let tree = match &state.tree {
-            None => return Ok(None),
-            Some(t) => t.clone(),
-        };
-        let content = state.content_string();
-        drop(state);
-
-        let syms = outline::document_symbols(&tree, &content);
-        Ok(Some(DocumentSymbolResponse::Nested(syms)))
+        let Some(text) = crate::features::source_text(&self.store, uri) else { return Ok(Some(DocumentSymbolResponse::Nested(Vec::new()))) };
+        Ok(Some(crate::features::document_symbol::document_symbols(uri, &text)))
     }
 
     async fn symbol(&self, params: WorkspaceSymbolParams) -> LspResult<Option<Vec<SymbolInformation>>> {
-        let query = params.query.to_ascii_lowercase();
-        let mut symbols = Vec::new();
-
-        for state in self.store.snapshots() {
-            let Some(tree) = state.tree.as_ref() else {
-                continue;
-            };
-            let content = state.content_string();
-            let document_symbols = outline::document_symbols(tree, &content);
-            flatten_workspace_symbols(&mut symbols, &state.uri, None, &document_symbols, &query);
-        }
-
-        Ok(Some(symbols))
+        Ok(Some(crate::features::workspace_symbols::search(&self.dispatcher, Some(&params.query), 0, None, false).await))
     }
 
     // ── Code Action ────────────────────────────────────────────────────────────
@@ -1142,109 +1133,55 @@ impl LanguageServer for JavaLanguageServer {
     // ── Formatting ─────────────────────────────────────────────────────────────
 
     async fn formatting(&self, params: DocumentFormattingParams) -> LspResult<Option<Vec<TextEdit>>> {
-        let uri = &params.text_document.uri;
-        let opts = &params.options;
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.format(uri, opts.tab_size as u32, opts.insert_spaces).await {
-            Ok(BridgeResponse::TextEdits { uri: response_uri, edits, .. }) => {
-                if response_uri != uri.as_str() {
-                    warn!("format response URI {response_uri} does not match request URI {uri}");
-                }
-                let text_edits: Vec<TextEdit> = edits.iter().map(|e| TextEdit {
-                    range: Range {
-                        start: Position { line: e.start_line, character: e.start_char },
-                        end: Position { line: e.end_line, character: e.end_char },
-                    },
-                    new_text: e.new_text.clone(),
-                }).collect();
-                Ok(if text_edits.is_empty() { None } else { Some(text_edits) })
-            }
-            _ => Ok(None),
-        }
+        let env = self.format_env().await;
+        Ok(Some(formatting::format(&env, &params.text_document.uri, &params.options, None).await))
     }
 
     async fn range_formatting(&self, params: DocumentRangeFormattingParams) -> LspResult<Option<Vec<TextEdit>>> {
-        // Delegate to full-file formatting for now; ECJ formatter can be extended later
-        self.formatting(DocumentFormattingParams {
-            text_document: params.text_document,
-            options: params.options,
-            work_done_progress_params: Default::default(),
-        }).await
+        let env = self.format_env().await;
+        Ok(Some(formatting::format(&env, &params.text_document.uri, &params.options, Some(params.range)).await))
     }
 
     async fn on_type_formatting(&self, params: DocumentOnTypeFormattingParams) -> LspResult<Option<Vec<TextEdit>>> {
-        let text_document = params.text_document_position.text_document.clone();
-        let uri = text_document.uri.clone();
-        let formatted = self.formatting(DocumentFormattingParams {
-            text_document,
-            options: params.options,
-            work_done_progress_params: Default::default(),
-        }).await?;
-        if formatted.as_ref().is_some_and(|edits| !edits.is_empty()) {
-            return Ok(formatted);
-        }
-
-        let state = match self.store.get(&uri) {
-            None => return Ok(formatted),
-            Some(state) => state,
-        };
-        let fallback = simple_on_type_formatting_fallback(
-            &state.content_string(),
-            params.text_document_position.position,
-        );
-        Ok(fallback.or(formatted))
+        let env = self.format_env().await;
+        let pos = &params.text_document_position;
+        Ok(Some(formatting::on_type_format(&env, &pos.text_document.uri, &params.options, pos.position, &params.ch).await))
     }
 
     // ── Rename ────────────────────────────────────────────────────────────────
 
     async fn rename(&self, params: RenameParams) -> LspResult<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
-        let pos = params.text_document_position.position;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
+        let Some(text) = self.store.get(uri).map(|s| s.content_string()) else {
+            return Ok(Some(WorkspaceEdit { changes: Some(HashMap::new()), ..Default::default() }));
         };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.rename(uri, offset, params.new_name).await {
-            Ok(BridgeResponse::WorkspaceEdit { changes, .. }) => {
-                let mut lsp_changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-                for fe in &changes {
-                    if let Ok(u) = Url::parse(&fe.uri) {
-                        let edits: Vec<TextEdit> = fe.edits.iter().map(|e| TextEdit {
-                            range: Range {
-                                start: Position { line: e.start_line, character: e.start_char },
-                                end: Position { line: e.end_line, character: e.end_char },
-                            },
-                            new_text: e.new_text.clone(),
-                        }).collect();
-                        lsp_changes.entry(u).or_default().extend(edits);
-                    }
-                }
-                Ok(Some(WorkspaceEdit { changes: Some(lsp_changes), ..Default::default() }))
-            }
-            _ => Ok(None),
-        }
+        let client = *self.rename_client.read().await;
+        let enabled = crate::features::rename::rename_enabled(self.config.read().await.settings.as_ref());
+        crate::features::rename::rename(
+            &self.dispatcher,
+            uri,
+            &text,
+            params.text_document_position.position,
+            &params.new_name,
+            client,
+            enabled,
+        )
+        .await
+        .map(Some)
     }
 
     async fn prepare_rename(&self, params: TextDocumentPositionParams) -> LspResult<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
-        let state = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(state) => state,
+        let Some(text) = self.store.get(uri).map(|s| s.content_string()) else {
+            return Err(tower_lsp::jsonrpc::Error {
+                code: tower_lsp::jsonrpc::ErrorCode::InvalidRequest,
+                message: "Renaming this element is not supported.".into(),
+                data: None,
+            });
         };
-        let content = state.content_string();
-        drop(state);
-
-        let Some((range, placeholder)) = identifier_range_and_text_at(&content, params.position) else {
-            return Ok(None);
-        };
-        if is_java_keyword(&placeholder) {
-            return Ok(None);
-        }
-
-        Ok(Some(PrepareRenameResponse::RangeWithPlaceholder { range, placeholder }))
+        crate::features::rename::prepare_rename(&self.dispatcher, uri, &text, params.position)
+            .await
+            .map(|range| Some(PrepareRenameResponse::Range(range)))
     }
 
     async fn linked_editing_range(&self, params: LinkedEditingRangeParams) -> LspResult<Option<LinkedEditingRanges>> {
@@ -1284,311 +1221,81 @@ impl LanguageServer for JavaLanguageServer {
     // ── Folding Ranges ────────────────────────────────────────────────────────
 
     async fn folding_range(&self, params: FoldingRangeParams) -> LspResult<Option<Vec<FoldingRange>>> {
-        let uri = &params.text_document.uri;
-        let state = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => s,
-        };
-        let tree = match &state.tree {
-            None => return Ok(None),
-            Some(t) => t.clone(),
-        };
-        let content = state.content_string();
-        drop(state);
-
-        Ok(Some(folding::folding_ranges(&tree, &content)))
+        let Some(text) = crate::features::source_text(&self.store, &params.text_document.uri) else { return Ok(Some(Vec::new())) };
+        Ok(Some(crate::features::folding_range::folding_ranges(&text)))
     }
 
     // ── Semantic Tokens ────────────────────────────────────────────────────────
 
     async fn semantic_tokens_full(&self, params: SemanticTokensParams) -> LspResult<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-        let state = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => s,
-        };
-        let tree = match &state.tree {
-            None => return Ok(None),
-            Some(t) => t.clone(),
-        };
-        let content = state.content_string();
-        drop(state);
-
-        let token_vec = tokens::semantic_tokens_full(&tree, &content);
-        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
-            result_id: None,
-            data: token_vec,
-        })))
+        let empty = || Ok(Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data: Vec::new() })));
+        let Some(text) = crate::features::source_text(&self.store, uri) else { return empty() };
+        // jdt.ls waits for the document life-cycle jobs; wait for the bridge.
+        for _ in 0..600 {
+            if self.dispatcher.is_ecj_ready().await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let Ok(BridgeResponse::AstBindings { strings, nodes, bindings, .. }) = self.dispatcher.ast_bindings(uri).await else { return empty() };
+        let ast = crate::features::semantic_tokens::Ast::from_bridge(&strings, &nodes, &bindings);
+        let data = crate::features::semantic_tokens::semantic_tokens(&text, &ast);
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data })))
     }
 
     async fn selection_range(&self, params: SelectionRangeParams) -> LspResult<Option<Vec<SelectionRange>>> {
-        let uri = &params.text_document.uri;
-        let state = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => s,
-        };
-        let tree = match &state.tree {
-            None => return Ok(None),
-            Some(t) => t.clone(),
-        };
-
-        let mut ranges = Vec::with_capacity(params.positions.len());
-        for position in params.positions {
-            let offset = pos_to_offset(&state.content, position).unwrap_or(0);
-            ranges.push(selection::selection_range(&tree, offset).unwrap_or(SelectionRange {
-                range: Range {
-                    start: position,
-                    end: position,
-                },
-                parent: None,
-            }));
-        }
-
-        Ok(Some(ranges))
+        let Some(text) = crate::features::source_text(&self.store, &params.text_document.uri) else { return Ok(Some(Vec::new())) };
+        Ok(Some(crate::features::selection_range::selection_ranges(&text, &params.positions)))
     }
 
     // ── Inlay Hints ───────────────────────────────────────────────────────────
 
     async fn inlay_hint(&self, params: InlayHintParams) -> LspResult<Option<Vec<InlayHint>>> {
-        let uri = &params.text_document.uri;
-        if !self.dispatcher.is_ecj_ready().await {
-            return Ok(None);
-        }
-        match self.dispatcher.inlay_hints(uri).await {
-            Ok(BridgeResponse::InlayHints { hints, .. }) => {
-                let items = hints
-                    .iter()
-                    .map(|h| InlayHint {
-                        position: Position { line: h.line, character: h.character },
-                        label: InlayHintLabel::String(h.label.clone()),
-                        kind: Some(match h.kind {
-                            1 => InlayHintKind::TYPE,
-                            _ => InlayHintKind::PARAMETER,
-                        }),
-                        tooltip: None,
-                        padding_left: Some(false),
-                        padding_right: Some(true),
-                        text_edits: None,
-                        data: None,
-                    })
-                    .collect();
-                Ok(Some(items))
-            }
-            Ok(BridgeResponse::Error { message, .. }) => {
-                warn!("inlay hints ECJ error: {message}");
-                Ok(None)
-            }
-            Err(e) => {
-                warn!("inlay hints error: {e}");
-                Ok(None)
-            }
-            _ => Ok(None),
-        }
+        let prefs = self.config.read().await.inlay_hints.clone();
+        Ok(Some(crate::features::inlay_hints::inlay_hint(&self.dispatcher, &prefs, &params).await))
     }
 
     // ── Code Lenses ───────────────────────────────────────────────────────────
 
     async fn code_lens(&self, params: CodeLensParams) -> LspResult<Option<Vec<CodeLens>>> {
-        let uri = &params.text_document.uri;
-        if !self.dispatcher.is_ecj_ready().await {
-            return Ok(None);
-        }
-        match self.dispatcher.code_lens(uri).await {
-            Ok(BridgeResponse::CodeLenses { lenses, .. }) => {
-                let items = lenses.iter().map(|l| {
-                    let range = Range {
-                        start: Position { line: l.start_line, character: l.start_char },
-                        end: Position { line: l.end_line, character: l.end_char },
-                    };
-                    // Store bridge-computed title + args so code_lens_resolve can
-                    // use them directly without a second find_references round-trip.
-                    let data = if matches!(l.command.as_deref(), Some("editor.action.showReferences")) {
-                        Some(json!({
-                            "uri":   uri.to_string(),
-                            "pos":   range.start,
-                            "title": l.title,
-                            "args":  l.args,
-                            "tag":   "references"
-                        }))
-                    } else {
-                        None
-                    };
-                    CodeLens { range, command: None, data }
-                }).collect();
-                Ok(Some(items))
-            }
-            Ok(BridgeResponse::Error { message, .. }) => {
-                warn!("code lens ECJ error: {message}");
-                Ok(None)
-            }
-            Err(e) => {
-                warn!("code lens error: {e}");
-                Ok(None)
-            }
-            _ => Ok(None),
-        }
+        Ok(Some(crate::features::code_lens::code_lenses(&self.store, &params.text_document.uri)))
     }
 
-    async fn code_lens_resolve(&self, mut lens: CodeLens) -> LspResult<CodeLens> {
-        let client_flavor = *self.client_flavor.read().await;
-        let Some(data) = lens.data.clone() else {
-            return Ok(lens);
-        };
-        if data.get("tag").and_then(Value::as_str) != Some("references") {
-            return Ok(lens);
-        }
-        let Some(uri_str) = data.get("uri").and_then(Value::as_str) else {
-            return Ok(lens);
-        };
-        let Ok(uri) = Url::parse(uri_str) else {
-            return Ok(lens);
-        };
-
-        // Use the bridge's pre-computed title and args so we don't need a
-        // separate find_references round-trip (which used a different code path
-        // and could produce different — often zero — results).
-        let title = data.get("title")
-            .and_then(Value::as_str)
-            .unwrap_or("0 references")
-            .to_owned();
-
-        // bridge_args is already [uri, position, locations] — just unwrap the array.
-        let args: Vec<Value> = data.get("args")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_else(|| {
-                let pos = data.get("pos").cloned().unwrap_or_else(|| {
-                    json!({ "line": lens.range.start.line, "character": lens.range.start.character })
-                });
-                vec![Value::String(uri.to_string()), pos, Value::Array(vec![])]
-            });
-
-        lens.command = Some(code_lens_command(
-            client_flavor,
-            "editor.action.showReferences",
-            &title,
-            Some(args),
-            lens.range,
-        ));
-        Ok(lens)
+    async fn code_lens_resolve(&self, lens: CodeLens) -> LspResult<CodeLens> {
+        Ok(crate::features::code_lens::resolve(&self.dispatcher, lens).await)
     }
 
     // ── Call Hierarchy ────────────────────────────────────────────────────────
 
     async fn prepare_call_hierarchy(&self, params: CallHierarchyPrepareParams) -> LspResult<Option<Vec<CallHierarchyItem>>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let pos = params.text_document_position_params.position;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.call_hierarchy_prepare(uri, offset).await {
-            Ok(BridgeResponse::CallHierarchyPrepare { items, .. }) if !items.is_empty() => {
-                Ok(Some(items.iter().map(bridge_call_hierarchy_item_to_lsp).collect()))
-            }
-            _ => Ok(None),
-        }
+        let p = params.text_document_position_params;
+        Ok(crate::features::call_hierarchy::prepare(&self.dispatcher, &p.text_document.uri, p.position).await)
     }
 
     async fn incoming_calls(&self, params: CallHierarchyIncomingCallsParams) -> LspResult<Option<Vec<CallHierarchyIncomingCall>>> {
-        let item = &params.item;
-        let uri = &item.uri;
-        let pos = item.selection_range.start;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.call_hierarchy_incoming(uri, offset).await {
-            Ok(BridgeResponse::CallHierarchyIncomingCalls { calls, .. }) => {
-                let result = calls.iter().map(|c| CallHierarchyIncomingCall {
-                    from: bridge_call_hierarchy_item_to_lsp(&c.from),
-                    from_ranges: c.from_ranges.iter().map(|r| Range {
-                        start: Position { line: r.start_line, character: r.start_char },
-                        end: Position { line: r.end_line, character: r.end_char },
-                    }).collect(),
-                }).collect();
-                Ok(Some(result))
-            }
-            _ => Ok(None),
-        }
+        Ok(crate::features::call_hierarchy::incoming(&self.dispatcher, &params.item).await)
     }
 
     async fn outgoing_calls(&self, params: CallHierarchyOutgoingCallsParams) -> LspResult<Option<Vec<CallHierarchyOutgoingCall>>> {
-        let item = &params.item;
-        let uri = &item.uri;
-        let pos = item.selection_range.start;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.call_hierarchy_outgoing(uri, offset).await {
-            Ok(BridgeResponse::CallHierarchyOutgoingCalls { calls, .. }) => {
-                let result = calls.iter().map(|c| CallHierarchyOutgoingCall {
-                    to: bridge_call_hierarchy_item_to_lsp(&c.to),
-                    from_ranges: c.from_ranges.iter().map(|r| Range {
-                        start: Position { line: r.start_line, character: r.start_char },
-                        end: Position { line: r.end_line, character: r.end_char },
-                    }).collect(),
-                }).collect();
-                Ok(Some(result))
-            }
-            _ => Ok(None),
-        }
+        Ok(crate::features::call_hierarchy::outgoing(&self.dispatcher, &params.item).await)
     }
 
     // ── Type Hierarchy ────────────────────────────────────────────────────────
 
     async fn prepare_type_hierarchy(&self, params: TypeHierarchyPrepareParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let pos = params.text_document_position_params.position;
-        let offset = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => pos_to_offset(&s.content, pos).unwrap_or(0),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.type_hierarchy_prepare(uri, offset).await {
-            Ok(BridgeResponse::TypeHierarchyPrepare { items, .. }) if !items.is_empty() => {
-                Ok(Some(items.iter().map(bridge_type_hierarchy_item_to_lsp).collect()))
-            }
-            _ => Ok(None),
-        }
+        let p = params.text_document_position_params;
+        Ok(Some(crate::features::type_hierarchy::prepare(&self.dispatcher, &p.text_document.uri, p.position).await))
     }
 
     async fn supertypes(&self, params: TypeHierarchySupertypesParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        let data = match params.item.data.as_ref().and_then(|v| v.as_str()) {
-            Some(s) => s.to_owned(),
-            None => return Ok(None),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.type_hierarchy_supertypes(data).await {
-            Ok(BridgeResponse::TypeHierarchySupertypes { items, .. }) => {
-                Ok(Some(items.iter().map(bridge_type_hierarchy_item_to_lsp).collect()))
-            }
-            _ => Ok(None),
-        }
+        use crate::features::type_hierarchy::{resolve_items, Direction};
+        Ok(Some(resolve_items(&self.dispatcher, &params.item, Direction::Parents).await))
     }
 
     async fn subtypes(&self, params: TypeHierarchySubtypesParams) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        let data = match params.item.data.as_ref().and_then(|v| v.as_str()) {
-            Some(s) => s.to_owned(),
-            None => return Ok(None),
-        };
-        if !self.dispatcher.is_ecj_ready().await { return Ok(None); }
-
-        match self.dispatcher.type_hierarchy_subtypes(data).await {
-            Ok(BridgeResponse::TypeHierarchySubtypes { items, .. }) => {
-                Ok(Some(items.iter().map(bridge_type_hierarchy_item_to_lsp).collect()))
-            }
-            _ => Ok(None),
-        }
+        use crate::features::type_hierarchy::{resolve_items, Direction};
+        Ok(Some(resolve_items(&self.dispatcher, &params.item, Direction::Children).await))
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<Value>> {
@@ -1602,17 +1309,58 @@ impl LanguageServer for JavaLanguageServer {
                 }
                 Ok(None)
             }
+            "jdtls-rust.classFileUri" => {
+                // Test support: `ClassFileUtil.getURI(project, fqn)`.
+                let arg = |i: usize| params.arguments.get(i).and_then(Value::as_str).unwrap_or("").to_owned();
+                let uri = navigation::type_uri(&self.dispatcher, &arg(0), &arg(1)).await;
+                Ok(Some(uri.map(Value::String).unwrap_or(Value::Null)))
+            }
             "java.project.getAll" => {
-                // jdt.ls `ProjectCommand.getAllJavaProjects`: URIs of all
-                // imported Java projects (excluding the default project).
+                // jdt.ls `ProjectCommand.getAllJavaProjects`: `File.toURI()` of
+                // every Java project folder, in workspace (name) order.
                 let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
-                let uris: Vec<Value> = ws
-                    .projects
+                let mut projects: Vec<&crate::project::Project> = ws.projects.iter().collect();
+                projects.sort_by(|a, b| a.name.cmp(&b.name));
+                let uris: Vec<Value> = projects
                     .iter()
-                    .filter_map(|p| Url::from_directory_path(&p.root).ok())
-                    .map(|u| Value::String(u.to_string().trim_end_matches('/').to_owned()))
+                    .map(|p| Value::String(crate::project::java_file_uri(&p.root, true)))
                     .collect();
                 Ok(Some(Value::Array(uris)))
+            }
+            "java.edit.stringFormatting" => {
+                // (content, options map or null, version)
+                let args = &params.arguments;
+                let content = args.first().and_then(Value::as_str).unwrap_or_default();
+                let options = args.get(1).and_then(Value::as_object).map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string())))
+                        .collect()
+                });
+                let version = args.get(2).and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or(v.as_i64().map(|n| n as i32)));
+                let Some(version) = version else {
+                    return Err(tower_lsp::jsonrpc::Error::invalid_params("version must be an int"));
+                };
+                let env = self.format_env().await;
+                Ok(Some(Value::String(formatting::string_formatting(&env, content, options, version).await)))
+            }
+            "java.project.getSettings" => {
+                // (uri, keys): JDT option keys only.
+                let uri = params.arguments.first().and_then(Value::as_str).and_then(|s| Url::parse(s).ok());
+                let keys: Vec<String> = params
+                    .arguments
+                    .get(1)
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default();
+                let Some(uri) = uri else { return Ok(None) };
+                let env = self.format_env().await;
+                Ok(Some(Value::Object(formatting::project_option_settings(&env, &uri, &keys).await)))
+            }
+            "java.navigate.openTypeHierarchy" => {
+                Ok(crate::features::type_hierarchy::open_type_hierarchy(&self.dispatcher, &params.arguments).await)
+            }
+            "java.navigate.resolveTypeHierarchy" => {
+                Ok(crate::features::type_hierarchy::resolve_type_hierarchy(&self.dispatcher, &params.arguments).await)
             }
             other => {
                 warn!("Ignoring unsupported workspace/executeCommand request: {other}");
@@ -1746,7 +1494,8 @@ fn import_settings(settings: Option<&Value>) -> crate::project::ImportSettings {
 
 fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
     let mut restart_ecj = false;
-    config.merge_settings(settings);
+    config.inlay_hints.update_from(settings);
+    config.settings = Some(settings.clone());
 
     let updated_java_home = setting_string(settings, &["javaHome"])
         .or_else(|| setting_string(settings, &["java", "javaHome"]))
@@ -1771,11 +1520,7 @@ fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
         config.classpath = classpath;
     }
 
-    if let Some(formatter_profile) = setting_string(settings, &["formatterProfile"])
-        .or_else(|| setting_string(settings, &["java", "formatterProfile"]))
-    {
-        config.formatter_profile = formatter_profile;
-    }
+    config.format.update_from(settings);
 
     if let Some(max_completions) = setting_usize(settings, &["maxCompletions"])
         .or_else(|| setting_usize(settings, &["java", "maxCompletions"]))
@@ -2010,46 +1755,6 @@ fn is_java_keyword(text: &str) -> bool {
             | "this" | "throw" | "throws" | "transient" | "try" | "void"
             | "volatile" | "while" | "record" | "sealed" | "permits" | "var"
     )
-}
-
-fn simple_on_type_formatting_fallback(content: &str, pos: Position) -> Option<Vec<TextEdit>> {
-    let line_index = pos.line as usize;
-    let lines: Vec<&str> = content.lines().collect();
-    let line = *lines.get(line_index)?;
-    let trimmed = line.trim_start();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut depth = 0usize;
-    for prior_line in &lines[..line_index] {
-        for ch in prior_line.chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-        }
-    }
-    let desired_depth = if trimmed.starts_with('}') {
-        depth.saturating_sub(1)
-    } else {
-        depth
-    };
-    let desired_indent = "    ".repeat(desired_depth);
-    let current_indent_len = line.len() - trimmed.len();
-    let current_indent = &line[..current_indent_len];
-    if current_indent == desired_indent {
-        return None;
-    }
-
-    Some(vec![TextEdit {
-        range: Range {
-            start: Position { line: pos.line, character: 0 },
-            end: Position { line: pos.line, character: utf16_len(line) as u32 },
-        },
-        new_text: format!("{desired_indent}{trimmed}"),
-    }])
 }
 
 /// Convert a UTF-16 column offset (as used in LSP positions) to a UTF-8 byte offset.

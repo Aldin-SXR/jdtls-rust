@@ -25,12 +25,39 @@ public class BridgeProtocol {
         public String newName;
         public String importPrefix; // pre-computed import prefix from Rust (avoids race condition)
         public String source;   // for Format requests
-        public int tabSize;
-        public boolean insertSpaces;
+        public int formatKind;  // CodeFormatter kind | flags (Format)
+        public int length;      // region length (Format), UTF-16 units
+        public int indentationLevel;
+        public String lineSeparator;
         public List<BridgeDiagnostic> diagnostics;
         public String data;    // opaque data passed back for typeHierarchy supertypes/subtypes
-        public int line;       // 0-based line (hoverInfo)
-        public int character;  // 0-based UTF-16 column (hoverInfo)
+        // navData / classFileContents / classFileInfo (NavigationDataService)
+        public String op;
+        public int line, character;
+        public ClassFileService.ClassFileDesc classFile;
+        public Map<String, String> sourceAttachments; // library path -> source attachment path
+        public boolean includeClassFiles;
+        public Boolean includeDecompiled;
+        public boolean includeDeclaration;
+        public Boolean includeAccessors;
+        public String fqn;
+        public String archive;  // extractJarEntry
+        public String entry;    // extractJarEntry
+        public String output;   // extractJarEntry
+        public List<String> libraries;     // navData references: library roots in search order ("jrt" = JDK)
+        public List<String> skipLibraries; // navData references: library roots already searched
+        public List<String> searchKeys;    // navData referencesByKeys: "<includeDeclaration>|<binding key>"
+        public List<String> uris;        // renameOccurrences: units to resolve
+        public List<String> names;       // renameOccurrences: identifiers of interest
+        public String packageName;       // renameOccurrences: package whose references to collect
+        public com.google.gson.JsonObject query; // semanticSearch: SemanticIndexService query
+        public List<String> sourcepath; // source folders on disk (inlayHints binding environment)
+        public boolean formatParameters; // inlayHints: include expression text for format hints
+        // signatureHelpData
+        public int searchOffset = -1;
+        public int contextOffset = -1;
+        public String fallbackName;
+        public boolean description;
     }
 
     public static class BridgeRange {
@@ -79,13 +106,44 @@ public class BridgeProtocol {
         }
     }
 
-    public static class SignatureHelpResponse extends Response {
-        public List<BridgeSignature> signatures;
-        public int activeSignature, activeParameter;
-        public SignatureHelpResponse(long id, List<BridgeSignature> sigs, int as_, int ap) {
-            this.id = id; this.method = "signatureHelp";
-            this.signatures = sigs; this.activeSignature = as_; this.activeParameter = ap;
+    /** Data for signature help (selection and shaping happen in Rust). */
+    public static class SignatureHelpDataResponse extends Response {
+        public List<SigNode> chain = new java.util.ArrayList<>();
+        public SigNode fallback;
+        public SignatureHelpDataResponse(long id) {
+            this.id = id; this.method = "signatureHelpData";
         }
+    }
+
+    /** A method-like AST node and what the completion engine proposes for it. */
+    public static class SigNode {
+        public String kind;
+        public int start, length;
+        public int nameEnd = -1;
+        public List<int[]> arguments;
+        public int optionalExpressionLength;
+        public String methodName;
+        public List<String> parameterTypes;
+        public List<String> parameterTypesFromBinding;
+        public SigCandidate boundMethod;
+        public List<SigCandidate> candidates;
+        public List<SigCandidate> secondaryCandidates;
+        public List<SigCandidate> declaredConstructors;
+        public List<SigCandidate> scopeCandidates;
+    }
+
+    /** One method binding, as a completion proposal would describe it. */
+    public static class SigCandidate {
+        public String name;
+        public boolean constructor;
+        public boolean varargs;
+        public String key;
+        public List<String> parameterTypes;
+        public String returnType;
+        public List<String> parameterNames;
+        public List<String> matchTypes;
+        public List<String> declaredTypes;
+        public String javadoc;
     }
 
     public static class WorkspaceEditResponse extends Response {
@@ -95,11 +153,45 @@ public class BridgeProtocol {
         }
     }
 
+    public static class RenameTargetResponse extends Response {
+        public RenameBindingService.Element select;
+        public RenameBindingService.Element prepare;
+        public String packageName;
+        public RenameTargetResponse(long id, RenameBindingService.TargetResult r) {
+            this.id = id; this.method = "renameTarget";
+            this.select = r.select; this.prepare = r.prepare; this.packageName = r.packageName;
+        }
+    }
+
+    public static class RenameOccurrencesResponse extends Response {
+        public List<RenameBindingService.FileOccurrences> files;
+        public List<RenameBindingService.MethodInfo> methods;
+        public List<List<String>> relations;
+        public RenameOccurrencesResponse(long id, RenameBindingService.OccurrencesResult r) {
+            this.id = id; this.method = "renameOccurrences";
+            this.files = r.files; this.methods = r.methods; this.relations = r.relations;
+        }
+    }
+
     public static class TextEditsResponse extends Response {
         public String uri;
         public List<BridgeTextEdit> edits;
         public TextEditsResponse(long id, String uri, List<BridgeTextEdit> edits) {
             this.id = id; this.method = "textEdits"; this.uri = uri; this.edits = edits;
+        }
+    }
+
+    public static class FormatEditsResponse extends Response {
+        public List<BridgeFormatEdit> edits; // null when the formatter returned null
+        public FormatEditsResponse(long id, List<BridgeFormatEdit> edits) {
+            this.id = id; this.method = "formatEdits"; this.edits = edits;
+        }
+    }
+
+    public static class SemanticSearchResponse extends Response {
+        public Object result;
+        public SemanticSearchResponse(long id, Object result) {
+            this.id = id; this.method = "semanticSearch"; this.result = result;
         }
     }
 
@@ -160,6 +252,12 @@ public class BridgeProtocol {
         public String newText;
     }
 
+    /** A formatter leaf edit: replace {@code length} chars at {@code offset}. */
+    public static class BridgeFormatEdit {
+        public int offset, length;
+        public String text;
+    }
+
     public static class BridgeSignature {
         public String label;
         public String documentation;
@@ -171,17 +269,10 @@ public class BridgeProtocol {
         public String documentation;
     }
 
-    public static class BridgeInlayHint {
-        public int line;
-        public int character;
-        public String label;
-        public int kind; // 1=Type, 2=Parameter
-    }
-
     public static class InlayHintsResponse extends Response {
-        public List<BridgeInlayHint> hints;
-        public InlayHintsResponse(long id, List<BridgeInlayHint> hints) {
-            this.id = id; this.method = "inlayHints"; this.hints = hints;
+        public List<InlayHintService.Node> nodes;
+        public InlayHintsResponse(long id, List<InlayHintService.Node> nodes) {
+            this.id = id; this.method = "inlayHints"; this.nodes = nodes;
         }
     }
 

@@ -45,6 +45,9 @@ pub struct LspClient {
     next_id: u64,
     /// Notifications received while waiting for something else.
     pub notifications: Vec<Value>,
+    /// Canned results for server→client requests, by method
+    /// (e.g. `workspace/executeClientCommand`).
+    pub request_results: BTreeMap<String, Value>,
 }
 
 fn read_message(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Value> {
@@ -103,7 +106,7 @@ impl LspClient {
                 }
             }
         });
-        Self { child, stdin, rx, next_id: 1, notifications: Vec::new() }
+        Self { child, stdin, rx, next_id: 1, notifications: Vec::new(), request_results: BTreeMap::new() }
     }
 
     pub fn send(&mut self, msg: &Value) {
@@ -119,7 +122,9 @@ impl LspClient {
     /// Handle a server→client request (respond with `null`/defaults).
     fn answer_server_request(&mut self, msg: &Value) {
         let id = msg["id"].clone();
+        let canned = msg["method"].as_str().and_then(|m| self.request_results.get(m)).cloned();
         let result = match msg["method"].as_str() {
+            _ if canned.is_some() => canned.unwrap(),
             Some("workspace/configuration") => {
                 let n = msg["params"]["items"].as_array().map_or(0, |a| a.len());
                 Value::Array(vec![Value::Null; n])
@@ -202,7 +207,9 @@ impl Workspace {
             roots: Vec::new(),
             client: None,
             settings: json!({ "java": {} }),
-            init_options: json!({}),
+            // `AbstractProjectsManagerBasedTest.initPreferenceManager(true)`:
+            // the client supports class file contents (jdt:// URIs).
+            init_options: json!({ "extendedClientCapabilities": { "classFileContentsSupport": true } }),
             capabilities: default_client_capabilities(),
             versions: BTreeMap::new(),
         }
@@ -362,6 +369,72 @@ impl Workspace {
             .min_by_key(|p| p.components().count())
             .unwrap_or_else(|| panic!("type {fqn} not found in project {project}"));
         Url::from_file_path(found).unwrap().to_string()
+    }
+
+    /// `ClassFileUtil.getURI(project, fqn)`: the URI of a source or binary
+    /// type (`java.util.Map$Entry` for member types), looked up by the server
+    /// like JDT's type-name search (case-insensitive exact match).  Binary
+    /// types get jdt.ls `jdt://contents/<jar>/<package>/<SourceFile>?<handle>`
+    /// URIs.  `project` is a project name (`jdt.ls-java-project` for the
+    /// default project).
+    pub fn class_file_uri(&mut self, project: &str, fqn: &str) -> String {
+        self.try_class_file_uri(project, fqn)
+            .unwrap_or_else(|| panic!("type {fqn} not found in project {project}"))
+    }
+
+    pub fn try_class_file_uri(&mut self, project: &str, fqn: &str) -> Option<String> {
+        if is_oracle() {
+            return self.oracle_type_uri(project, fqn);
+        }
+        let v = self.request(
+            "workspace/executeCommand",
+            json!({ "command": "jdtls-rust.classFileUri", "arguments": [project, fqn] }),
+        );
+        v.as_str().map(str::to_owned)
+    }
+
+    /// Real jdt.ls has no `jdtls-rust.classFileUri`; find the type through
+    /// `workspace/symbol` (which reports binary types with jdt:// URIs).
+    fn oracle_type_uri(&mut self, project: &str, fqn: &str) -> Option<String> {
+        let dotted = fqn.replace('$', ".");
+        let (container, simple) = dotted.rsplit_once('.').unwrap_or(("", dotted.as_str()));
+        let result = self.request("workspace/symbol", json!({ "query": simple }));
+        let symbols = result.as_array().cloned().unwrap_or_default();
+        let matches = |s: &Value, exact: bool| {
+            let name = s["name"].as_str().unwrap_or("");
+            let cont = s["containerName"].as_str().unwrap_or("");
+            if exact { name == simple && cont == container } else { name.eq_ignore_ascii_case(simple) && cont.eq_ignore_ascii_case(container) }
+        };
+        let root = self
+            .roots
+            .iter()
+            .flat_map(|r| std::iter::once(r.clone()).chain(walk_dirs(r)))
+            .find(|d| project_name_of(d).as_deref() == Some(project))
+            .map(|d| Url::from_file_path(d).unwrap().to_string() + "/");
+        let in_project = |s: &Value| {
+            let uri = s["location"]["uri"].as_str().unwrap_or("");
+            if uri.starts_with("jdt:") {
+                uri.contains(&format!("={project}/"))
+            } else {
+                root.as_ref().is_some_and(|r| uri.starts_with(r.as_str()))
+            }
+        };
+        for exact in [true, false] {
+            if let Some(s) = symbols.iter().find(|s| matches(s, exact) && in_project(s)).or_else(|| symbols.iter().find(|s| matches(s, exact))) {
+                return s["location"]["uri"].as_str().map(str::to_owned);
+            }
+        }
+        None
+    }
+
+    /// `workspace/didChangeConfiguration` with `settings` (also kept as the
+    /// initial settings when the server hasn't started yet).
+    pub fn update_settings(&mut self, settings: Value) {
+        self.settings = settings.clone();
+        if self.client.is_some() {
+            self.client().notify("workspace/didChangeConfiguration", json!({ "settings": settings }));
+            self.wait_idle();
+        }
     }
 
     /// Root directory of the project named `name` (Eclipse `.project` name,
