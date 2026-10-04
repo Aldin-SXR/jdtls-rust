@@ -391,7 +391,7 @@ impl super::LazyChange for IgnoreProblems {
 /// replace; they are no longer forwarded.
 pub fn is_superseded_legacy_action(title: &str) -> bool {
     const SUPERSEDED: &[&str] = &["Organize Imports", "Add serialVersionUID field", "Remove unnecessary cast", "Remove redundant superinterface"];
-    SUPERSEDED.contains(&title) || title.starts_with("Generate Getter") || title.starts_with("Generate Setter")
+    SUPERSEDED.contains(&title) || title.starts_with("Generate Getter") || title.starts_with("Generate Setter") || title.starts_with("Generate Constructor") || title == "Generate constructor from fields"
 }
 
 /// `CodeActionResolveHandler.resolve`.

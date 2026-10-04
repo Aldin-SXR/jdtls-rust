@@ -803,9 +803,6 @@ public class Main {
         // Generate hashCode() and equals().
         actions.addAll(makeHashCodeEqualsActions(req.uri, source, cu, req.range));
 
-        // Generate constructors from fields.
-        actions.addAll(makeGenerateConstructorsActions(req.uri, source, cu, req.range));
-
         // Sort members (fields → constructors → methods → inner types).
         BridgeAction sortMembers = makeSortMembersAction(req.uri, source, cu, req.range);
         if (sortMembers != null) actions.add(sortMembers);
@@ -2751,70 +2748,6 @@ public class Main {
             case "int","long","short","byte","char","float","double","boolean" -> true;
             default -> false;
         };
-    }
-
-    // ── Generate constructors ────────────────────────────────────────────────
-
-    private static List<BridgeAction> makeGenerateConstructorsActions(String uri, String source,
-            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
-        org.eclipse.jdt.core.dom.TypeDeclaration td = findEnclosingClass(cu, range);
-        if (td == null) return List.of();
-
-        String className = td.getName().getIdentifier();
-        String indent    = indentOf(source, cu.getLineNumber(td.getStartPosition()) - 1) + "    ";
-        int insertOff    = classClosingBrace(td, source);
-        int[] insLC      = CompilationService.offsetToLineCol(source, insertOff);
-
-        List<org.eclipse.jdt.core.dom.FieldDeclaration> fields = instanceFields(td);
-
-        // Build field list: [typeName, fieldName]
-        List<String[]> fieldInfo = new ArrayList<>();
-        for (org.eclipse.jdt.core.dom.FieldDeclaration fd : fields) {
-            String typeName = fd.getType().toString();
-            for (Object frag : fd.fragments()) {
-                if (frag instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf) {
-                    fieldInfo.add(new String[]{typeName, vdf.getName().getIdentifier()});
-                }
-            }
-        }
-
-        // Check if an all-fields constructor already exists.
-        for (org.eclipse.jdt.core.dom.MethodDeclaration md : td.getMethods()) {
-            if (md.isConstructor() && md.getName().getIdentifier().equals(className)
-                    && md.parameters().size() == fieldInfo.size()) return List.of();
-        }
-
-        // Build the constructor text.
-        StringBuilder sb = new StringBuilder();
-        sb.append("\n").append(indent).append("public ").append(className).append("(");
-        for (int i = 0; i < fieldInfo.size(); i++) {
-            if (i > 0) sb.append(", ");
-            sb.append(fieldInfo.get(i)[0]).append(" ").append(fieldInfo.get(i)[1]);
-        }
-        sb.append(") {\n");
-        for (String[] f : fieldInfo) {
-            sb.append(indent).append("    this.").append(f[1]).append(" = ").append(f[1]).append(";\n");
-        }
-        sb.append(indent).append("}\n");
-
-        BridgeTextEdit edit = new BridgeTextEdit();
-        edit.startLine = insLC[0]; edit.startChar = insLC[1];
-        edit.endLine   = insLC[0]; edit.endChar   = insLC[1];
-        edit.newText   = sb.toString();
-
-        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
-
-        BridgeAction quickassist = new BridgeAction();
-        quickassist.title = "Generate constructor from fields";
-        quickassist.kind  = "quickassist";
-        quickassist.edits = List.of(fe);
-
-        BridgeAction sourceAction = new BridgeAction();
-        sourceAction.title = "Generate Constructors";
-        sourceAction.kind  = "source.generate.constructors";
-        sourceAction.edits = List.of(fe);
-
-        return List.of(quickassist, sourceAction);
     }
 
     // ── Sort members ─────────────────────────────────────────────────────────

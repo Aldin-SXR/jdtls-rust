@@ -1,8 +1,8 @@
 //! GenerateAccessorsHandler / GenerateGetterSetterOperation, with Java-model
 //! discovery and ASTRewrite edit computation in Rust.
 pub(crate) mod actions;
-mod naming;
-mod templates;
+pub(crate) mod naming;
+pub(crate) mod templates;
 
 use super::java_model::{self, flags, FieldDecl, Member, TypeDecl, TypeKind};
 use crate::analysis::dispatcher::Dispatcher;
@@ -388,7 +388,11 @@ pub(crate) async fn create_change(
     Ok(CuChange::rewrite(rw))
 }
 
-fn insert_before(ast: &Ast, selected: &Selection, cursor: Option<Range>) -> Option<NodeId> {
+pub(crate) fn insert_before(
+    ast: &Ast,
+    selected: &Selection,
+    cursor: Option<Range>,
+) -> Option<NodeId> {
     let cursor = cursor?;
     let location = super::preferences::get_string("java.codeGeneration.insertionLocation")
         .unwrap_or_else(|| "afterCursor".into());

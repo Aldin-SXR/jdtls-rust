@@ -8,9 +8,9 @@ use std::path::Path;
 pub(crate) struct Profile {
     pub use_is: bool,
     use_this: bool,
-    use_markdown: bool,
+    pub(crate) use_markdown: bool,
     templates: BTreeMap<String, String>,
-    project_name: String,
+    pub(crate) project_name: String,
 }
 impl Profile {
     pub(super) fn load(root: Option<&Path>) -> Self {
@@ -53,7 +53,7 @@ impl Profile {
                 .into(),
         }
     }
-    fn template<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
+    pub(crate) fn template<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
         self.templates
             .get(&format!("org.eclipse.jdt.ui.text.codetemplates.{key}"))
             .map(String::as_str)
@@ -188,9 +188,15 @@ pub(super) fn stub(
 
 /// TemplateTranslator's dollar escapes, named variables and resolver aliases.
 /// Expansion scans the original pattern once; variable values are literal text.
-fn expand_template<'a>(
+pub(crate) fn expand_template<'a>(
     template: &str,
     resolve: impl Fn(&str) -> Option<&'a str>,
+) -> anyhow::Result<String> {
+    expand_named_template(template, |_, resolver| resolve(resolver))
+}
+pub(crate) fn expand_named_template<'a>(
+    template: &str,
+    mut resolve: impl FnMut(&str, &str) -> Option<&'a str>,
 ) -> anyhow::Result<String> {
     let normalized = template.replace("\r\n", "\n").replace('\r', "\n");
     let mut rest = normalized.as_str();
@@ -212,7 +218,7 @@ fn expand_template<'a>(
             if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                 anyhow::bail!("Invalid template variable");
             }
-            out.push_str(resolve(resolver).unwrap_or(name));
+            out.push_str(resolve(name, resolver).unwrap_or(name));
             rest = &tail[end + 1..];
         } else {
             anyhow::bail!("Unescaped dollar in template");

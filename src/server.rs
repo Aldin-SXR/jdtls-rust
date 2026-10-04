@@ -415,6 +415,25 @@ impl JavaLanguageServer {
         let _ = self.compile_tx.send(next);
     }
 
+    pub async fn check_constructors_status(
+        &self,
+        params: CodeActionParams,
+    ) -> LspResult<crate::features::constructors::CheckConstructorsResponse> {
+        Ok(crate::features::constructors::check(&self.dispatcher, params).await)
+    }
+    pub async fn generate_constructors(
+        &self,
+        params: crate::features::constructors::GenerateConstructorsParams,
+    ) -> LspResult<Option<WorkspaceEdit>> {
+        let format = self.format_env().await;
+        let env = crate::correction::edit::Env {
+            dispatcher: &self.dispatcher,
+            format: &format,
+            lifecycle: &self.lifecycle,
+        };
+        Ok(crate::features::constructors::generate(&env, params).await)
+    }
+
     pub async fn resolve_unimplemented_accessors(
         &self,
         params: crate::features::accessors::AccessorParams,

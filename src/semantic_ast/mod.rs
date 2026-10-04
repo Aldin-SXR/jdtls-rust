@@ -238,6 +238,8 @@ pub struct Binding {
     pub declared_methods: Option<Vec<BindingId>>,
     pub declared_fields: Option<Vec<BindingId>>,
     pub declared_types: Option<Vec<BindingId>>,
+    /// Constructor members of a selected type and its superclass, including binaries.
+    pub constructors: Option<Vec<BindingId>>,
     /// Variable: type; method: unused.
     pub var_type: Option<BindingId>,
     pub variable_id: i32,
@@ -247,6 +249,7 @@ pub struct Binding {
     pub method_declaration: Option<BindingId>,
     pub parameter_types: Vec<BindingId>,
     pub exception_types: Vec<BindingId>,
+    pub parameter_names: Vec<String>,
 }
 
 /// `IProblem` of the AST (`CompilationUnit.getProblems()`).
@@ -372,6 +375,7 @@ impl Ast {
                 declared_methods: bl(&o.dmeth),
                 declared_fields: bl(&o.dfld),
                 declared_types: bl(&o.dtyp),
+                constructors: bl(&o.ctors),
                 var_type: b(o.typ),
                 variable_id: o.vid,
                 constant_value: s(o.cv),
@@ -380,6 +384,9 @@ impl Ast {
                 method_declaration: b(o.md),
                 parameter_types: bl(&o.pt).unwrap_or_default(),
                 exception_types: bl(&o.et).unwrap_or_default(),
+                parameter_names: o.pn.as_ref()
+                    .map(|v| v.iter().filter_map(|&i| s(i)).collect())
+                    .unwrap_or_default(),
             })
             .collect();
         let problems = data
@@ -949,6 +956,10 @@ impl<'a> BindingRef<'a> {
     }
     pub fn declared_methods(&self) -> Option<Vec<BindingRef<'a>>> {
         self.data().declared_methods.as_ref().map(|v| self.many(v))
+    }
+    pub fn constructors(&self) -> Vec<BindingRef<'a>> {
+        self.data().constructors.as_ref()
+            .map(|v| self.many(v)).unwrap_or_default()
     }
     pub fn declared_fields(&self) -> Option<Vec<BindingRef<'a>>> {
         self.data().declared_fields.as_ref().map(|v| self.many(v))

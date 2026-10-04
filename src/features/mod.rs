@@ -2,6 +2,7 @@
 //! bindings are needed.  `server.rs` only delegates here.
 
 pub mod accessors;
+pub mod constructors;
 pub mod call_hierarchy;
 pub mod client_caps;
 pub mod code_lens;

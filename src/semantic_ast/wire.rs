@@ -49,6 +49,7 @@ pub struct BindingOut {
     pub dmeth: Option<Vec<i32>>,
     pub dfld: Option<Vec<i32>>,
     pub dtyp: Option<Vec<i32>>,
+    pub ctors: Option<Vec<i32>>,
     #[serde(rename = "type")]
     pub typ: i32,
     pub vid: i32,
@@ -58,6 +59,7 @@ pub struct BindingOut {
     pub md: i32,
     pub pt: Option<Vec<i32>>,
     pub et: Option<Vec<i32>>,
+    pub pn: Option<Vec<i32>>,
 }
 
 #[derive(Debug, Default, Deserialize)]

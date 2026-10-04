@@ -51,6 +51,14 @@ async fn main() {
             "java/generateAccessors",
             JavaLanguageServer::generate_accessors,
         )
+        .custom_method(
+            "java/checkConstructorsStatus",
+            JavaLanguageServer::check_constructors_status,
+        )
+        .custom_method(
+            "java/generateConstructors",
+            JavaLanguageServer::generate_constructors,
+        )
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
         .custom_method("java/buildWorkspace", JavaLanguageServer::build_workspace)
         .custom_method("java/buildProjects", JavaLanguageServer::build_projects)

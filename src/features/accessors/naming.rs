@@ -141,8 +141,43 @@ pub(super) fn setter(f: &FieldDecl, options: &Options, use_is: bool) -> String {
         format!("set{}", accessor(&base_name))
     }
 }
-pub(super) fn argument(f: &FieldDecl, options: &Options) -> String {
-    let base = base(f, options, true);
+pub(crate) fn argument(f: &FieldDecl, options: &Options) -> String {
+    suggest_argument(&base(f, options, true), options)
+}
+pub(crate) fn method_argument(name: &str, options: &Options, excluded: &[String]) -> String {
+    let base = trim_affixes(
+        name,
+        &list(options, "argumentPrefixes"),
+        &list(options, "argumentSuffixes"),
+    );
+    // StubUtility keeps an existing parameter name when it already uses the
+    // configured affixes, rather than normalizing it a second time.
+    if base != name {
+        return name.into();
+    }
+    argument_excluding(&first_case(&base, false), options, excluded)
+}
+pub(crate) fn constructor_argument(
+    f: &FieldDecl,
+    options: &Options,
+    excluded: &[String],
+) -> String {
+    argument_excluding(&base(f, options, true), options, excluded)
+}
+fn argument_excluding(base: &str, options: &Options, excluded: &[String]) -> String {
+    let name = suggest_argument(base, options);
+    let suffixes = list(options, "argumentSuffixes");
+    let suffix = suffixes.first().copied().unwrap_or("");
+    let mut candidate = name.clone();
+    let mut number = 2;
+    while excluded.iter().any(|n| n.eq_ignore_ascii_case(&candidate)) {
+        let stem = name.strip_suffix(suffix).unwrap_or(&name);
+        candidate = format!("{stem}{number}{suffix}");
+        number += 1;
+    }
+    candidate
+}
+fn suggest_argument(base: &str, options: &Options) -> String {
     // InternalNamingConventions.computeNonBaseTypeNames: find the first
     // camel-case/underscore word, lowercase it and preserve the remaining words.
     let chars: Vec<char> = base.chars().collect();

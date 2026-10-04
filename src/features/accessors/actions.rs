@@ -202,7 +202,10 @@ impl LazyChange for AccessorsChange {
         ])
     }
 }
-fn fully_covered<'a>(req: &'a Request<'_>) -> Vec<Node<'a>> {
+pub(crate) fn fully_covered<'a>(req: &'a Request<'_>) -> Vec<Node<'a>> {
+    fully_covered_context(&req.context)
+}
+pub(crate) fn fully_covered_context(context: &crate::correction::Context) -> Vec<Node<'_>> {
     fn visit<'a>(node: Node<'a>, start: usize, end: usize, out: &mut Vec<Node<'a>>) {
         if node.end() < start || end < node.start() {
             return;
@@ -221,17 +224,17 @@ fn fully_covered<'a>(req: &'a Request<'_>) -> Vec<Node<'a>> {
         }
     }
     let mut out = Vec::new();
-    if let Some(covering) = req.context.covering_node() {
+    if let Some(covering) = context.covering_node() {
         visit(
             covering,
-            req.context.selection_offset,
-            req.context.selection_offset + req.context.selection_length,
+            context.selection_offset,
+            context.selection_offset + context.selection_length,
             &mut out,
         );
     }
     out
 }
-fn infer_type(mut node: Node<'_>) -> bool {
+pub(crate) fn infer_type(mut node: Node<'_>) -> bool {
     loop {
         if node.is(NodeKind::TypeDeclaration) {
             return true;
@@ -245,7 +248,7 @@ fn infer_type(mut node: Node<'_>) -> bool {
         node = parent;
     }
 }
-fn field_names(node: Node<'_>) -> Vec<String> {
+pub(crate) fn field_names(node: Node<'_>) -> Vec<String> {
     match node.kind() {
         NodeKind::SimpleName
             if node

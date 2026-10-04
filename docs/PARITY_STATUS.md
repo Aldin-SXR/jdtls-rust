@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 688 | 33.0% |
-| Passing | 641 | 30.7% |
+| Ported | 701 | 33.6% |
+| Passing | 654 | 31.3% |
 | Ported but `#[ignore]`d | 47 | 2.3% |
-| Not ported yet | 1,399 | 67.0% |
+| Not ported yet | 1,386 | 66.4% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 940 passed,
-0 failed and 48 ignored across 60 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 977 passed,
+0 failed and 48 ignored across 63 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -30,7 +30,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 940 passed,
 `tests/project_download_regressions.rs`, 2 tests;
 `tests/paste_regressions.rs`, 9 tests;
 `tests/smart_detection_regressions.rs`, 13 tests;
-`tests/accessor_regressions.rs`, 18 tests) and unit
+`tests/accessor_regressions.rs`, 18 tests;
+`tests/constructor_regressions.rs`, 24 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -39,7 +40,7 @@ those duplicate runs are excluded from the upstream-port counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 509 | 490 | 56% |
+| handlers | 871 | 522 | 503 | 58% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 132 | 104 | 49% |
@@ -73,6 +74,8 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/FormatterHandlerTest | `handlers_formatter_handler_test` | 34 | 34 | 0 | 34/34 |
 | handlers/GenerateAccessorsActionTest | `handlers_generate_accessors_action_test` | 11 | 11 | 0 | 11/11 |
 | handlers/GenerateAccessorsHandlerTest | `handlers_generate_accessors_handler_test` | 7 | 7 | 0 | 7/7 |
+| handlers/GenerateConstructorsActionTest | `handlers_generate_constructors_action_test` | 7 | 7 | 0 | 7/7 |
+| handlers/GenerateConstructorsHandlerTest | `handlers_generate_constructors_handler_test` | 6 | 6 | 0 | 6/6 |
 | handlers/HoverHandlerTest | `handlers_hover_handler_test` | 36 | 34 | 2 | pass (the 2 ignored also fail on jdt.ls) |
 | handlers/ImplementationsHandlerTest | `handlers_implementations_handler_test` | 13 | 12 | 1 | pass |
 | handlers/InitHandlerTest | `handlers_init_handler_test`, plus unit tests in `server.rs` and `preferences.rs` | 14 | 14 | 0 | 12/12 LSP cases; 2 unit cases |
@@ -326,6 +329,10 @@ assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matche
   global template preference fallback and occurrence-qualified local/anonymous
   `${enclosing_type}` names still need parity work. Project templates and ordinary
   named nested types are covered.
+* **Constructor generation dependencies:** inherited and external-package scope
+  conflicts, inherited nullness annotations and annotated array dimensions still
+  need the complete ScopeAnalyzer/StubUtility2Core dependency ports. Constructor
+  comments share the template resolver/global preference limitations above.
 * **Lombok** is not supported in any feature.
 
 ## Saved work branches
@@ -341,7 +348,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 | Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
 | Remaining project managers | 79 | 4% |
 | Refactoring | 119 | 6% |
-| Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 259 | 12% |
+| Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 246 | 12% |
 | Core utilities, preferences, commands and the rest | 243 | 12% |
 
 ## Updating this file
@@ -349,7 +356,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
@@ -358,7 +365,8 @@ JavaDoc2Markdown 19, JavaDoc2PlainText 2, JavaDocImageExtraction 1, InitHandler 
 Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
 `correction_regressions.rs`, `completion_regressions.rs` and
 `project_download_regressions.rs`, `paste_regressions.rs` and
-`smart_detection_regressions.rs`, `accessor_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
+`smart_detection_regressions.rs`, `accessor_regressions.rs`,
+`constructor_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.
 
@@ -457,3 +465,47 @@ seventeen file-backed regressions pass with `JDTLS_ORACLE=1 --test-threads=2`;
 the virtual-document case is excluded. The existing getter/setter LSP regression
 retains both original assertions and adds an exact named quick-assist assertion.
 Full feature parity remains incomplete.
+
+## Constructor integration evidence
+
+All six `GenerateConstructorsHandlerTest` methods and seven
+`GenerateConstructorsActionTest` methods preserve the upstream sources,
+selections, capabilities, signatures, field assertions and complete expected
+compilation units. All thirteen pass on Rust and JDT LS 1.58.0. Handler fixtures
+use the original Java 21 fake JDK and AbstractSourceTestCase's formatter settings.
+The handler's null-cursor generation overload is exercised through the public
+request with a zero-length selection at EOF, preserving its append behavior.
+
+* Rust owns `java/checkConstructorsStatus`, `java/generateConstructors`, visible
+  superclass filtering, field discovery, constructor AST generation, import and
+  text edits, source actions and quick assists. The approximate Java all-fields
+  constructor action generator is removed. The bridge exports constructor
+  bindings and declaration parameter names; Rust builds each operation.
+* Discovery preserves source order, initialized-final/static exclusions, selected
+  fragments and package/protected/private visibility. Generation supports
+  superclass type substitution, constructor type parameters and bounds, throws,
+  varargs, field order, argument affixes and collision suffixes, nested/local
+  types, enum visibility and cursor insertion. Client capabilities determine
+  prompt, command fallback, eager edit or deferred resolution behavior; edits
+  retain `WorkspaceEdit.changes`.
+* `constructor_regressions`: twenty-four Rust passes and twenty-three
+  oracle-compatible passes, including precise binding DTOs, import conflicts,
+  UTF-16/CRLF and buffer overrides, templates and repeated comment tags,
+  deprecation tags, Markdown compliance and empty/unknown signature requests.
+  The additional Rust-only case covers untitled, in-memory and nonexistent
+  file documents.
+* Reference quirks are retained: existing constructors do not suppress discovery;
+  private-only superclasses fall back to Object; no-argument delegation omits
+  superclass generic/throws metadata; record components are omitted from the
+  field list and the 1.58.0 manipulation library emits an ordinary constructor
+  declaration for records. Later JDT's compact-constructor behavior is not the
+  reference behavior (confirmed against the oracle's bytecode).
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 63 targets (977 passing, 48 ignored). The thirteen upstream ports and
+twenty-three file-backed regressions pass with `JDTLS_ORACLE=1 --test-threads=2`;
+the virtual-document case is excluded. Logs are in
+`target/parity-evidence/constructors-full-suite-final.log` and
+`target/parity-evidence/constructors-oracle-final.log` (gitignored).
+Full feature parity remains incomplete; constructor dependency gaps are listed
+above instead of being counted as upstream tests passed.

@@ -52,12 +52,12 @@ final class SemanticAstService {
         public int qn = -1, bn = -1, pkg = -1;
         public int er = -1, td = -1, dc = -1, dm = -1, sc = -1, el = -1, cmp = -1, bound = -1, gt = -1;
         public int dim;
-        public int[] it, ta, tp, tbs, dmeth, dfld, dtyp;
+        public int[] it, ta, tp, tbs, dmeth, dfld, dtyp, ctors;
         // variable
         public int type = -1, vid = -1, cv = -1, vd = -1;
         // method
         public int rt = -1, md = -1;
-        public int[] pt, et;
+        public int[] pt, et, pn;
     }
 
     static final class ProblemOut {
@@ -168,6 +168,18 @@ final class SemanticAstService {
             for (ASTNode node : order) {
                 nodes.add(node(node, node != cu && node.getParent() == null));
             }
+            // Export constructor member data only for types declared in this unit
+            // and their direct superclass/root. Rust applies visibility and builds
+            // the operations; this avoids expanding every library member graph.
+            for (ASTNode node : order) {
+                ITypeBinding type = node instanceof AbstractTypeDeclaration d ? d.resolveBinding()
+                        : node instanceof AnonymousClassDeclaration d ? d.resolveBinding() : null;
+                if (type != null) {
+                    constructorMembers(type);
+                    if (type.getSuperclass() != null) constructorMembers(type.getSuperclass());
+                }
+            }
+            constructorMembers(cu.getAST().resolveWellKnownType("java.lang.Object"));
             List<Integer> comments = new ArrayList<>();
             for (Object o : cu.getCommentList()) {
                 Integer idx = nodeIndex.get(o);
@@ -419,6 +431,16 @@ final class SemanticAstService {
                     b.ta = bindings(mb.getTypeArguments());
                     IMethodBinding decl = mb.getMethodDeclaration();
                     b.md = decl == mb ? idx : binding(decl);
+                    // Substituted bindings can expose arg0/arg1 even when the
+                    // declaration's Java element has the original source names.
+                    try {
+                        String[] names = decl.getJavaElement() instanceof org.eclipse.jdt.core.IMethod method
+                                ? method.getParameterNames() : decl.getParameterNames();
+                        b.pn = new int[names == null ? 0 : names.length];
+                        for (int i = 0; i < b.pn.length; i++) b.pn[i] = str(names[i]);
+                    } catch (org.eclipse.jdt.core.JavaModelException | RuntimeException e) {
+                        // Absence of parameter names must not truncate binding data.
+                    }
                 } else if (binding instanceof IPackageBinding p) {
                     b.f = f;
                     b.qn = str(p.getName());
@@ -429,6 +451,18 @@ final class SemanticAstService {
                 // keep what we have
             }
             return idx;
+        }
+
+        private void constructorMembers(ITypeBinding type) {
+            if (type == null) return;
+            int id = binding(type);
+            BindingOut out = bindings.get(id);
+            if (out.ctors != null) return;
+            List<IMethodBinding> constructors = new ArrayList<>();
+            for (IMethodBinding method : type.getDeclaredMethods()) {
+                if (method.isConstructor()) constructors.add(method);
+            }
+            out.ctors = bindings(constructors.toArray(new IMethodBinding[0]));
         }
 
         private static long typeFlags(ITypeBinding t) {
