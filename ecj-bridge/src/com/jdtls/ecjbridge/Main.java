@@ -76,33 +76,38 @@ public class Main {
     private static void runSocketServer(String socketPathStr) throws Exception {
         java.net.UnixDomainSocketAddress addr =
             java.net.UnixDomainSocketAddress.of(socketPathStr);
+        java.nio.file.Path socketPath = java.nio.file.Path.of(socketPathStr);
+        java.nio.channels.ServerSocketChannel server;
 
-        // If another live bridge is already listening, exit immediately so the
-        // spawning Rust process connects to that one instead.
-        try (java.nio.channels.SocketChannel probe =
-                java.nio.channels.SocketChannel.open(addr)) {
-            LOG.info("Another ecj-bridge already running at " + socketPathStr + " — exiting.");
-            return;
-        } catch (IOException ignored) {
-            // No live bridge — clean up any stale socket file and bind.
-            java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(socketPathStr));
+        // Probe + stale-socket cleanup + bind under an exclusive file lock, so
+        // two bridges racing for the same socket can't both end up listening
+        // (the loser would delete the winner's socket file and orphan it).
+        try (java.nio.channels.FileChannel lockChannel = java.nio.channels.FileChannel.open(
+                java.nio.file.Path.of(socketPathStr + ".lock"),
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+             java.nio.channels.FileLock ignoredLock = lockChannel.lock()) {
+            // If another live bridge is already listening, exit so the
+            // spawning Rust process connects to that one instead.
+            try (java.nio.channels.SocketChannel probe = java.nio.channels.SocketChannel.open(addr)) {
+                LOG.info("Another ecj-bridge already running at " + socketPathStr + " — exiting.");
+                return;
+            } catch (IOException ignored) {
+                java.nio.file.Files.deleteIfExists(socketPath);
+            }
+            server = java.nio.channels.ServerSocketChannel.open(java.net.StandardProtocolFamily.UNIX);
+            server.bind(addr);
         }
 
-        try (java.nio.channels.ServerSocketChannel server =
-                java.nio.channels.ServerSocketChannel.open(
-                    java.net.StandardProtocolFamily.UNIX)) {
+        // Remove the socket file on exit so next launch starts fresh.
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                java.nio.file.Files.deleteIfExists(socketPath);
+            } catch (Exception ignored) {}
+        }));
+        startIdleWatchdog();
 
-            server.bind(addr);
-
-            // Remove the socket file on exit so next launch starts fresh.
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                try {
-                    java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(socketPathStr));
-                } catch (Exception ignored) {}
-            }));
-
-            LOG.info("ecj-bridge socket server listening at " + socketPathStr);
-
+        LOG.info("ecj-bridge socket server listening at " + socketPathStr);
+        try (server) {
             int clientId = 0;
             while (true) {
                 java.nio.channels.SocketChannel channel = server.accept();
@@ -111,14 +116,49 @@ public class Main {
                 t.setDaemon(true);
                 t.start();
             }
-        } catch (java.net.BindException e) {
-            // Lost the bind race to another process — let it serve.
-            LOG.info("Socket bind failed (another process won) — exiting: " + e.getMessage());
         }
+    }
+
+    private static final java.util.concurrent.atomic.AtomicInteger ACTIVE_CLIENTS =
+        new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicLong LAST_ACTIVITY =
+        new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
+
+    /**
+     * Exit once no client has been connected for `JDTLS_BRIDGE_IDLE_SECS`
+     * seconds (default 600; 0 disables), so daemons from old builds or
+     * finished sessions don't accumulate.
+     */
+    private static void startIdleWatchdog() {
+        long idleSecs = 600;
+        try {
+            String env = System.getenv("JDTLS_BRIDGE_IDLE_SECS");
+            if (env != null && !env.isBlank()) idleSecs = Long.parseLong(env.trim());
+        } catch (NumberFormatException ignored) {}
+        if (idleSecs <= 0) return;
+        final long idleMillis = idleSecs * 1000;
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(Math.min(idleMillis, 30_000));
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (ACTIVE_CLIENTS.get() == 0
+                        && System.currentTimeMillis() - LAST_ACTIVITY.get() >= idleMillis) {
+                    LOG.info("ecj-bridge idle for " + idleMillis / 1000 + "s with no clients — exiting.");
+                    System.exit(0);
+                }
+            }
+        }, "ecj-idle-watchdog");
+        t.setDaemon(true);
+        t.start();
     }
 
     /** Handle one client connection on its own thread. */
     private static void handleClient(java.nio.channels.SocketChannel channel, int id) {
+        ACTIVE_CLIENTS.incrementAndGet();
+        LAST_ACTIVITY.set(System.currentTimeMillis());
         LOG.info("ecj-bridge client " + id + " connected");
         try (channel) {
             BufferedReader reader = new BufferedReader(new InputStreamReader(
@@ -130,6 +170,8 @@ public class Main {
             LOG.log(Level.WARNING, "ecj-bridge client " + id + " error", e);
         }
         LOG.info("ecj-bridge client " + id + " disconnected");
+        LAST_ACTIVITY.set(System.currentTimeMillis());
+        ACTIVE_CLIENTS.decrementAndGet();
     }
 
     /** Core request/response loop shared by both stdio and socket modes. */
