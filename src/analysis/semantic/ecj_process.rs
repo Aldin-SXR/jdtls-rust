@@ -146,6 +146,7 @@ impl EcjProcess {
             | BridgeRequest::ClassFileContents { id, .. }
             | BridgeRequest::ClassFileInfo { id, .. }
             | BridgeRequest::AstBindings { id, .. }
+            | BridgeRequest::SemanticSearch { id, .. }
             | BridgeRequest::Shutdown { id } => *id,
         };
 

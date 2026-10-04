@@ -287,6 +287,17 @@ pub enum BridgeRequest {
         source_level: String,
         fqn: String,
     },
+    /// Binding-resolved semantic index query (`SemanticIndexService`);
+    /// the query shapes live in `features::semantic`.
+    SemanticSearch {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        query: serde_json::Value,
+    },
     Shutdown { id: u64 },
 }
 
@@ -423,6 +434,11 @@ pub enum BridgeResponse {
         class_file: Option<crate::classfile::ClassFileDesc>,
         source_uri: Option<String>,
     },
+    SemanticSearch {
+        id: u64,
+        #[serde(default)]
+        result: serde_json::Value,
+    },
     AstBindings {
         id: u64,
         strings: Vec<String>,
@@ -461,6 +477,7 @@ impl BridgeResponse {
             | BridgeResponse::NavData { id, .. }
             | BridgeResponse::ClassFileContents { id, .. }
             | BridgeResponse::ClassFileInfo { id, .. }
+            | BridgeResponse::SemanticSearch { id, .. }
             | BridgeResponse::AstBindings { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
