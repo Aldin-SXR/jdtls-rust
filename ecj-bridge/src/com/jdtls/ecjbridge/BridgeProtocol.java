@@ -29,6 +29,8 @@ public class BridgeProtocol {
         public boolean insertSpaces;
         public List<BridgeDiagnostic> diagnostics;
         public String data;    // opaque data passed back for typeHierarchy supertypes/subtypes
+        public int line;       // 0-based line (hoverInfo)
+        public int character;  // 0-based UTF-16 column (hoverInfo)
     }
 
     public static class BridgeRange {

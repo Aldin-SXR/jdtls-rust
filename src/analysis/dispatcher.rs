@@ -214,6 +214,26 @@ impl Dispatcher {
         }).await
     }
 
+    /// Element data for hover at a UTF-16 position (see `features::hover`).
+    /// `standalone` is the disk content of a file the store does not know
+    /// (jdt.ls resolves such files into the default project).
+    pub async fn hover_info(&self, uri: &Url, line: u32, character: u32, standalone: Option<String>) -> Result<BridgeResponse> {
+        let RequestContext { mut files, classpath, source_level, options } = self.context_for(Some(uri)).await;
+        if let Some(content) = standalone {
+            files.insert(uri.to_string(), content);
+        }
+        self.send(BridgeRequest::HoverInfo {
+            id: next_id(),
+            files,
+            classpath,
+            source_level,
+            options,
+            uri: uri.to_string(),
+            line,
+            character,
+        }).await
+    }
+
     pub async fn navigate(&self, uri: &Url, offset: usize, kind: NavKind) -> Result<BridgeResponse> {
         let RequestContext { files, classpath, source_level, options } = self.context_for(Some(uri)).await;
         self.send(BridgeRequest::Navigate {

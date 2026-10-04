@@ -190,6 +190,13 @@ public class Main {
                     req.files, orDefault(req.sourceLevel), orEmpty(req.classpath), req.uri, req.offset);
                 yield new HoverResponse(req.id, hover);
             }
+            case "hoverInfo" -> {
+                java.util.Map<String, Object> info = new java.util.LinkedHashMap<>();
+                info.put("id", req.id);
+                info.put("method", "hoverInfo");
+                info.putAll(HoverService.hoverInfo(req, req.line, req.character));
+                yield info;
+            }
             case "navigate" -> {
                 List<BridgeLocation> locs = navigation.navigate(
                     req.files, orDefault(req.sourceLevel), req.uri, req.offset, req.kind);

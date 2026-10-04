@@ -42,6 +42,19 @@ pub enum BridgeRequest {
         uri: String,
         offset: usize,
     },
+    /// Element data for hover (`HoverService.hoverInfo`).
+    HoverInfo {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        uri: String,
+        /// 0-based line / UTF-16 column (Java string indexing).
+        line: u32,
+        character: u32,
+    },
     Navigate {
         id: u64,
         files: HashMap<String, String>,
@@ -227,6 +240,13 @@ pub enum BridgeResponse {
         id: u64,
         contents: String,
     },
+    HoverInfo {
+        id: u64,
+        /// `ok`, `none` (no element), `unresolved` (unresolved type), `noUnit`.
+        status: String,
+        #[serde(default)]
+        element: Option<serde_json::Value>,
+    },
     Locations {
         id: u64,
         locations: Vec<BridgeLocation>,
@@ -297,6 +317,7 @@ impl BridgeResponse {
             BridgeResponse::Diagnostics { id, .. }
             | BridgeResponse::Completions { id, .. }
             | BridgeResponse::Hover { id, .. }
+            | BridgeResponse::HoverInfo { id, .. }
             | BridgeResponse::Locations { id, .. }
             | BridgeResponse::CodeActions { id, .. }
             | BridgeResponse::SignatureHelp { id, .. }

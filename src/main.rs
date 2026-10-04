@@ -2,7 +2,9 @@ mod analysis;
 mod config;
 mod document_store;
 mod embedded_jar;
+mod features;
 mod handlers;
+mod javadoc;
 mod project;
 mod server;
 

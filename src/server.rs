@@ -247,9 +247,12 @@ impl LanguageServer for JavaLanguageServer {
             if let Some(settings) = cfg.settings.clone() {
                 merge_config_settings(&mut cfg, &settings);
             }
+            cfg.completion_documentation_markdown = completion_markdown(&params.capabilities);
             *self.config.write().await = cfg;
         } else {
-            *self.config.write().await = Config::default().with_defaults();
+            let mut cfg = Config::default().with_defaults();
+            cfg.completion_documentation_markdown = completion_markdown(&params.capabilities);
+            *self.config.write().await = cfg;
         }
 
         // Import workspace projects (Gradle → Maven → Eclipse → invisible).
@@ -785,6 +788,10 @@ impl LanguageServer for JavaLanguageServer {
     // ── Hover ─────────────────────────────────────────────────────────────────
 
     async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {
+        let cfg = self.config.read().await.clone();
+        if let Some(result) = crate::features::hover::handle(&self.dispatcher, &cfg, &params).await {
+            return Ok(result);
+        }
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
 
@@ -1739,6 +1746,7 @@ fn import_settings(settings: Option<&Value>) -> crate::project::ImportSettings {
 
 fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
     let mut restart_ecj = false;
+    config.merge_settings(settings);
 
     let updated_java_home = setting_string(settings, &["javaHome"])
         .or_else(|| setting_string(settings, &["java", "javaHome"]))
@@ -1777,6 +1785,15 @@ fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
 
     *config = config.clone().with_defaults();
     restart_ecj
+}
+
+fn completion_markdown(caps: &ClientCapabilities) -> bool {
+    caps.text_document
+        .as_ref()
+        .and_then(|t| t.completion.as_ref())
+        .and_then(|c| c.completion_item.as_ref())
+        .and_then(|i| i.documentation_format.as_ref())
+        .is_some_and(|f| f.contains(&MarkupKind::Markdown))
 }
 
 fn setting_value<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {

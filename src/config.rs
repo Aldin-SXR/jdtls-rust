@@ -28,6 +28,53 @@ pub struct Config {
 
     /// jdt.ls-style `settings` object (`{ "java": { ... } }`).
     pub settings: Option<serde_json::Value>,
+
+    /// `initializationOptions.extendedClientCapabilities`.
+    pub extended_client_capabilities: Option<serde_json::Value>,
+
+    /// Client supports Markdown completion documentation
+    /// (`ClientPreferences.isSupportsCompletionDocumentationMarkdown`).
+    #[serde(skip)]
+    pub completion_documentation_markdown: bool,
+}
+
+impl Config {
+    /// A jdt.ls setting by dotted path, e.g. `java.hover.javadoc.enabled`.
+    pub fn setting(&self, path: &str) -> Option<&serde_json::Value> {
+        let settings = self.settings.as_ref()?;
+        if let Some(v) = settings.get(path) {
+            return Some(v);
+        }
+        path.split('.').try_fold(settings, |v, k| v.get(k))
+    }
+
+    /// Deep-merges a `workspace/didChangeConfiguration` settings object.
+    pub fn merge_settings(&mut self, settings: &serde_json::Value) {
+        fn merge(target: &mut serde_json::Value, src: &serde_json::Value) {
+            match (target, src) {
+                (serde_json::Value::Object(t), serde_json::Value::Object(s)) => {
+                    for (k, v) in s {
+                        merge(t.entry(k.clone()).or_insert(serde_json::Value::Null), v);
+                    }
+                }
+                (t, s) => *t = s.clone(),
+            }
+        }
+        if !settings.is_object() {
+            return;
+        }
+        let target = self.settings.get_or_insert_with(|| serde_json::json!({}));
+        merge(target, settings);
+    }
+
+    /// `extendedClientCapabilities.<name>` is `true`.
+    pub fn extended_capability(&self, name: &str) -> bool {
+        self.extended_client_capabilities
+            .as_ref()
+            .and_then(|c| c.get(name))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
 }
 
 impl Config {
