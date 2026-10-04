@@ -5,6 +5,7 @@ mod document_store;
 mod embedded_jar;
 mod features;
 mod handlers;
+mod ordering;
 mod index;
 mod javadoc;
 mod lenient_uri;
@@ -29,6 +30,10 @@ async fn main() {
     let (service, socket) = LspService::build(JavaLanguageServer::new)
         .custom_method("java/classFileContents", JavaLanguageServer::class_file_contents)
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
+        .custom_method("java/buildWorkspace", JavaLanguageServer::build_workspace)
+        .custom_method("java/buildProjects", JavaLanguageServer::build_projects)
         .finish();
-    Server::new(stdin, stdout, socket).serve(lenient_uri::LenientUri::new(service)).await;
+    Server::new(stdin, stdout, socket)
+        .serve(ordering::Ordered::new(lenient_uri::LenientUri::new(features::init::InitializeResultRewrite::new(service))))
+        .await;
 }

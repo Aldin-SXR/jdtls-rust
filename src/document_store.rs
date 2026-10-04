@@ -81,6 +81,23 @@ impl DocumentStore {
         self.workspace.remove(uri);
     }
 
+    /// A saved file or directory was deleted. Forget the disk-backed units
+    /// below it, preserving working copies until the client closes them.
+    pub fn remove_workspace_path(&self, uri: &Url) {
+        let path = uri.to_file_path().ok();
+        let removed: Vec<Url> = self.workspace.iter().map(|e| e.key().clone()).filter(|candidate| {
+            candidate == uri || path.as_ref().is_some_and(|root| {
+                candidate.to_file_path().is_ok_and(|p| p.starts_with(root))
+            })
+        }).collect();
+        for candidate in removed {
+            self.workspace.remove(&candidate);
+            if self.files.get(&candidate).is_some_and(|s| !s.open) {
+                self.files.remove(&candidate);
+            }
+        }
+    }
+
     pub fn rename(&self, old_uri: &Url, new_uri: Url) {
         let was_workspace = self.workspace.remove(old_uri).is_some();
         if let Some((_, mut state)) = self.files.remove(old_uri) {
@@ -135,7 +152,8 @@ impl DocumentStore {
         let Some(path) = uri.to_file_path().ok() else { return false };
         let Ok(text) = std::fs::read_to_string(&path) else { return false };
         let tree = self.parser.lock().ok().and_then(|mut p| p.parse_fresh(&text)).map(Arc::new);
-        self.files.insert(uri.clone(), FileState {
+        // Never replace a document opened meanwhile (loads race with didOpen).
+        self.files.entry(uri.clone()).or_insert(FileState {
             uri: uri.clone(),
             content: Rope::from_str(&text),
             version: 0,
@@ -214,6 +232,31 @@ impl DocumentStore {
             .filter(|e| e.language_id == "java")
             .map(|e| (e.uri.to_string(), e.content.to_string()))
             .collect()
+    }
+
+    /// Contents of every workspace file as saved on disk: open buffers are
+    /// ignored (what a build of the saved files sees).
+    pub fn disk_contents(&self) -> std::collections::HashMap<String, String> {
+        self.ensure_workspace_loaded();
+        let mut out = std::collections::HashMap::new();
+        for e in self.workspace.iter() {
+            let uri = e.key();
+            let text = match self.files.get(uri) {
+                Some(f) if !f.open => Some(f.content.to_string()),
+                _ => uri.to_file_path().ok().and_then(|p| std::fs::read_to_string(p).ok()),
+            };
+            if let Some(t) = text {
+                out.insert(uri.to_string(), t);
+            }
+        }
+        out
+    }
+
+    /// URIs of the documents the client has open.
+    pub fn open_uris(&self) -> Vec<Url> {
+        let mut out: Vec<Url> = self.files.iter().filter(|e| e.open).map(|e| e.key().clone()).collect();
+        out.sort();
+        out
     }
 
     /// Snapshot of documents.  Includes workspace files loaded from disk.

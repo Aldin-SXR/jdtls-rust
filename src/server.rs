@@ -131,6 +131,12 @@ pub struct JavaLanguageServer {
     roots: Arc<RwLock<Vec<std::path::PathBuf>>>,
     /// Client capabilities relevant to rename (resource operations).
     rename_client: Arc<RwLock<crate::features::rename::RenameClient>>,
+    /// Document life cycle and workspace diagnostics (jdt.ls clients).
+    lifecycle: Arc<crate::features::lifecycle::Lifecycle>,
+    /// `ClientPreferences` over the raw `initialize` params.
+    client_prefs: Arc<std::sync::RwLock<crate::features::init::ClientPrefs>>,
+    /// `ServiceStatus.ServiceReady` was sent.
+    service_ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -153,8 +159,12 @@ impl JavaLanguageServer {
         let dispatcher = Arc::new(Dispatcher::new(Arc::clone(&store), Arc::clone(&config)));
 
         let (compile_tx, _) = watch::channel(0u64);
+        let lifecycle = crate::features::lifecycle::Lifecycle::new(client.clone(), Arc::clone(&store), Arc::clone(&dispatcher));
 
         Self {
+            lifecycle,
+            client_prefs: Arc::new(std::sync::RwLock::new(Default::default())),
+            service_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             client,
             store,
             dispatcher,
@@ -198,6 +208,24 @@ impl JavaLanguageServer {
         });
     }
 
+    /// `java/buildWorkspace` (`BuildWorkspaceHandler.buildWorkspace`): the
+    /// `BuildWorkspaceStatus` ordinal.  The parameter is `forceRebuild`,
+    /// possibly wrapped in an array.
+    pub async fn build_workspace(&self, _force_rebuild: Value) -> LspResult<Value> {
+        let errors = self.lifecycle.build(None).await;
+        Ok(json!(crate::features::lifecycle::build_status(errors)))
+    }
+
+    /// `java/buildProjects` (`BuildWorkspaceHandler.buildProjects`).
+    pub async fn build_projects(&self, params: Value) -> LspResult<Value> {
+        let uris: Vec<String> = params
+            .get("identifiers")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|i| i.get("uri").and_then(Value::as_str).map(str::to_owned)).collect())
+            .unwrap_or_default();
+        Ok(json!(self.lifecycle.build_projects(&uris).await))
+    }
+
     /// `java/classFileContents` (jdt.ls extension).
     pub async fn class_file_contents(&self, params: Value) -> LspResult<String> {
         let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
@@ -238,6 +266,51 @@ impl JavaLanguageServer {
         let _ = self.compile_tx.send(next);
     }
 
+    /// The `lms-monaco` client keeps the original diagnostics pipeline:
+    /// every document compiled with full diagnostics, republished after
+    /// each change.
+    async fn legacy_diagnostics(&self) -> bool {
+        *self.client_flavor.read().await == ClientFlavor::LmsMonaco
+    }
+
+    fn client_prefs(&self) -> crate::features::init::ClientPrefs {
+        self.client_prefs.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Send `client/registerCapability` / `client/unregisterCapability`.
+    async fn send_registrations(client: &Client, changes: Vec<crate::features::init::RegistrationChange>) {
+        use crate::features::init::RegistrationChange;
+        for change in changes {
+            match change {
+                RegistrationChange::Register(r) => {
+                    if let Err(e) = client.register_capability(vec![r]).await {
+                        warn!("registerCapability failed: {e}");
+                    }
+                }
+                RegistrationChange::Unregister { id, method } => {
+                    if let Err(e) = client.unregister_capability(vec![Unregistration { id, method }]).await {
+                        warn!("unregisterCapability failed: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// `registerWatchers` for the current workspace.
+    async fn register_watchers(&self) {
+        let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let roots = self.config.read().await.root_paths.clone();
+        let watchers = crate::features::init::watchers(&ws, &roots);
+        let changes = crate::features::init::watcher_registration(&self.client_prefs(), watchers);
+        Self::send_registrations(&self.client, changes).await;
+    }
+
+    async fn send_status(client: &Client, typ: &str, message: &str) {
+        client
+            .send_notification::<LanguageStatus>(LanguageStatusParams { typ: typ.into(), message: message.into() })
+            .await;
+    }
+
     /// Compile all open files and publish diagnostics to the client immediately.
     /// Used on demand (e.g. after a workspace-wide action); the background loop
     /// in `spawn_compile_loop` handles the normal debounced case.
@@ -264,6 +337,9 @@ impl JavaLanguageServer {
 impl LanguageServer for JavaLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
         *self.client_flavor.write().await = detect_client_flavor(params.client_info.as_ref());
+        *self.client_prefs.write().unwrap_or_else(|e| e.into_inner()) =
+            crate::features::init::ClientPrefs::from_params(&serde_json::to_value(&params).unwrap_or_default());
+        let legacy = self.legacy_diagnostics().await;
         crate::features::client_caps::set(&params.capabilities);
         crate::features::preferences::init(&params);
         *self.workspace_folders.write().await = params.workspace_folders.clone().unwrap_or_default();
@@ -331,6 +407,8 @@ impl LanguageServer for JavaLanguageServer {
                 error!("Failed to start ecj-bridge: {e}");
                 client.show_message(MessageType::ERROR,
                     format!("jdtls-rust: failed to start ecj-bridge: {e}")).await;
+            } else if !legacy {
+                info!("ecj-bridge started");
             } else {
                 info!("ecj-bridge started");
                 // Initial build of the imported workspace, then report readiness
@@ -348,7 +426,11 @@ impl LanguageServer for JavaLanguageServer {
                 let _ = compile_tx.send(next);
             }
         });
-        self.spawn_compile_loop();
+        if legacy {
+            self.spawn_compile_loop();
+        } else {
+            self.lifecycle.start();
+        }
 
         let token_legend = crate::features::semantic_tokens::legend();
 
@@ -468,6 +550,35 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn initialized(&self, _: InitializedParams) {
         info!("Client initialized");
+        if self.legacy_diagnostics().await {
+            return;
+        }
+        // `InitHandler.triggerInitialization` + `JDTLanguageServer.initialized`.
+        let client = self.client.clone();
+        let dispatcher = Arc::clone(&self.dispatcher);
+        let lifecycle = Arc::clone(&self.lifecycle);
+        let prefs = self.client_prefs();
+        let ready = Arc::clone(&self.service_ready);
+        let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let roots = self.config.read().await.root_paths.clone();
+        tokio::spawn(async move {
+            Self::send_status(&client, "Starting", "Init...").await;
+            Self::send_status(&client, "Starting", "0% Starting Java Language Server").await;
+            Self::send_status(&client, "ProjectStatus", "OK").await;
+            Self::send_status(&client, "Starting", "100% Starting Java Language Server").await;
+            Self::send_status(&client, "Started", "Ready").await;
+            while !dispatcher.is_ecj_ready().await {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            let mut changes = crate::features::init::initial_registrations(&prefs);
+            changes.extend(crate::features::init::sync_capabilities_to_settings(&prefs, false));
+            Self::send_registrations(&client, changes).await;
+            Self::send_status(&client, "ServiceReady", "ServiceReady").await;
+            ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            lifecycle.build(None).await;
+            let watchers = crate::features::init::watchers(&ws, &roots);
+            Self::send_registrations(&client, crate::features::init::watcher_registration(&prefs, watchers)).await;
+        });
     }
 
     async fn shutdown(&self) -> LspResult<()> {
@@ -489,6 +600,11 @@ impl LanguageServer for JavaLanguageServer {
                 &mut parser,
             );
         }
+        if !self.legacy_diagnostics().await {
+            let roots = self.config.read().await.root_paths.clone();
+            self.lifecycle.did_open(&doc.uri, &roots).await;
+            return;
+        }
         let next = (*self.compile_tx.borrow()).wrapping_add(1);
         let _ = self.compile_tx.send(next);
     }
@@ -500,12 +616,20 @@ impl LanguageServer for JavaLanguageServer {
             let mut parser = self.parser.lock().await;
             self.store.apply_changes(&uri, version, params.content_changes, &mut parser);
         }
+        if !self.legacy_diagnostics().await {
+            self.lifecycle.did_change(&uri);
+            return;
+        }
         let next = (*self.compile_tx.borrow()).wrapping_add(1);
         let _ = self.compile_tx.send(next);
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
+        if !self.legacy_diagnostics().await {
+            self.lifecycle.did_close(&uri).await;
+            return;
+        }
         self.store.close(&uri);
         if self.store.is_workspace_file(&uri) {
             // Reverts to the on-disk content; diagnostics follow the build.
@@ -516,7 +640,12 @@ impl LanguageServer for JavaLanguageServer {
         }
     }
 
-    async fn did_save(&self, _params: DidSaveTextDocumentParams) {
+    async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        if !self.legacy_diagnostics().await {
+            let apply_edit = self.client_prefs().is_workspace_apply_edit_supported();
+            self.lifecycle.did_save(&params.text_document.uri, apply_edit).await;
+            return;
+        }
         // Publish diagnostics immediately on save rather than waiting for the
         // debounce loop — gives the user instant feedback after an explicit save.
         if self.dispatcher.is_ecj_ready().await {
@@ -530,6 +659,11 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         navigation::update_settings(&params.settings);
+        crate::features::preferences::update(&params.settings);
+        if self.service_ready.load(std::sync::atomic::Ordering::SeqCst) {
+            let changes = crate::features::init::sync_capabilities_to_settings(&self.client_prefs(), false);
+            Self::send_registrations(&self.client, changes).await;
+        }
         let (restart_ecj, refresh_inlay_hints) = {
             let mut config = self.config.write().await;
             let old_inlay_hints = config.inlay_hints.clone();
@@ -549,6 +683,9 @@ impl LanguageServer for JavaLanguageServer {
             }
         }
 
+        if !self.legacy_diagnostics().await {
+            return;
+        }
         let next = (*self.compile_tx.borrow()).wrapping_add(1);
         let _ = self.compile_tx.send(next);
     }
@@ -577,15 +714,41 @@ impl LanguageServer for JavaLanguageServer {
             }
         }
         self.reimport_workspace().await;
+        if !self.legacy_diagnostics().await {
+            self.lifecycle.build(None).await;
+            self.register_watchers().await;
+            return;
+        }
         self.request_compile();
     }
 
-    async fn did_create_files(&self, _params: CreateFilesParams) {
-        let next = (*self.compile_tx.borrow()).wrapping_add(1);
-        let _ = self.compile_tx.send(next);
+    async fn did_create_files(&self, params: CreateFilesParams) {
+        let mut uris = Vec::new();
+        for file in params.files {
+            let Ok(uri) = Url::parse(&file.uri) else { continue };
+            if crate::features::lifecycle::is_java_like(&uri) && self.dispatcher.owns_source_path(&uri) {
+                self.store.add_workspace_file(uri.clone());
+            }
+            uris.push(uri);
+        }
+        if self.legacy_diagnostics().await {
+            self.request_compile();
+        } else {
+            self.lifecycle.files_changed(&uris).await;
+        }
+    }
+
+    async fn will_rename_files(&self, params: RenameFilesParams) -> LspResult<Option<WorkspaceEdit>> {
+        let files = params.files.into_iter().map(|f| (f.old_uri, f.new_uri)).collect::<Vec<_>>();
+        let edit = crate::features::file_events::will_rename_files(&self.dispatcher, &self.store, &files).await;
+        edit.map(serde_json::from_value).transpose().map_err(|e| {
+            warn!("Invalid file refactoring edit: {e}");
+            tower_lsp::jsonrpc::Error::internal_error()
+        })
     }
 
     async fn did_rename_files(&self, params: RenameFilesParams) {
+        let mut uris = Vec::new();
         for rename in params.files {
             let Ok(old_uri) = Url::parse(&rename.old_uri) else {
                 continue;
@@ -594,28 +757,46 @@ impl LanguageServer for JavaLanguageServer {
                 continue;
             };
             self.store.rename(&old_uri, new_uri.clone());
+            uris.extend([old_uri.clone(), new_uri]);
             self.client.publish_diagnostics(old_uri, vec![], None).await;
         }
 
-        let next = (*self.compile_tx.borrow()).wrapping_add(1);
-        let _ = self.compile_tx.send(next);
+        if self.legacy_diagnostics().await {
+            self.request_compile();
+        } else {
+            self.lifecycle.files_changed(&uris).await;
+        }
     }
 
     async fn did_delete_files(&self, params: DeleteFilesParams) {
+        let legacy = self.legacy_diagnostics().await;
+        let mut uris = Vec::new();
         for deleted in params.files {
             let Ok(uri) = Url::parse(&deleted.uri) else {
                 continue;
             };
-            self.store.remove(&uri);
-            self.client.publish_diagnostics(uri, vec![], None).await;
+            if legacy {
+                self.store.remove(&uri);
+                self.client.publish_diagnostics(uri, vec![], None).await;
+            } else {
+                self.store.remove_workspace_path(&uri);
+                uris.push(uri);
+            }
         }
-        self.request_compile();
+        if legacy {
+            self.request_compile();
+        } else {
+            self.lifecycle.files_changed(&uris).await;
+        }
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         let mut should_recompile = false;
         let mut reimport = false;
+        let legacy = self.legacy_diagnostics().await;
+        let mut file_changes: Vec<Url> = Vec::new();
         for change in params.changes {
+            file_changes.push(change.uri.clone());
             let name = change.uri.path().rsplit('/').next().unwrap_or("").to_owned();
             if is_build_descriptor(&name) {
                 reimport = true;
@@ -623,8 +804,12 @@ impl LanguageServer for JavaLanguageServer {
             }
             match change.typ {
                 FileChangeType::DELETED => {
-                    self.store.remove(&change.uri);
-                    self.client.publish_diagnostics(change.uri, vec![], None).await;
+                    if legacy {
+                        self.store.remove(&change.uri);
+                        self.client.publish_diagnostics(change.uri, vec![], None).await;
+                    } else {
+                        self.store.remove_workspace_path(&change.uri);
+                    }
                     should_recompile = true;
                 }
                 FileChangeType::CREATED => {
@@ -644,6 +829,15 @@ impl LanguageServer for JavaLanguageServer {
         if reimport {
             self.reimport_workspace().await;
             should_recompile = true;
+        }
+        if !legacy {
+            if reimport {
+                self.lifecycle.build(None).await;
+                self.register_watchers().await;
+            } else if !file_changes.is_empty() {
+                self.lifecycle.files_changed(&file_changes).await;
+            }
+            return;
         }
         if should_recompile {
             self.request_compile();
@@ -1075,6 +1269,10 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn document_symbol(&self, params: DocumentSymbolParams) -> LspResult<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
+        if !crate::features::lifecycle::is_java_like(uri) {
+            // Not a compilation unit (`JDTUtils.resolveCompilationUnit` is null).
+            return Ok(Some(DocumentSymbolResponse::Nested(Vec::new())));
+        }
         let Some(text) = crate::features::source_text(&self.store, uri) else { return Ok(Some(DocumentSymbolResponse::Nested(Vec::new()))) };
         Ok(Some(crate::features::document_symbol::document_symbols(uri, &text)))
     }
@@ -1300,6 +1498,25 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<Value>> {
         match params.command.as_str() {
+            "java.project.refreshDiagnostics" if !self.legacy_diagnostics().await => {
+                // (uri, scope, syntaxOnly), each possibly JSON-encoded.
+                let arg = |i: usize| -> Option<Value> {
+                    let v = params.arguments.get(i)?;
+                    match v {
+                        Value::String(s) => Some(serde_json::from_str(s).unwrap_or_else(|_| v.clone())),
+                        other => Some(other.clone()),
+                    }
+                };
+                let uri = arg(0).and_then(|v| v.as_str().map(str::to_owned));
+                let scope = arg(1).and_then(|v| v.as_str().map(str::to_owned));
+                let syntax_only = arg(2).and_then(|v| v.as_bool()).unwrap_or(false);
+                self.lifecycle.refresh_diagnostics(uri.as_deref(), scope.as_deref(), syntax_only).await;
+                Ok(None)
+            }
+            "jdtls-rust.refreshDiagnostics" | "java.project.rebuild" if !self.legacy_diagnostics().await => {
+                self.lifecycle.build(None).await;
+                Ok(None)
+            }
             "jdtls-rust.refreshDiagnostics" | "java.project.refreshDiagnostics" | "java.project.rebuild" => {
                 if self.dispatcher.is_ecj_ready().await {
                     self.publish_diagnostics_for_all().await;
@@ -1363,8 +1580,13 @@ impl LanguageServer for JavaLanguageServer {
                 Ok(crate::features::type_hierarchy::resolve_type_hierarchy(&self.dispatcher, &params.arguments).await)
             }
             other => {
-                warn!("Ignoring unsupported workspace/executeCommand request: {other}");
-                Ok(None)
+                // `WorkspaceExecuteCommandHandler.executeCommand`.
+                warn!("Unsupported workspace/executeCommand request: {other}");
+                Err(tower_lsp::jsonrpc::Error {
+                    code: tower_lsp::jsonrpc::ErrorCode::MethodNotFound,
+                    message: format!("No delegateCommandHandler for {other}").into(),
+                    data: None,
+                })
             }
         }
     }
@@ -2157,6 +2379,14 @@ pub fn detect_import_prefix(
 mod tests {
     use super::{completion_store_is_fresh, detect_import_prefix, is_after_numeric_literal_dot};
     use tower_lsp::lsp_types::Position;
+
+    /// Port of `InitHandlerTest.testJavaImportExclusions`.
+    #[test]
+    fn test_java_import_exclusions() {
+        let initialization_options = serde_json::json!({ "settings": { "java": { "import": { "exclusions": ["**/test/**"] } } } });
+        let prefs = super::import_settings(initialization_options.get("settings"));
+        assert_eq!("**/test/**", prefs.exclusions[0]);
+    }
 
     // ── Normal (non-stale) cases ──────────────────────────────────────────────
 

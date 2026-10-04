@@ -39,8 +39,24 @@ public class CompilationService {
             Map<String, String> sourceFiles,
             List<String> classpath,
             String sourceLevel) {
+        return compile(sourceFiles, classpath, sourceLevel, null, null);
+    }
+
+    /**
+     * @param roots            units to compile (all {@code sourceFiles} when null);
+     *                         the others are looked up on demand
+     * @param expectedPackages package each unit must declare (dotted), checked
+     *                         like JDT's package fragments
+     */
+    public List<BridgeDiagnostic> compile(
+            Map<String, String> sourceFiles,
+            List<String> classpath,
+            String sourceLevel,
+            List<String> roots,
+            Map<String, String> expectedPackages) {
 
         InMemoryNameEnvironment nameEnv = new InMemoryNameEnvironment(sourceFiles, classpath);
+        nameEnv.setExpectedPackages(expectedPackages);
         List<BridgeDiagnostic> diagnostics = new ArrayList<>();
 
         ICompilerRequestor requestor = result -> {
@@ -118,8 +134,10 @@ public class CompilationService {
         AnnotationProcessingSession aptSession = configureAnnotationProcessing(compiler, classpath, sourceLevel);
 
         ICompilationUnit[] units = sourceFiles.entrySet().stream()
-                .filter(e -> e.getKey().endsWith(".java"))
-                .map(e -> (ICompilationUnit) new InMemoryCompilationUnit(e.getKey(), e.getValue()))
+                .filter(e -> e.getKey().endsWith(".java") || (roots != null && roots.contains(e.getKey())))
+                .filter(e -> roots == null || roots.contains(e.getKey()))
+                .map(e -> (ICompilationUnit) new InMemoryCompilationUnit(e.getKey(), e.getValue(),
+                        expectedPackages == null ? null : expectedPackages.get(e.getKey())))
                 .toArray(ICompilationUnit[]::new);
 
         try {

@@ -90,7 +90,7 @@ final class HoverService {
 
         InMemoryCompilationUnit icu(String uri, String src) {
             String name = unitNames.get(uri);
-            return name == null ? new InMemoryCompilationUnit(uri, src) : new InMemoryCompilationUnit(uri, src, name);
+            return name == null ? new InMemoryCompilationUnit(uri, src) : InMemoryCompilationUnit.withFileName(uri, src, name);
         }
 
         CompilationUnit unit(String uri) {

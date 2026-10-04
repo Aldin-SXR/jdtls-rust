@@ -221,7 +221,7 @@ public class Main {
         return switch (req.method) {
             case "compile" -> {
                 List<BridgeDiagnostic> diags = compiler.compile(
-                    req.files, orEmpty(req.classpath), orDefault(req.sourceLevel));
+                    req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.uris, req.expectedPackages);
                 yield new DiagnosticsResponse(req.id, diags);
             }
             case "complete" -> {

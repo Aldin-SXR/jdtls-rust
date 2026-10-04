@@ -179,8 +179,20 @@ impl Dispatcher {
     /// Context for the named project, or for the default project when `None`
     /// (`everything`: include all documents, used for workspace-wide queries).
     async fn context_for_project(&self, ws: &Workspace, project: Option<&str>, everything: bool) -> RequestContext {
+        let all = self.store.all_contents();
+        self.context_with_files(ws, project, everything, all).await
+    }
+
+    /// [`Self::context_for_project`] over explicit file contents (e.g. the
+    /// saved files a build sees, rather than the open buffers).
+    pub async fn context_with_files(
+        &self,
+        ws: &Workspace,
+        project: Option<&str>,
+        everything: bool,
+        mut all: HashMap<String, String>,
+    ) -> RequestContext {
         let cfg = self.config.read().await.clone();
-        let mut all = self.store.all_contents();
         let Some(project) = project.and_then(|n| ws.project(n)) else {
             if !everything {
                 all.retain(|u, _| Url::parse(u).ok().map_or(true, |u| ws.project_for_uri(&u).is_none()));
@@ -224,6 +236,26 @@ impl Dispatcher {
 
     // ── Public analysis ops ──────────────────────────────────────────────────
 
+    /// Compile `roots` (every file when `None`) of `ctx` and return the
+    /// diagnostics ECJ reports, checking each unit's package against
+    /// `expected_packages`.
+    pub async fn compile_units(
+        &self,
+        ctx: RequestContext,
+        roots: Option<Vec<String>>,
+        expected_packages: HashMap<String, String>,
+    ) -> Result<Vec<BridgeDiagnostic>> {
+        let RequestContext { files, classpath, source_level, options } = ctx;
+        match self
+            .send(BridgeRequest::Compile { id: next_id(), files, classpath, source_level, options, uris: roots, expected_packages })
+            .await?
+        {
+            BridgeResponse::Diagnostics { items, .. } => Ok(items),
+            BridgeResponse::Error { message, .. } => Err(anyhow!(message)),
+            other => Err(anyhow!("unexpected bridge response {other:?}")),
+        }
+    }
+
     /// Compile every project (and the default project) separately and
     /// return the merged diagnostics; each project only reports diagnostics
     /// for its own files.
@@ -249,7 +281,7 @@ impl Dispatcher {
                 .collect();
             let id = next_id();
             last_id = id;
-            match self.send(BridgeRequest::Compile { id, files, classpath, source_level, options }).await? {
+            match self.send(BridgeRequest::Compile { id, files, classpath, source_level, options, uris: None, expected_packages: HashMap::new() }).await? {
                 BridgeResponse::Diagnostics { items: diags, .. } => {
                     items.extend(diags.into_iter().filter(|d| own.contains(&d.uri)));
                 }

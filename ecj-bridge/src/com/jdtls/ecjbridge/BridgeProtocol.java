@@ -47,7 +47,8 @@ public class BridgeProtocol {
         public List<String> libraries;     // navData references: library roots in search order ("jrt" = JDK)
         public List<String> skipLibraries; // navData references: library roots already searched
         public List<String> searchKeys;    // navData referencesByKeys: "<includeDeclaration>|<binding key>"
-        public List<String> uris;        // renameOccurrences: units to resolve
+        public List<String> uris;        // renameOccurrences: units to resolve; compile: units to compile
+        public Map<String, String> expectedPackages; // compile: package each unit must declare
         public List<String> names;       // renameOccurrences: identifiers of interest
         public String packageName;       // renameOccurrences: package whose references to collect
         public com.google.gson.JsonObject query; // semanticSearch: SemanticIndexService query
