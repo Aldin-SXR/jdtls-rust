@@ -227,6 +227,9 @@ public class CodeAssistEnvironment extends SearchableEnvironment {
     @Override
     public void findTypes(char[] prefix, boolean findMembers, int matchRule, int searchFor, boolean resolveDocumentName,
             ISearchRequestor storage, IProgressMonitor monitor) {
+        // jdt.ls (verified against 1.58) never proposes index types by
+        // substring or subword: only prefix and camel case matches.
+        matchRule &= ~(TypeIndex.Matching.R_SUBSTRING_MATCH | TypeIndex.Matching.R_SUBWORD_MATCH);
         int lastDot = CharOperation.lastIndexOf('.', prefix);
         char[] qualification = lastDot < 0 ? null : CharOperation.subarray(prefix, 0, lastDot);
         char[] simpleName = lastDot < 0 ? prefix : CharOperation.subarray(prefix, lastDot + 1, prefix.length);
@@ -234,7 +237,11 @@ public class CodeAssistEnvironment extends SearchableEnvironment {
             simpleName = CharOperation.toLowerCase(simpleName);
         }
         Set<String> seen = new HashSet<>();
-        index.searchTypes(qualification, simpleName, matchRule, findMembers, t -> {
+        // jdt.ls 1.58 never gets member types from this search (verified with
+        // java.util.Map.Entry, a JDK-internal member type and a source member
+        // type of the project): the engine finds them through bindings
+        // (imports, enclosing and qualified types) instead.
+        index.searchTypes(qualification, simpleName, matchRule, false, t -> {
             if (!accepts(searchFor, t.modifiers)) return;
             if (!seen.add(t.qualifiedName())) return;
             storage.acceptType(t.packageName.toCharArray(), t.simpleName.toCharArray(), enclosing(t), t.modifiers, null);
@@ -260,6 +267,9 @@ public class CodeAssistEnvironment extends SearchableEnvironment {
     @Override
     public void findConstructorDeclarations(char[] prefix, int matchRule, boolean resolveDocumentName, ISearchRequestor storage,
             IProgressMonitor monitor) {
+        // jdt.ls (verified against 1.58) never proposes index types by
+        // substring or subword: only prefix and camel case matches.
+        matchRule &= ~(TypeIndex.Matching.R_SUBSTRING_MATCH | TypeIndex.Matching.R_SUBWORD_MATCH);
         int lastDot = CharOperation.lastIndexOf('.', prefix);
         char[] qualification = lastDot < 0 ? null : CharOperation.subarray(prefix, 0, lastDot);
         char[] simpleName = lastDot < 0 ? prefix : CharOperation.subarray(prefix, lastDot + 1, prefix.length);

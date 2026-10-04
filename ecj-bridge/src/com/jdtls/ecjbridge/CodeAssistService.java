@@ -185,7 +185,7 @@ final class CodeAssistService {
         if (source == null) source = "";
         boolean isTest = testUris.contains(uri);
         CodeAssistEnvironment env = CodeAssistEnvironment.create(files, testUris, classpath, sourceLevel, uri, !isTest);
-        Map<String, String> options = BridgeOptions.map(sourceLevel);
+        Map<String, String> options = assistOptions(sourceLevel);
         IJavaProject project = javaProjectProxy(options);
         Requestor requestor = new Requestor(!isTest, typeFilters, visibleElements);
         requestor.setAllowsRequiredProposals(CompletionProposal.FIELD_REF, CompletionProposal.TYPE_REF, true);
@@ -241,7 +241,7 @@ final class CodeAssistService {
         if (source == null) source = "";
         boolean isTest = testUris.contains(uri);
         CodeAssistEnvironment env = CodeAssistEnvironment.create(files, testUris, classpath, sourceLevel, uri, !isTest);
-        Map<String, String> options = BridgeOptions.map(sourceLevel);
+        Map<String, String> options = assistOptions(sourceLevel);
         IJavaProject project = javaProjectProxy(options);
         TemplateScope scope = new TemplateScope();
         List<String[]> locals = new ArrayList<>();
@@ -656,7 +656,12 @@ final class CodeAssistService {
                 }
             }
             if (t.fields != null) {
+                ASTNode completionNode = extended() == null ? null : extended().getCompletionNode();
                 for (FieldDeclaration f : t.fields) {
+                    // The field the completion parser makes of a member-start
+                    // token is not a Java model element: the type encloses it.
+                    if (f == completionNode || (f.type != null && f.type == completionNode)
+                            || f instanceof org.eclipse.jdt.internal.codeassist.complete.CompletionOnFieldType) continue;
                     if (offset >= f.declarationSourceStart && offset <= f.declarationSourceEnd) {
                         c.enclosingKind = f instanceof Initializer ? "initializer" : "field";
                         c.enclosingStatic = f.isStatic();
@@ -987,6 +992,15 @@ final class CodeAssistService {
     }
 
     // ── Java project stand-in ────────────────────────────────────────────────
+
+    /** The bridge options plus the code assist options jdt.ls sets in
+     * {@code PreferenceManager.initializeJavaCoreOptions}. */
+    static Map<String, String> assistOptions(String sourceLevel) {
+        Map<String, String> options = new java.util.HashMap<>(BridgeOptions.map(sourceLevel));
+        options.put(org.eclipse.jdt.core.JavaCore.CODEASSIST_VISIBILITY_CHECK, org.eclipse.jdt.core.JavaCore.ENABLED);
+        options.put(org.eclipse.jdt.core.JavaCore.CODEASSIST_SUBWORD_MATCH, org.eclipse.jdt.core.JavaCore.DISABLED);
+        return options;
+    }
 
     static IJavaProject javaProjectProxy(Map<String, String> options) {
         InvocationHandler h = (proxy, method, args) -> {

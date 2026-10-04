@@ -93,6 +93,8 @@ impl Caps {
 struct T {
     ws: Workspace,
     caps: Caps,
+    /// `project`: the project `getWorkingCopy` paths are relative to.
+    project: &'static str,
 }
 
 fn settings() -> Value {
@@ -111,7 +113,7 @@ fn setup() -> T {
     let mut ws = Workspace::new();
     ws.import_projects(&["eclipse/hello"]);
     ws.settings = settings();
-    T { ws, caps: Caps::lsp3() }
+    T { ws, caps: Caps::lsp3(), project: "hello" }
 }
 
 #[derive(Clone)]
@@ -139,7 +141,7 @@ impl T {
 
     /// `getWorkingCopy(path, source)`: the unit `path` of project `hello` with `source`.
     fn get_working_copy(&mut self, path: &str, source: &str) -> Unit {
-        let root = self.ws.project_root("hello");
+        let root = self.ws.project_root(self.project);
         let uri = url::Url::from_file_path(root.join(path)).unwrap().to_string();
         self.ws.capabilities = self.caps.to_json();
         self.ws.open_with(&uri, source);
@@ -833,4 +835,351 @@ fn test_skip_additional_edit_for_import2() {
     let item = &items(&list)[0];
     let resolved = t.resolve(item);
     assert!(resolved["additionalTextEdits"].is_null(), "{resolved:#}");
+}
+
+fn sorted(mut items: Vec<Value>) -> Vec<Value> {
+    items.sort_by(|a, b| s(&a["sortText"]).cmp(s(&b["sortText"])));
+    items
+}
+
+fn new_text(item: &Value) -> &str {
+    s(&item["textEdit"]["newText"])
+}
+
+/// `importProjects("eclipse/records"); project = getProject("records")`.
+fn use_records(t: &mut T) {
+    t.ws.import_projects(&["eclipse/records"]);
+    t.project = "records";
+}
+
+#[test]
+fn test_snippet_non_lazy_resolve() {
+    let mut t = setup();
+    t.set_preference(&["java", "completion", "lazyResolveTextEdit", "enabled"], json!(false));
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\npublic class Test {\n\tpublic void testMethod() {\n\t\tsysout\t}\n}",
+    );
+    let list = t.request_completions(&unit, "sysout");
+    assert!(!list.is_null());
+    let item = &items(&list)[0];
+    assert_eq!("sysout", s(&item["label"]));
+    assert_eq!("System.out.println(${0});", new_text(item));
+}
+
+// https://github.com/eclipse/eclipse.jdt.ls/issues/1800
+#[test]
+fn test_snippet_ifelse2() {
+    let mut t = setup();
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\npublic class Test {\n\tprivate void test(String s, int i) {\n  if (i > 2) {\n  } else {\n    s.\n    System.out.println(\"b\");\n}\n}",
+    );
+    let list = t.request_completions(&unit, "s.");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty());
+}
+
+// https://github.com/eclipse/eclipse.jdt.ls/issues/1800
+#[test]
+fn test_snippet_if2() {
+    let mut t = setup();
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "public class Test {\n  private boolean flag;\n  private void test(List<String> c) {\n    if (flag) {\n      \n      List<String> scs = c.subList(0, 1);\n    }\n  }\n  String test() {\n    return null;\n  } \n}",
+    );
+    let list = t.request_completions(&unit, "      ");
+    assert!(!list.is_null());
+    assert!(items(&list).len() > 1);
+}
+
+// https://github.com/eclipse/eclipse.jdt.ls/issues/1811
+#[test]
+fn test_snippet_multiline_string() {
+    let mut t = setup();
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\npublic class Test {\n  public void test () {\n    String foo = \"\"\"\n    test1\n    test2\n    test3\n    \"\"\".;\n  }\n}",
+    );
+    let list = t.request_completions(&unit, "\".");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty());
+}
+
+#[test]
+fn test_snippet_ctor() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class MainClass {\n}class AnotherClass {\nctor\n}");
+    let list = t.request_completions(&unit, "ctor");
+    assert!(!list.is_null());
+    let item = &items(&list)[0];
+    assert_eq!("ctor", s(&item["label"]));
+    assert_eq!("${1|public,protected,private|} AnotherClass(${2}) {\n\t${3:super();}${0}\n}", new_text(item));
+}
+
+#[test]
+fn test_snippet_interface() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "");
+    let list = t.request_completions(&unit, "");
+    assert!(!list.is_null());
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[1];
+    assert_eq!("interface", s(&item["label"]));
+    assert_eq!("package org.sample;\n\n/**\n * Test\n */\npublic interface Test {\n\n\t${0}\n}", dos2unix(s(&item["insertText"])));
+    //check resolution doesn't blow up (https://github.com/eclipse/eclipse.jdt.ls/issues/675)
+    assert_eq!(*item, t.resolve(item));
+}
+
+#[test]
+fn test_snippet_interface_with_package() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\n");
+    let list = t.request_completions(&unit, "package org.sample;\n");
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[1];
+    assert_eq!("interface", s(&item["label"]));
+    assert_eq!("/**\n * Test\n */\npublic interface Test {\n\n\t${0}\n}", s(&item["insertText"]));
+}
+
+#[test]
+fn test_snippet_inner_interface() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic interface Test {}\n");
+    let list = t.request_completions(&unit, "package org.sample;\npublic interface Test {}\n");
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[1];
+    assert_eq!("interface", s(&item["label"]));
+    assert_eq!("/**\n * ${1:InnerTest}\n */\npublic interface ${1:InnerTest} {\n\n\t${0}\n}", s(&item["insertText"]));
+}
+
+#[test]
+fn test_snippet_sibling_inner_interface() {
+    let mut t = setup();
+    let src = "package org.sample;\npublic interface Test {}\npublic interface InnerTest{}\n";
+    let unit = t.get_working_copy("src/org/sample/Test.java", src);
+    let list = t.request_completions(&unit, src);
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[1];
+    assert_eq!("interface", s(&item["label"]));
+    assert_eq!("/**\n * ${1:InnerTest_1}\n */\npublic interface ${1:InnerTest_1} {\n\n\t${0}\n}", s(&item["insertText"]));
+}
+
+#[test]
+fn test_snippet_nested_inner_interface() {
+    let mut t = setup();
+    let src = "package org.sample;\npublic interface Test {}\npublic interface InnerTest{\n";
+    let unit = t.get_working_copy("src/org/sample/Test.java", src);
+    let list = t.request_completions(&unit, src);
+    let items = sorted(items(&list).into_iter().filter(|i| i["sortText"].is_string()).collect());
+    assert!(!items.is_empty());
+    let item = &items[15];
+    assert_eq!("interface", s(&item["label"]), "{items:#?}");
+    assert_eq!("/**\n * ${1:InnerTest_1}\n */\npublic interface ${1:InnerTest_1} {\n\n\t${0}\n}", s(&item["insertText"]));
+}
+
+#[test]
+fn test_snippet_nested_inner_interface_nosnippet() {
+    let mut t = setup();
+    t.caps = Caps::lsp2();
+    let src = "package org.sample;\npublic interface Test {}\npublic interface InnerTest{\n";
+    let unit = t.get_working_copy("src/org/sample/Test.java", src);
+    let list = t.request_completions(&unit, src);
+    assert!(!list.is_null());
+    assert!(!items(&list).iter().any(|ci| ci["kind"] == KIND_SNIPPET), "No snippets should be returned");
+}
+
+#[test]
+#[ignore = "JDK-dependent: upstream's stub JRE yields 6 Method* type proposals before the `method` snippet (items[6]); a real JDK yields 50 (the list is identical to jdt.ls 1.58 on the same JDK)"]
+fn test_snippet_interface_method() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic interface Test {\nmethod\n}");
+    let list = t.request_completions(&unit, "method");
+    assert!(!list.is_null());
+    let items = items(&list);
+    let item_one = &items[6];
+    let item_two = &items[7];
+    assert_eq!("method", s(&item_one["label"]), "{items:#?}");
+    assert_eq!("static_method", s(&item_two["label"]));
+    assert_eq!("${1|public,private|} ${2:void} ${3:name}(${4});", new_text(item_one));
+    assert_eq!("${1|public,private|} static ${2:void} ${3:name}(${4}) {\n\t${0}\n}", new_text(item_two));
+}
+
+#[test]
+fn test_snippet_interface_no_ctor() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic interface Test {\nctor\n}");
+    let list = t.request_completions(&unit, "ctor");
+    assert!(!list.is_null());
+    assert!(!items(&list).iter().any(|i| i["label"] == "ctor"), "No ctor snippet should be available");
+}
+
+#[test]
+fn test_snippet_class() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "");
+    let list = t.request_completions(&unit, "");
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[0];
+    assert_eq!("class", s(&item["label"]));
+    assert_eq!("package org.sample;\n\n/**\n * Test\n */\npublic class Test {\n\n\t${0}\n}", dos2unix(s(&item["insertText"])));
+}
+
+#[test]
+fn test_snippet_class_with_package() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\n");
+    let list = t.request_completions(&unit, "package org.sample;\n");
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[0];
+    assert_eq!("class", s(&item["label"]));
+    assert_eq!("/**\n * Test\n */\npublic class Test {\n\n\t${0}\n}", s(&item["insertText"]));
+}
+
+#[test]
+fn test_snippet_inner_class() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class Test {}\n");
+    let list = t.request_completions(&unit, "");
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[0];
+    assert_eq!("class", s(&item["label"]));
+    assert_eq!("/**\n * ${1:InnerTest}\n */\npublic class ${1:InnerTest} {\n\n\t${0}\n}", s(&item["insertText"]));
+}
+
+#[test]
+fn test_snippet_inner_class_item_defaults_enabled_type_definition() {
+    let mut t = setup();
+    t.caps = Caps::mock(true, true, true);
+    t.caps.insert_text_mode_default = Some(1);
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class Test {}\n");
+    let list = t.request_completions(&unit, "");
+    assert!(!list.is_null());
+    assert_eq!(FORMAT_SNIPPET, list["itemDefaults"]["insertTextFormat"], "{list:#}");
+    assert_eq!(MODE_ADJUST_INDENTATION, list["itemDefaults"]["insertTextMode"]);
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[0];
+    assert_eq!("class", s(&item["label"]));
+    assert_eq!("/**\n * ${1:InnerTest}\n */\npublic class ${1:InnerTest} {\n\n\t${0}\n}", s(&item["textEditText"]));
+    //check that the fields covered by itemDefaults are set to null
+    assert!(item["textEdit"].is_null());
+    assert!(item["insertTextFormat"].is_null());
+    assert!(item["insertTextMode"].is_null());
+}
+
+#[test]
+fn test_snippet_sibling_inner_class() {
+    let mut t = setup();
+    let src = "package org.sample;\npublic class Test {}\npublic class InnerTest{}\n";
+    let unit = t.get_working_copy("src/org/sample/Test.java", src);
+    let list = t.request_completions(&unit, src);
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[0];
+    assert_eq!("class", s(&item["label"]));
+    assert_eq!("/**\n * ${1:InnerTest_1}\n */\npublic class ${1:InnerTest_1} {\n\n\t${0}\n}", s(&item["insertText"]));
+}
+
+#[test]
+fn test_snippet_sibling_inner_class_nosnippets() {
+    let mut t = setup();
+    t.caps = Caps::lsp2();
+    let src = "package org.sample;\npublic class Test {}\npublic class InnerTest{}\n";
+    let unit = t.get_working_copy("src/org/sample/Test.java", src);
+    let list = t.request_completions(&unit, src);
+    assert!(!list.is_null());
+    assert!(!items(&list).iter().any(|ci| ci["kind"] == KIND_SNIPPET), "No snippets should be returned");
+}
+
+#[test]
+fn test_snippet_nested_inner_class() {
+    let mut t = setup();
+    let src = "package org.sample;\npublic class Test {}\npublic class InnerTest{\n";
+    let unit = t.get_working_copy("src/org/sample/Test.java", src);
+    let list = t.request_completions(&unit, src);
+    let items = sorted(items(&list).into_iter().filter(|i| i["sortText"].is_string()).collect());
+    assert!(!items.is_empty());
+    let item = &items[14];
+    assert_eq!("class", s(&item["label"]), "{items:#?}");
+    assert!(item["insertText"].is_string());
+    assert_eq!("/**\n * ${1:InnerTest_1}\n */\npublic class ${1:InnerTest_1} {\n\n\t${0}\n}", s(&item["insertText"]));
+}
+
+#[test]
+fn test_snippet_class_no_static_method() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class Test {\nstatic_method\n}");
+    let list = t.request_completions(&unit, "static_method");
+    assert!(!list.is_null());
+    assert!(!items(&list).iter().any(|i| i["label"] == "static_method"), "No static_method snippet should be available");
+}
+
+#[test]
+fn test_snippet_no_record() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "");
+    let list = t.request_completions(&unit, "");
+    assert!(!list.is_null());
+    //Not a Java 14 project => no snippet
+    assert!(!items(&list).iter().any(|i| i["label"] == "record"), "No record snippet should be available");
+}
+
+#[test]
+fn test_snippet_record() {
+    let mut t = setup();
+    use_records(&mut t);
+    let unit = t.get_working_copy("src/main/java/org/sample/Test.java", "");
+    let list = t.request_completions(&unit, "");
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[2];
+    assert_eq!("record", s(&item["label"]), "{items:#?}");
+    assert_eq!("package org.sample;\n\n/**\n * Test\n */\npublic record Test(${0}) {\n}", dos2unix(s(&item["insertText"])));
+    //check resolution doesn't blow up (https://github.com/eclipse/eclipse.jdt.ls/issues/675)
+    assert_eq!(*item, t.resolve(item));
+}
+
+#[test]
+fn test_snippet_record_with_package() {
+    let mut t = setup();
+    use_records(&mut t);
+    let unit = t.get_working_copy("src/main/java/org/sample/Test.java", "package org.sample;\n");
+    let list = t.request_completions(&unit, "package org.sample;\n");
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[2];
+    assert_eq!("record", s(&item["label"]));
+    assert_eq!("/**\n * Test\n */\npublic record Test(${0}) {\n}", s(&item["insertText"]));
+}
+
+#[test]
+#[ignore = "@Disabled upstream: cu.getAllTypes() returns an empty array in SnippetCompletionProposal.getSnippetContent(), so the inner record name is not computed"]
+fn test_snippet_inner_record() {}
+
+#[test]
+#[ignore = "@Disabled upstream: cu.getAllTypes() returns an empty array in SnippetCompletionProposal.getSnippetContent(), so the inner record name is not computed"]
+fn test_snippet_sibling_inner_record() {}
+
+#[test]
+#[ignore = "@Disabled upstream: cu.getAllTypes() returns an empty array in SnippetCompletionProposal.getSnippetContent(), so the inner record name is not computed"]
+fn test_snippet_nested_inner_record() {}
+
+#[test]
+fn test_snippet_nested_inner_record_nosnippet() {
+    let mut t = setup();
+    use_records(&mut t);
+    t.caps = Caps::lsp2();
+    let src = "package org.sample;\npublic record Test() {}\npublic record InnerTest(){\n";
+    let unit = t.get_working_copy("src/main/java/org/sample/Test.java", src);
+    let list = t.request_completions(&unit, src);
+    assert!(!list.is_null());
+    assert!(!items(&list).iter().any(|ci| ci["kind"] == KIND_SNIPPET), "No snippets should be returned");
 }

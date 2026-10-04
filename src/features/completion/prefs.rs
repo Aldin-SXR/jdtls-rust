@@ -48,8 +48,11 @@ const FAVORITES_DEFAULT: &[&str] = &[
     "org.junit.jupiter.api.DynamicTest.*",
 ];
 const IMPORT_ORDER_DEFAULT: &[&str] = &["java", "javax", "org", "com"];
-const FILTERED_TYPES_DEFAULT: &[&str] =
-    &["com.sun.*", "io.micrometer.shaded.*", "java.awt.*", "jdk.*", "org.graalvm.*", "sun.*"];
+// `Preferences.JAVA_COMPLETION_FILTERED_TYPES_DEFAULT` is only the value of
+// the `filteredTypes` field: the type filter itself reads
+// `org.eclipse.jdt.ui.typefilter.enabled`, which only `setFilteredTypes`
+// (i.e. a configuration containing `java.completion.filteredTypes`) writes.
+// Without that key jdt.ls filters nothing.
 
 fn list(key: &str) -> Option<Vec<String>> {
     match p::get(key)? {
@@ -98,7 +101,7 @@ impl Prefs {
         let import_order = list("java.completion.importOrder")
             .unwrap_or_else(|| IMPORT_ORDER_DEFAULT.iter().map(|s| s.to_string()).collect());
         let filtered_types = list("java.completion.filteredTypes")
-            .unwrap_or_else(|| FILTERED_TYPES_DEFAULT.iter().map(|s| s.to_string()).collect());
+            .unwrap_or_default();
         Prefs {
             enabled: p::get_bool("java.completion.enabled").unwrap_or(true),
             max_results: int("java.completion.maxResults").map(|n| if n <= 0 { usize::MAX } else { n as usize }).unwrap_or(50),

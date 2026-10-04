@@ -449,8 +449,10 @@ fn can_evaluate(t: &Template, context_id: &str, key: &str, after_dot: bool) -> b
     if !compatible {
         return false;
     }
+    // `JavaContextCore.canEvaluate` with `CODEASSIST_SUBSTRING_MATCH_ENABLED`
+    // (system property `jdt.codeCompleteSubstringMatch`, default true).
     if !key.is_empty() || !after_dot {
-        return t.name.to_lowercase().starts_with(&key.to_lowercase());
+        return t.name.to_lowercase().contains(&key.to_lowercase());
     }
     false
 }
@@ -628,11 +630,12 @@ fn snippet_content(env: &TypeSnippetEnv, pattern: &str) -> Option<String> {
         type_name = format!("${{1:{type_name}}}");
     }
     let d = env.line_delimiter;
-    // fileComment / typeComment: jdt.ls default templates (file comment empty,
-    // type comment only when "generate comments" is on is handled by CodeGeneration;
-    // the snippet templates use it unconditionally).
+    // `CodeGeneration.getFileComment` / `getTypeComment` with jdt.ls' default
+    // code templates: the file comment template is empty (whitespace only →
+    // null → ""), the type comment is `/**\n * ${type_name}\n * ${tags}\n */`
+    // whose `${tags}` line is removed when a type has no tags.
     let file_comment = "";
-    let type_comment = "";
+    let type_comment = format!("/**{d} * {type_name}{d} */{d}");
     let package_header = if !env.package_name.is_empty() && !env.has_package_declaration {
         format!("package {};{d}{d}", env.package_name)
     } else {
@@ -640,7 +643,7 @@ fn snippet_content(env: &TypeSnippetEnv, pattern: &str) -> Option<String> {
     };
     let out = pattern
         .replace("${filecomment}", file_comment)
-        .replace("${typecomment}", type_comment)
+        .replace("${typecomment}", &type_comment)
         .replace("${package_header}", &package_header)
         .replace("${type_name}", &type_name)
         .replace("${cursor}", "${0}");

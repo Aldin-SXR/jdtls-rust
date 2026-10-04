@@ -191,12 +191,19 @@ final class TypeIndex {
 
     private static final Map<String, BinaryRoot> ROOTS = new ConcurrentHashMap<>();
     private static volatile BinaryRoot JRT;
+    private static volatile BinaryRoot JRT_ALL;
 
-    static BinaryRoot jrt() {
-        BinaryRoot r = JRT;
+    /** The JDK image. Below Java 9 JDT reads the image as a flat classpath
+     * (every package of every system module, as jdt.ls proposes e.g.
+     * {@code com.sun.org.apache.bcel.internal.classfile.Method} in a 1.8
+     * project); from 9 on only unqualified exports are visible to the
+     * unnamed module. */
+    static BinaryRoot jrt(boolean allPackages) {
+        BinaryRoot r = allPackages ? JRT_ALL : JRT;
         if (r != null) return r;
         synchronized (TypeIndex.class) {
-            if (JRT != null) return JRT;
+            r = allPackages ? JRT_ALL : JRT;
+            if (r != null) return r;
             BinaryRoot root = new BinaryRoot("jrt");
             try {
                 FileSystem fs = FileSystems.getFileSystem(URI.create("jrt:/"));
@@ -210,11 +217,26 @@ final class TypeIndex {
                     }
                     exported.put(d.name(), pk);
                 }
+                // JavaProject.defaultRootModules + filterLimitedModules: the
+                // modules exporting a package unqualified, and what they require.
+                Set<String> rootModules = new HashSet<>();
+                java.util.ArrayDeque<String> todo = new java.util.ArrayDeque<>();
+                for (Map.Entry<String, Set<String>> e : exported.entrySet()) {
+                    if (!e.getValue().isEmpty()) todo.add(e.getKey());
+                }
+                while (!todo.isEmpty()) {
+                    String m = todo.poll();
+                    if (!rootModules.add(m)) continue;
+                    ModuleFinder.ofSystem().find(m).ifPresent(ref -> {
+                        for (ModuleDescriptor.Requires req : ref.descriptor().requires()) todo.add(req.name());
+                    });
+                }
                 Path modules = fs.getPath("/modules");
                 try (Stream<Path> mods = Files.list(modules)) {
                     for (Path mod : (Iterable<Path>) mods::iterator) {
                         String modName = mod.getFileName().toString().replace("/", "");
                         Set<String> pk = exported.getOrDefault(modName, Collections.emptySet());
+                        if (allPackages && !rootModules.contains(modName)) continue;
                         try (Stream<Path> files = Files.walk(mod)) {
                             for (Path p : (Iterable<Path>) files::iterator) {
                                 String s = p.toString();
@@ -224,7 +246,7 @@ final class TypeIndex {
                                 String bin = rel.substring(0, rel.length() - 6);
                                 int slash = bin.lastIndexOf('/');
                                 String pkg = slash < 0 ? "" : bin.substring(0, slash).replace('/', '.');
-                                if (!pk.contains(pkg)) continue;
+                                if (!allPackages && !pk.contains(pkg)) continue;
                                 root.binaryNames.add(bin);
                                 root.packages.add(pkg);
                                 root.jrtPaths.put(bin, p);
@@ -235,7 +257,7 @@ final class TypeIndex {
             } catch (Exception e) {
                 // no jrt: empty JDK index
             }
-            JRT = root;
+            if (allPackages) JRT_ALL = root; else JRT = root;
             return root;
         }
     }
@@ -367,7 +389,7 @@ final class TypeIndex {
         for (String cp : classpath) {
             binaryRoots.add(root(cp));
         }
-        binaryRoots.add(jrt());
+        binaryRoots.add(jrt(BridgeOptions.version(sourceLevel).startsWith("1.")));
         for (Map.Entry<String, String> f : files.entrySet()) {
             String uri = f.getKey();
             boolean isTest = testUris.contains(uri);
