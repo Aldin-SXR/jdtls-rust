@@ -835,6 +835,9 @@ impl LanguageServer for JavaLanguageServer {
             self.lifecycle.did_open(&doc.uri, &roots).await;
             return;
         }
+        if crate::features::lifecycle::is_java_like(&doc.uri) {
+            self.store.set_active_java_uri(&doc.uri);
+        }
         let next = (*self.compile_tx.borrow()).wrapping_add(1);
         let _ = self.compile_tx.send(next);
     }
@@ -853,6 +856,9 @@ impl LanguageServer for JavaLanguageServer {
         if !self.legacy_diagnostics().await {
             self.lifecycle.did_change(&uri);
             return;
+        }
+        if self.store.is_open(&uri) && crate::features::lifecycle::is_java_like(&uri) {
+            self.store.set_active_java_uri(&uri);
         }
         let next = (*self.compile_tx.borrow()).wrapping_add(1);
         let _ = self.compile_tx.send(next);
@@ -2070,6 +2076,24 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<Value>> {
         match params.command.as_str() {
+            "java.edit.smartSemicolonDetection" => {
+                if !crate::features::preferences::get_bool("java.edit.smartSemicolonDetection.enabled")
+                    .unwrap_or(false)
+                {
+                    return Ok(None);
+                }
+                let request = params
+                    .arguments
+                    .first()
+                    .and_then(json_model)
+                    .and_then(|v| serde_json::from_value(v).ok());
+                let Some(request) = request else {
+                    return Ok(None);
+                };
+                Ok(crate::features::smart_detection::handle(&self.dispatcher, request)
+                    .await
+                    .map(|location| serde_json::to_value(location).expect("serializable smart location")))
+            }
             "java.edit.handlePasteEvent" => {
                 let request = params
                     .arguments

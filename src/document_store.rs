@@ -39,6 +39,8 @@ pub struct DocumentStore {
     /// Known workspace source files (from project import).
     workspace: Arc<DashMap<Url, ()>>,
     parser: Mutex<JavaParser>,
+    /// CoreASTProvider's active Java element; closing a buffer does not clear it.
+    active_java_uri: Mutex<Option<Url>>,
 }
 
 impl DocumentStore {
@@ -47,7 +49,16 @@ impl DocumentStore {
             files: Arc::new(DashMap::new()),
             workspace: Arc::new(DashMap::new()),
             parser: Mutex::new(JavaParser::new()),
+            active_java_uri: Mutex::new(None),
         }
+    }
+
+    pub fn set_active_java_uri(&self, uri: &Url) {
+        *self.active_java_uri.lock().unwrap_or_else(|e| e.into_inner()) = Some(uri.clone());
+    }
+
+    pub fn is_active_java_uri(&self, uri: &Url) -> bool {
+        self.active_java_uri.lock().unwrap_or_else(|e| e.into_inner()).as_ref() == Some(uri)
     }
 
     pub fn open(&self, uri: Url, language_id: String, version: i32, text: String, parser: &mut JavaParser) {

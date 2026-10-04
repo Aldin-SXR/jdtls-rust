@@ -234,6 +234,7 @@ impl Lifecycle {
 
     /// `triggerValidation(cu)`.
     pub fn trigger_validation(&self, uri: &Url) {
+        self.store.set_active_java_uri(uri);
         {
             let mut st = self.state();
             if !st.to_validate.contains(uri) {
@@ -847,10 +848,12 @@ impl Lifecycle {
             let ws = self.workspace();
             for u in self.store.open_uris() {
                 if is_java_like(&u) && !matches!(classify(&ws, &u), UnitKind::OnClasspath { .. }) {
+                    self.store.set_active_java_uri(&u);
                     self.publish_unit(&u).await;
                 }
             }
         } else if let Some(t) = target {
+            self.store.set_active_java_uri(&t);
             self.publish_unit(&t).await;
         }
     }

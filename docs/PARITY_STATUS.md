@@ -16,19 +16,20 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 668 | 32.0% |
-| Passing | 621 | 29.8% |
+| Ported | 670 | 32.1% |
+| Passing | 623 | 29.9% |
 | Ported but `#[ignore]`d | 47 | 2.3% |
-| Not ported yet | 1,419 | 68.0% |
+| Not ported yet | 1,417 | 67.9% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 889 passed,
-0 failed and 48 ignored across 55 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 904 passed,
+0 failed and 48 ignored across 57 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
 `tests/completion_regressions.rs`, 6 tests;
 `tests/project_download_regressions.rs`, 2 tests;
-`tests/paste_regressions.rs`, 9 tests) and unit
+`tests/paste_regressions.rs`, 9 tests;
+`tests/smart_detection_regressions.rs`, 13 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -37,7 +38,7 @@ those duplicate runs are excluded from the upstream-port counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 489 | 470 | 54% |
+| handlers | 871 | 491 | 472 | 54% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 132 | 104 | 49% |
@@ -84,6 +85,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/SelectionRangeHandlerTest | `handlers_selection_range_handler_test` | 5 | 5 | 0 | 5/5 |
 | handlers/SemanticTokensHandlerTest | `handlers_semantic_tokens_handler_test` | 11 | 11 | 0 | 11/11 |
 | handlers/SignatureHelpHandlerTest | `handlers_signature_help_handler_test` | 56 | 55 | 1 | 54/55; `test_signature_help_erasure_type`, where jdt.ls returns no doc |
+| handlers/SmartDetectionHandlerTest | `handlers_smart_detection_handler_test` | 2 | 2 | 0 | 2/2 |
 | handlers/TypeHierarchyHandlerTest | `handlers_type_hierarchy_handler_test` | 4 | 4 | 0 | 4/4 |
 | handlers/WorkspaceDiagnosticsHandlerTest | `handlers_workspace_diagnostics_handler_test` | 2 | 2 | 0 | 2/2 (package deletion and diagnostic filtering) |
 | handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` | 1 | 1 | 0 | 1/1 (unknown-command error) |
@@ -332,7 +334,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 | Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
 | Remaining project managers | 79 | 4% |
 | Refactoring | 119 | 6% |
-| Remaining handlers outside completion: code actions, generation, imports, paste, save actions, markers and lifecycle/init | 301 | 14% |
+| Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 277 | 13% |
 | Core utilities, preferences, commands and the rest | 243 | 12% |
 
 ## Updating this file
@@ -340,7 +342,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
@@ -348,7 +350,8 @@ Add the ports that live as unit tests in `src/` (InlayHintFilterManagerTest 7,
 JavaDoc2Markdown 19, JavaDoc2PlainText 2, JavaDocImageExtraction 1, InitHandler 2).
 Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
 `correction_regressions.rs`, `completion_regressions.rs` and
-`project_download_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
+`project_download_regressions.rs`, `paste_regressions.rs` and
+`smart_detection_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.
 
@@ -386,3 +389,30 @@ This adds 22 passing upstream ports; the nine regressions are excluded from that
 count. Dedicated organize-import tests, module-import selection, complete static
 favorite ordering and class-file copied-import coverage still require further
 parity verification. The wider parity goal remains incomplete.
+
+## Smart-semicolon integration evidence
+
+Both `SmartDetectionHandlerTest` methods are ported with the original Java 21
+fake-JDK setup, source, caret and assertions. They pass on Rust and JDT LS 1.58.0.
+
+* `java.edit.smartSemicolonDetection` now returns the upstream caret destination
+  when `java.edit.smartSemicolonDetection.enabled` is true (default false).
+  Requests accept raw and JSON-encoded models and leave the working copy untouched.
+* Rust implements the full handler and its fresh JFace Java partition scan:
+  comments, characters, strings, escapes, source-level text blocks, open partition
+  boundaries, whitespace, existing semicolons and block/array-initializer rules.
+  The first-`for` heuristic and unsupported Markdown-partition quirk are retained.
+* Lifecycle events and diagnostic validation track CoreASTProvider's active Java
+  element. The Rust NodeFinder applies the upstream comment/literal and unfinished
+  method-call guards to data-only JDT ASTs with `WAIT_ACTIVE_ONLY` behavior.
+* `smart_detection_regressions`: 13 Rust passes; 12 oracle-compatible passes.
+  These cover active-document changes, source versus compliance, UTF-16,
+  CR/LF/CRLF, EOF, Unicode whitespace/identifier parts, invalid and out-of-line
+  positions, preference updates, partition boundaries and unchanged buffers.
+  The additional Rust-only case covers opened untitled, in-memory and nonexistent
+  file buffers, plus raw model arguments.
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 57 targets (904 passing, 48 ignored). The two upstream ports and twelve
+file-backed regressions also pass with `JDTLS_ORACLE=1 --test-threads=2`; the
+virtual-buffer/raw-model case is excluded from that oracle run.

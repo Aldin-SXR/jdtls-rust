@@ -27,6 +27,7 @@ pub mod selection_range;
 pub mod semantic;
 pub mod semantic_tokens;
 pub mod signature_help;
+pub mod smart_detection;
 mod ts_dump;
 pub mod type_hierarchy;
 pub mod workspace_symbols;
