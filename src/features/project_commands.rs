@@ -242,17 +242,7 @@ fn is_test_classpath_entry(e: &ClasspathEntry) -> bool {
 
 /// `BuildSupportManager.find(project).buildToolName()`.
 fn build_tool_name(p: &Project) -> &'static str {
-    if p.has_nature(GRADLE_NATURE) {
-        "Gradle"
-    } else if p.has_nature(MAVEN_NATURE) {
-        "Maven"
-    } else {
-        match p.kind {
-            ProjectKind::Invisible => "INVISIBLE",
-            ProjectKind::Default => "DEFAULT",
-            _ => "ECLIPSE",
-        }
-    }
+    crate::project::BuildSupport::of(p).build_tool_name()
 }
 
 /// `BuildPathCommand.listSourcePaths()`.

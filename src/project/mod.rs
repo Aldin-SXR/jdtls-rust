@@ -499,6 +499,10 @@ impl Workspace {
             if !p.is_java() {
                 continue;
             }
+            for mut m in eclipse::classpath_problems(p) {
+                m.derived = true;
+                p.markers.push(m);
+            }
             let missing: Vec<String> = p
                 .classpath
                 .iter()
@@ -942,6 +946,49 @@ pub fn effective_option(project: &Project, key: &str, vm_version: Option<&str>) 
         }
     }
     jdt_defaults::WORKSPACE_DEFAULTS.iter().find(|(k, _)| *k == key).map(|(_, v)| (*v).to_owned())
+}
+
+/// The build supports in `StandardProjectsManager.buildSupports()` order;
+/// the first that applies to a project manages it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildSupport {
+    Gradle,
+    Maven,
+    Invisible,
+    Default,
+    Eclipse,
+}
+
+pub const BUILD_SUPPORTS: [BuildSupport; 5] =
+    [BuildSupport::Gradle, BuildSupport::Maven, BuildSupport::Invisible, BuildSupport::Default, BuildSupport::Eclipse];
+
+impl BuildSupport {
+    /// `IBuildSupport.applies(project)`.
+    pub fn applies(self, p: &Project) -> bool {
+        match self {
+            BuildSupport::Gradle => p.has_nature(GRADLE_NATURE),
+            BuildSupport::Maven => p.has_nature(MAVEN_NATURE),
+            BuildSupport::Invisible => p.kind == ProjectKind::Invisible,
+            BuildSupport::Default => p.kind == ProjectKind::Default,
+            BuildSupport::Eclipse => true,
+        }
+    }
+
+    /// `IBuildSupport.buildToolName()`.
+    pub fn build_tool_name(self) -> &'static str {
+        match self {
+            BuildSupport::Gradle => "Gradle",
+            BuildSupport::Maven => "Maven",
+            BuildSupport::Invisible => "INVISIBLE",
+            BuildSupport::Default => "DEFAULT",
+            BuildSupport::Eclipse => "ECLIPSE",
+        }
+    }
+
+    /// `BuildSupportManager.find(project)`.
+    pub fn of(p: &Project) -> BuildSupport {
+        BUILD_SUPPORTS.into_iter().find(|b| b.applies(p)).unwrap_or(BuildSupport::Eclipse)
+    }
 }
 
 /// Compare two JDT version strings (`"1.8"` < `"11"`).

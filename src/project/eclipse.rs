@@ -136,7 +136,6 @@ fn load_with(dir: &Path, name: &str, natures: Vec<String>) -> Project {
                 project.output = Some(dir.join("bin"));
             }
         }
-        validate_classpath(&mut project);
     }
     project
 }
@@ -262,6 +261,14 @@ fn resolve_variable_path(path: &str) -> Option<PathBuf> {
 /// `ClasspathEntry.validateClasspath` problems reported as build path
 /// markers on the project.
 pub fn validate_classpath(project: &mut Project) {
+    let problems = classpath_problems(project);
+    project.markers.extend(problems);
+}
+
+/// The build path problems of `project`'s raw classpath: missing libraries
+/// and required (non-optional) source folders.
+pub fn classpath_problems(project: &Project) -> Vec<Marker> {
+    let mut out = Vec::new();
     let name = project.name.clone();
     let mut errors = Vec::new();
     for e in &project.classpath {
@@ -282,8 +289,9 @@ pub fn validate_classpath(project: &mut Project) {
         }
     }
     for msg in errors {
-        project.markers.push(Marker::project(msg, 1, "964"));
+        out.push(Marker::project(msg, 1, "964"));
     }
+    out
 }
 
 pub(crate) fn dirs_home() -> Option<PathBuf> {

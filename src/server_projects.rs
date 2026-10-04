@@ -177,3 +177,235 @@ impl JavaLanguageServer {
         }
     }
 }
+
+impl JavaLanguageServer {
+    /// `ProjectCommand.changeImportedProjects(toImport, toUpdate, toDelete)`
+    /// (`ImportProjectsFromSelectionJob`): delete the projects at
+    /// `to_delete`, import the build files `to_import`, update `to_update`.
+    pub(crate) async fn change_imported_projects(&self, to_import: &[String], to_update: &[String], to_delete: &[String]) {
+        let to_paths = |uris: &[String]| -> Vec<PathBuf> {
+            uris.iter()
+                .filter_map(|u| Url::parse(u).ok())
+                .filter_map(|u| crate::project::uri_to_path(&u))
+                .collect()
+        };
+        let delete = to_paths(to_delete);
+        let import = to_paths(to_import);
+        let _ = to_update;
+        let ws = self.workspace_snapshot();
+        let mut configs = match self.config.read().await.project_configurations.clone() {
+            Some(c) => c
+                .iter()
+                .filter_map(|u| Url::parse(u).ok())
+                .filter_map(|u| crate::project::uri_to_path(&u))
+                .collect::<Vec<_>>(),
+            None => ws
+                .projects
+                .iter()
+                .filter(|p| p.kind != ProjectKind::Invisible)
+                .flat_map(|p| p.build_files.iter().filter(|f| f.is_file()).cloned().take(1))
+                .collect(),
+        };
+        for d in &delete {
+            if let Some(p) = ws.projects.iter().find(|p| p.root == *d || p.location == *d) {
+                configs.retain(|c| !p.build_files.contains(c) && c.parent() != Some(p.location.as_path()));
+            }
+        }
+        for i in import {
+            if !configs.contains(&i) {
+                configs.push(i);
+            }
+        }
+        self.config.write().await.project_configurations =
+            Some(configs.iter().filter_map(|p| Url::from_file_path(p).ok()).map(|u| u.to_string()).collect());
+        self.reimport_workspace().await;
+        self.request_compile();
+    }
+}
+
+/// `ProjectsManager.BUILD_FILE_MARKER_TYPE` message.
+pub(crate) const BUILD_FILE_CHANGED: &str = "The build file has been changed and may need reload to make it effective.";
+
+/// `DigestStore`: SHA-256 digests of the imported build files.
+pub(crate) static DIGESTS: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<u8>>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn digest(path: &Path) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(path).ok()?;
+    // A simple stable digest (FNV-1a over the content, plus the length).
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in &bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    let mut out = h.to_le_bytes().to_vec();
+    out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    Some(out)
+}
+
+/// `DigestStore.updateDigest(path)`: whether the digest changed.
+pub(crate) fn update_digest(path: &Path) -> bool {
+    let Some(d) = digest(path) else { return false };
+    let mut store = DIGESTS.lock().unwrap();
+    match store.insert(path.to_path_buf(), d.clone()) {
+        Some(old) => old != d,
+        None => true,
+    }
+}
+
+impl JavaLanguageServer {
+    /// Record the digests of every imported build file (the importers do it
+    /// for the build files they import).
+    pub(crate) fn record_build_file_digests(&self) {
+        let ws = self.workspace_snapshot();
+        for p in &ws.projects {
+            for f in &p.build_files {
+                update_digest(f);
+            }
+        }
+    }
+
+    /// `StandardProjectsManager.fileChanged` for a build file: when its
+    /// content changed, update the project (`automatic`), or mark the file
+    /// and ask the client (`interactive`, the default), or only mark it
+    /// (`disabled`).  Returns whether it was a build file of a project.
+    pub(crate) async fn on_build_file_changed(&self, path: &Path) -> bool {
+        let ws = self.workspace_snapshot();
+        let Some(project) = ws
+            .projects
+            .iter()
+            .filter(|p| matches!(crate::project::BuildSupport::of(p), crate::project::BuildSupport::Maven | crate::project::BuildSupport::Gradle))
+            .find(|p| p.build_files.iter().any(|f| f == path))
+            .cloned()
+        else {
+            return false;
+        };
+        if !update_digest(path) {
+            return true;
+        }
+        let status = {
+            let cfg = self.config.read().await;
+            cfg.settings
+                .as_ref()
+                .and_then(|s| crate::project::pref_value(s, "java.configuration.updateBuildConfiguration"))
+                .and_then(Value::as_str)
+                .unwrap_or("interactive")
+                .to_owned()
+        };
+        match status.as_str() {
+            "automatic" => {
+                self.update_projects(&[project.name.clone()]).await;
+            }
+            "disabled" => self.append_build_file_marker(&project.name, path).await,
+            _ => {
+                let uri = Url::from_file_path(path).map(|u| u.to_string()).unwrap_or_default();
+                let cmd = "java.projectConfiguration.status";
+                let params = json!({
+                    "severity": 3,
+                    "message": "A build file was modified. Do you want to synchronize the Java classpath/configuration?",
+                    "commands": [
+                        { "title": "Yes", "command": cmd, "arguments": [{ "uri": uri }, "interactive"] },
+                        { "title": "Always", "command": cmd, "arguments": [{ "uri": uri }, "automatic"] },
+                        { "title": "Never", "command": cmd, "arguments": [{ "uri": uri }, "disabled"] },
+                    ],
+                });
+                self.client.send_notification::<ActionableNotification>(params).await;
+                self.append_build_file_marker(&project.name, path).await;
+            }
+        }
+        true
+    }
+
+    async fn append_build_file_marker(&self, project: &str, path: &Path) {
+        let mut ws = self.workspace_snapshot();
+        let Some(p) = ws.projects.iter_mut().find(|p| p.name == project) else { return };
+        if p.markers.iter().any(|m| m.resource.as_deref() == Some(path) && m.message == BUILD_FILE_CHANGED) {
+            return;
+        }
+        let mut m = crate::project::Marker::project(BUILD_FILE_CHANGED, 3, "0");
+        m.resource = Some(path.to_path_buf());
+        p.markers.push(m);
+        self.install_workspace(ws).await;
+    }
+
+    /// `ProjectsManager.updateProjects(projects, force)`: re-import the
+    /// workspace (the build supports re-read the build files) and drop the
+    /// build file markers of the updated projects.
+    pub(crate) async fn update_projects(&self, names: &[String]) {
+        self.send_status("Message", "Updating project configurations...").await;
+        let before = self.workspace_snapshot();
+        self.reimport_workspace().await;
+        let mut ws = self.workspace_snapshot();
+        for p in ws.projects.iter_mut() {
+            let updated = names.contains(&p.name);
+            if let Some(old) = before.project(&p.name) {
+                // Projects not updated keep their build file markers.
+                if !updated {
+                    for m in old.markers.iter().filter(|m| m.message == BUILD_FILE_CHANGED) {
+                        if !p.markers.contains(m) {
+                            p.markers.push(m.clone());
+                        }
+                    }
+                }
+            }
+        }
+        for name in names {
+            if let Some(p) = ws.project(name) {
+                for f in p.build_files.clone() {
+                    update_digest(&f);
+                }
+            }
+        }
+        self.install_workspace(ws).await;
+        self.report_projects_status().await;
+    }
+
+    /// `ProjectsManager.reportProjectsStatus()`.
+    pub(crate) async fn report_projects_status(&self) {
+        let ws = self.workspace_snapshot();
+        let error = ws.projects.iter().any(|p| p.markers.iter().any(|m| m.severity == 1 && (m.resource.is_none() || p.build_files.iter().any(|f| Some(f.as_path()) == m.resource.as_deref()))));
+        self.send_status("ProjectStatus", if error { "WARNING" } else { "OK" }).await;
+    }
+
+    pub(crate) async fn send_status(&self, typ: &str, message: &str) {
+        self.client
+            .send_notification::<LanguageStatus>(LanguageStatusParams { typ: typ.to_owned(), message: message.to_owned() })
+            .await;
+    }
+
+    /// `java/projectConfigurationUpdate` (`ProjectConfigurationUpdateHandler`).
+    pub async fn project_configuration_update(&self, params: Value) {
+        let identifiers = match params.get("identifiers") {
+            Some(ids) => ids.as_array().cloned().unwrap_or_default(),
+            None => vec![params],
+        };
+        let ws = self.workspace_snapshot();
+        let mut names = Vec::new();
+        for id in identifiers {
+            let Some(path) = id.get("uri").and_then(Value::as_str).and_then(|u| Url::parse(u).ok()).and_then(|u| crate::project::uri_to_path(&u)) else {
+                continue;
+            };
+            if let Some(p) = ws.projects.iter().filter(|p| path.starts_with(&p.root) || path.starts_with(&p.location)).max_by_key(|p| p.root.components().count()) {
+                if !names.contains(&p.name) {
+                    names.push(p.name.clone());
+                }
+            }
+        }
+        if !names.is_empty() {
+            self.update_projects(&names).await;
+        }
+    }
+
+    /// `java/projectConfigurationsUpdate`.
+    pub async fn project_configurations_update(&self, params: Value) {
+        self.project_configuration_update(params).await;
+    }
+}
+
+/// jdt.ls `language/actionableNotification`.
+pub(crate) enum ActionableNotification {}
+
+impl tower_lsp::lsp_types::notification::Notification for ActionableNotification {
+    type Params = Value;
+    const METHOD: &'static str = "language/actionableNotification";
+}

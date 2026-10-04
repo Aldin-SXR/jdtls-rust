@@ -79,6 +79,27 @@ impl Workspace {
         self.add_root(root.to_path_buf());
     }
 
+    /// Shut the server down (`shutdown` + `exit`); the next request starts a
+    /// new one on the same jdt.ls workspace (`-data`) with the current roots
+    /// (a new `initializeProjects`).
+    pub fn restart(&mut self) {
+        if self.client.is_some() {
+            let c = self.client();
+            let id = c.next_id;
+            c.next_id += 1;
+            c.send(&json!({ "jsonrpc": "2.0", "id": id, "method": "shutdown", "params": null }));
+            c.recv_until(Duration::from_secs(60), |m| m["id"] == json!(id) && m.get("method").is_none());
+            c.notify("exit", Value::Null);
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        self.client = None;
+    }
+
+    /// Replace the workspace roots before (re)starting the server.
+    pub fn set_roots(&mut self, roots: Vec<PathBuf>) {
+        self.roots = roots;
+    }
+
     /// `updateWorkspaceFolders(∅, removed)`.
     pub fn remove_root(&mut self, root: &Path) {
         let root = root.to_path_buf();

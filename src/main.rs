@@ -37,6 +37,8 @@ async fn main() {
         .custom_method("java/classFileContents", JavaLanguageServer::class_file_contents)
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
         .custom_method("java/buildWorkspace", JavaLanguageServer::build_workspace)
+        .custom_method("java/projectConfigurationUpdate", JavaLanguageServer::project_configuration_update)
+        .custom_method("java/projectConfigurationsUpdate", JavaLanguageServer::project_configurations_update)
         .finish();
     Server::new(stdin, stdout, socket).serve(lenient_uri::LenientUri::new(service)).await;
 }

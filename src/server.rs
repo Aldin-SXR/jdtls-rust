@@ -213,6 +213,9 @@ pub struct JavaLanguageServer {
     /// Standalone files opened under a root that created an invisible
     /// project (`DocumentLifeCycleHandler.resolveCompilationUnit`).
     extra_triggers: Arc<RwLock<Vec<std::path::PathBuf>>>,
+    /// Serializes workspace (re-)imports (jdt.ls runs them as workspace jobs
+    /// holding the workspace rule).
+    import_lock: Arc<Mutex<()>>,
 }
 
 #[path = "server_projects.rs"]
@@ -251,6 +254,7 @@ impl JavaLanguageServer {
             roots: Arc::new(RwLock::new(Vec::new())),
             rename_client: Arc::new(RwLock::new(Default::default())),
             extra_triggers: Arc::new(RwLock::new(Vec::new())),
+            import_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -295,6 +299,7 @@ impl JavaLanguageServer {
     /// (Re-)import all projects under the workspace roots and register their
     /// source files with the document store.
     async fn reimport_workspace(&self) {
+        let _guard = self.import_lock.lock().await;
         let roots = self.roots.read().await.clone();
         let settings = self.current_import_settings().await;
         let previous = self.workspace_snapshot();
@@ -307,6 +312,7 @@ impl JavaLanguageServer {
         let files: Vec<Url> = ws.java_files().into_keys().filter_map(|p| Url::from_file_path(p).ok()).collect();
         self.store.set_workspace_files(files);
         *self.dispatcher.workspace.write().unwrap_or_else(|e| e.into_inner()) = ws;
+        self.record_build_file_digests();
         if WATCHERS.lock().unwrap().is_some() {
             register_watchers(&self.client, &self.dispatcher, &self.config).await;
         }
@@ -338,6 +344,9 @@ impl JavaLanguageServer {
     /// `java/buildWorkspace` (`BuildWorkspaceHandler.buildWorkspace`):
     /// 0 FAILED, 1 SUCCEED, 2 WITH_ERROR, 3 CANCELLED.
     pub async fn build_workspace(&self, _force_rebuild: Value) -> LspResult<i32> {
+        // Workspace jobs scheduled before the build (imports) finish first.
+        tokio::task::yield_now().await;
+        drop(self.import_lock.lock().await);
         if !self.dispatcher.is_ecj_ready().await {
             return Ok(0);
         }
@@ -410,6 +419,8 @@ impl LanguageServer for JavaLanguageServer {
         }
         *self.roots.write().await = roots;
         self.reimport_workspace().await;
+        // `ProjectsManager.initializeProjects` ends with `reportProjectsStatus()`.
+        self.report_projects_status().await;
 
         // Start ecj-bridge in background, then kick the compile loop
         let dispatcher = Arc::clone(&self.dispatcher);
@@ -533,6 +544,8 @@ impl LanguageServer for JavaLanguageServer {
                         "java.project.isTestFile".to_owned(),
                         "java.project.listSourcePaths".to_owned(),
                         "java.project.resolveSourceAttachment".to_owned(),
+                        "java.project.changeImportedProjects".to_owned(),
+                        "java.project.import".to_owned(),
                         "java.edit.stringFormatting".to_owned(),
                         "java.navigate.openTypeHierarchy".to_owned(),
                         "java.navigate.resolveTypeHierarchy".to_owned(),
@@ -675,6 +688,13 @@ impl LanguageServer for JavaLanguageServer {
             params.changes.iter().filter_map(|c| crate::project::uri_to_path(&c.uri)).collect();
         for change in params.changes {
             let name = change.uri.path().rsplit('/').next().unwrap_or("").to_owned();
+            if matches!(name.as_str(), "pom.xml" | "build.gradle" | "settings.gradle" | "build.gradle.kts" | "settings.gradle.kts") {
+                // `StandardProjectsManager.fileChanged` → build support.
+                if let Some(path) = crate::project::uri_to_path(&change.uri) {
+                    self.on_build_file_changed(&path).await;
+                }
+                continue;
+            }
             if is_build_descriptor(&name) {
                 reimport = true;
                 continue;
@@ -1425,6 +1445,29 @@ impl LanguageServer for JavaLanguageServer {
                     .unwrap_or_else(|| "runtime".to_owned());
                 let ws = self.dispatcher.workspace.read().unwrap_or_else(|e| e.into_inner()).clone();
                 crate::features::project_commands::get_classpaths(&ws, &uri, &scope).map(Some).map_err(internal_error)
+            }
+            "java.project.changeImportedProjects" => {
+                // `ProjectCommand.changeImportedProjects(args[0], args[1], args[2])`
+                // forwards to `ProjectsManager.changeImportedProjects(toImport,
+                // toUpdate, toDelete)`.
+                let list = |i: usize| -> Vec<String> {
+                    params
+                        .arguments
+                        .get(i)
+                        .and_then(json_model)
+                        .and_then(|v| v.as_array().cloned())
+                        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_default()
+                };
+                self.change_imported_projects(&list(0), &list(1), &list(2)).await;
+                Ok(None)
+            }
+            "java.project.import" => {
+                // `ProjectsManager.importProjects`: scan the root paths again.
+                self.config.write().await.project_configurations = None;
+                self.reimport_workspace().await;
+                self.request_compile();
+                Ok(None)
             }
             "java.project.resolveSourceAttachment" => {
                 let request = params.arguments.first().and_then(json_model);
@@ -2514,6 +2557,10 @@ impl JavaLanguageServer {
                     }
                 }
             }
+            // `Preferences.setRootPaths`: the jdt.ls root paths follow the folders.
+            let mut cfg = self.config.write().await;
+            let canon: Vec<std::path::PathBuf> = roots.iter().map(|r| crate::project::canonicalize_lenient(r)).collect();
+            cfg.root_paths = canon;
         }
         self.reimport_workspace().await;
         self.request_compile();
