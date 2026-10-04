@@ -54,6 +54,12 @@ byte for byte. Don't guess messages, labels, titles, sort order or edit shapes.
   `unzip -p .oracle/jdtls-1.58.0/plugins/org.eclipse.jdt.core.manipulation_*.jar '*RefactoringCoreMessages.properties'`.
   Copy them verbatim.
 
+* Delegate commands (`workspace/executeCommand`): jdt.ls reads most arguments with
+  `JSONUtility.toModel`, which accepts a JSON value *or* a JSON-encoded string, and
+  returns null for a bare number, because lsp4j hands numbers over as `Double`.
+  vscode-java therefore sends `JSON.stringify(...)` for each argument. Accept both
+  forms on our side, and in tests send what the real client sends.
+
 ## Tests
 
 * One Rust integration-test file per upstream test class:
