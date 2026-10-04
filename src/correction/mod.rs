@@ -30,6 +30,7 @@ pub mod local_corrections;
 pub mod modifier_corrections;
 pub mod quick_assist;
 pub mod quick_fix;
+pub mod parentheses;
 pub mod serial_hash;
 pub mod serial_version;
 pub mod source_assist;
