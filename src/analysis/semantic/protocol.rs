@@ -298,6 +298,37 @@ pub enum BridgeRequest {
         options: BTreeMap<String, String>,
         query: serde_json::Value,
     },
+    /// The complete resolved DOM of one unit (`SemanticAstService`);
+    /// `data` is the cache key the bridge keeps the AST under.
+    SemanticAst {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        uri: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+    },
+    /// Several `CodeFormatter.format` calls with one option map.
+    FormatBatch {
+        id: u64,
+        jobs: Vec<FormatJob>,
+        #[serde(rename = "lineSeparator")]
+        line_separator: String,
+        options: BTreeMap<String, String>,
+    },
+    /// Compile and return the named class files (binary names, `/`-separated).
+    CompiledClasses {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+        names: Vec<String>,
+    },
     Shutdown { id: u64 },
 }
 
@@ -439,6 +470,19 @@ pub enum BridgeResponse {
         #[serde(default)]
         result: serde_json::Value,
     },
+    SemanticAst {
+        id: u64,
+        #[serde(flatten)]
+        data: crate::semantic_ast::wire::SemanticAstData,
+    },
+    FormatBatch {
+        id: u64,
+        results: Vec<Option<Vec<BridgeFormatEdit>>>,
+    },
+    CompiledClasses {
+        id: u64,
+        classes: HashMap<String, String>,
+    },
     AstBindings {
         id: u64,
         strings: Vec<String>,
@@ -479,6 +523,9 @@ impl BridgeResponse {
             | BridgeResponse::ClassFileInfo { id, .. }
             | BridgeResponse::SemanticSearch { id, .. }
             | BridgeResponse::AstBindings { id, .. }
+            | BridgeResponse::SemanticAst { id, .. }
+            | BridgeResponse::FormatBatch { id, .. }
+            | BridgeResponse::CompiledClasses { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
         }
@@ -487,7 +534,18 @@ impl BridgeResponse {
 
 // ─── Shared data types ───────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize)]
+/// One job of a `formatBatch` request.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatJob {
+    pub source: String,
+    pub kind: i32,
+    pub offset: usize,
+    pub length: usize,
+    pub indentation_level: i32,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeDiagnostic {
     pub uri: String,
@@ -501,6 +559,17 @@ pub struct BridgeDiagnostic {
     #[serde(default)]
     pub category_id: u32,
     pub tags: Option<Vec<u8>>,
+    /// Raw `IProblem` data (set by `compile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem_id: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_start: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_end: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_line: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]

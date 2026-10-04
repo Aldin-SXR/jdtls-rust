@@ -112,9 +112,22 @@ final class AstBindingsService {
     private AstBindingsService() {}
 
     static AstBindingsResponse handle(BridgeProtocol.Request req) {
+        CompilationUnit cu = parse(req);
+        if (cu == null) {
+            return new AstBindingsResponse(req.id, List.of(), List.of(), List.of());
+        }
+        return new Collector(req.id).collect(cu);
+    }
+
+    /**
+     * The resolved DOM of {@code req.uri}: the other request files are
+     * mirrored into a source folder so bindings resolve across units, virtual
+     * documents included.  {@code null} when the unit is not in the request.
+     */
+    static CompilationUnit parse(BridgeProtocol.Request req) {
         String source = req.files == null ? null : req.files.get(req.uri);
         if (source == null) {
-            return new AstBindingsResponse(req.id, List.of(), List.of(), List.of());
+            return null;
         }
         String[] sourcepath = new String[0];
         try {
@@ -132,8 +145,7 @@ final class AstBindingsService {
         parser.setUnitName(unitName(req.uri));
         String[] cp = req.classpath != null ? req.classpath.toArray(new String[0]) : new String[0];
         parser.setEnvironment(cp, sourcepath, null, true);
-        CompilationUnit cu = (CompilationUnit) parser.createAST(null);
-        return new Collector(req.id).collect(cu);
+        return (CompilationUnit) parser.createAST(null);
     }
 
     private static String unitName(String uri) {

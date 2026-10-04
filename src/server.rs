@@ -56,6 +56,7 @@ fn to_bridge_diag(uri: &Url, d: &Diagnostic) -> BridgeDiagnostic {
         },
         category_id: 0,
         tags: None,
+        ..Default::default()
     }
 }
 
@@ -70,10 +71,15 @@ async fn publish_diagnostics(store: &DocumentStore, dispatcher: &Dispatcher, cli
     // are suppressed for those files to avoid inaccurate large-range squiggles
     // from tree-sitter's error-recovery nodes conflicting with ECJ's precise ones.
     let mut ecj_covered: std::collections::HashSet<Url> = std::collections::HashSet::new();
+    let tag_support = crate::features::client_caps::diagnostic_tags();
+    let mut docs: HashMap<String, Option<diag_conv::Doc16>> = HashMap::new();
     match dispatcher.compile_all().await {
         Ok(BridgeResponse::Diagnostics { items, .. }) => {
             for item in &items {
-                if let Some((uri, diag)) = diag_conv::to_lsp(item) {
+                let doc = docs.entry(item.uri.clone()).or_insert_with(|| {
+                    Url::parse(&item.uri).ok().and_then(|u| crate::features::source_text(store, &u)).map(|t| diag_conv::Doc16::new(&t))
+                });
+                if let Some((uri, diag)) = diag_conv::to_lsp(item, doc.as_ref(), tag_support) {
                     ecj_covered.insert(uri.clone());
                     by_uri.entry(uri).or_default().push(diag);
                 }

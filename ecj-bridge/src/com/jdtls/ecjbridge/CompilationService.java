@@ -69,6 +69,12 @@ public class CompilationService {
                 d.message = problem.getMessage();
                 d.code = String.valueOf(problem.getID());
                 d.categoryId = problem.getCategoryID();
+                d.problemId = problem.getID();
+                d.sourceStart = problem.getSourceStart();
+                d.sourceEnd = problem.getSourceEnd();
+                d.sourceLine = problem.getSourceLineNumber();
+                String[] args = problem.getArguments();
+                d.arguments = args == null ? List.of() : Arrays.asList(args);
 
                 // ECJ problem source start/end
                 int start = problem.getSourceStart();
@@ -133,6 +139,50 @@ public class CompilationService {
             }
         }
         return diagnostics;
+    }
+
+    /**
+     * Compile the sources and return the class files named in {@code names}
+     * (binary names with '/' separators), base64 encoded.  Class files are
+     * kept even when the unit has errors (like the Java builder).
+     */
+    public Map<String, String> compiledClasses(Map<String, String> sourceFiles, List<String> classpath,
+            String sourceLevel, List<String> names) {
+        Map<String, String> out = new HashMap<>();
+        Set<String> wanted = new HashSet<>(names == null ? List.of() : names);
+        InMemoryNameEnvironment nameEnv = new InMemoryNameEnvironment(sourceFiles, classpath);
+        ICompilerRequestor requestor = result -> {
+            ClassFile[] classFiles = result.getClassFiles();
+            if (classFiles == null) {
+                return;
+            }
+            for (ClassFile cf : classFiles) {
+                String name = new String(cf.fileName()).replace('\\', '/');
+                if (name.endsWith(".class")) name = name.substring(0, name.length() - 6);
+                if (!result.hasErrors()) {
+                    nameEnv.addCompiledClass(name, cf.getBytes());
+                }
+                if (wanted.contains(name)) {
+                    out.put(name, Base64.getEncoder().encodeToString(cf.getBytes()));
+                }
+            }
+        };
+        CompilerOptions compilerOptions = buildOptions(sourceLevel);
+        compilerOptions.processAnnotations = false;
+        Compiler compiler = new Compiler(nameEnv, DefaultErrorHandlingPolicies.proceedWithAllProblems(),
+                compilerOptions, requestor, new DefaultProblemFactory(Locale.ENGLISH));
+        ICompilationUnit[] units = sourceFiles.entrySet().stream()
+                .filter(e -> e.getKey().endsWith(".java"))
+                .map(e -> (ICompilationUnit) new InMemoryCompilationUnit(e.getKey(), e.getValue()))
+                .toArray(ICompilationUnit[]::new);
+        try {
+            if (units.length > 0) {
+                compiler.compile(units);
+            }
+        } finally {
+            nameEnv.cleanup();
+        }
+        return out;
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

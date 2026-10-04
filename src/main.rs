@@ -8,6 +8,8 @@ mod handlers;
 mod lenient_uri;
 mod index;
 mod project;
+mod rewrite;
+mod semantic_ast;
 mod server;
 
 use server::JavaLanguageServer;
