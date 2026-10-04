@@ -41,6 +41,9 @@ public class BridgeProtocol {
         public boolean includeDeclaration;
         public Boolean includeAccessors;
         public String fqn;
+        public String archive;  // extractJarEntry
+        public String entry;    // extractJarEntry
+        public String output;   // extractJarEntry
         public List<String> libraries;     // navData references: library roots in search order ("jrt" = JDK)
         public List<String> skipLibraries; // navData references: library roots already searched
         public List<String> searchKeys;    // navData referencesByKeys: "<includeDeclaration>|<binding key>"

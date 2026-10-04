@@ -5,7 +5,6 @@ use crate::analysis::semantic::code_action as ca_conv;
 use crate::analysis::semantic::completion as comp_conv;
 use crate::analysis::semantic::definition as def_conv;
 use crate::analysis::semantic::diagnostics as diag_conv;
-use crate::analysis::semantic::hover as hover_conv;
 use crate::analysis::semantic::protocol::{BridgeCallHierarchyItem, BridgeTypeHierarchyItem, BridgeRange, BridgeResponse, BridgeDiagnostic};
 use crate::analysis::semantic::NavKind;
 use crate::analysis::syntax::{
@@ -286,9 +285,12 @@ impl LanguageServer for JavaLanguageServer {
             if let Some(settings) = cfg.settings.clone() {
                 merge_config_settings(&mut cfg, &settings);
             }
+            cfg.completion_documentation_markdown = completion_markdown(&params.capabilities);
             *self.config.write().await = cfg;
         } else {
-            *self.config.write().await = Config::default().with_defaults();
+            let mut cfg = Config::default().with_defaults();
+            cfg.completion_documentation_markdown = completion_markdown(&params.capabilities);
+            *self.config.write().await = cfg;
         }
         self.config.write().await.inlay_hint_refresh_support = params
             .capabilities
@@ -682,35 +684,8 @@ impl LanguageServer for JavaLanguageServer {
     // ── Hover ─────────────────────────────────────────────────────────────────
 
     async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let pos = params.text_document_position_params.position;
-
-        let (offset, content, tree) = match self.store.get(uri) {
-            None => return Ok(None),
-            Some(s) => (
-                pos_to_offset(&s.content, pos).unwrap_or(0),
-                s.content_string(),
-                s.tree.clone(),
-            ),
-        };
-
-        if self.dispatcher.is_ecj_ready().await {
-            match self.dispatcher.hover(uri, offset).await {
-                Ok(BridgeResponse::Hover { contents, .. }) if !contents.is_empty() => {
-                    return Ok(Some(hover_conv::to_lsp(&contents)));
-                }
-                Ok(BridgeResponse::Error { message, .. }) => {
-                    warn!("hover ECJ error: {message}");
-                }
-                Err(e) => warn!("hover error: {e}"),
-                _ => {}
-            }
-        }
-
-        Ok(tree
-            .as_ref()
-            .and_then(|tree| syntax_navigation::hover_markdown(tree, &content, offset))
-            .map(|markdown| hover_conv::to_lsp(&markdown)))
+        let cfg = self.config.read().await.clone();
+        Ok(crate::features::hover::handle(&self.dispatcher, &cfg, &params).await.flatten())
     }
 
     // ── Signature Help ────────────────────────────────────────────────────────
@@ -1389,6 +1364,15 @@ fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
 
     *config = config.clone().with_defaults();
     restart_ecj
+}
+
+fn completion_markdown(caps: &ClientCapabilities) -> bool {
+    caps.text_document
+        .as_ref()
+        .and_then(|t| t.completion.as_ref())
+        .and_then(|c| c.completion_item.as_ref())
+        .and_then(|i| i.documentation_format.as_ref())
+        .is_some_and(|f| f.contains(&MarkupKind::Markdown))
 }
 
 fn setting_value<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {

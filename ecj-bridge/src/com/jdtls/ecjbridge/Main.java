@@ -230,10 +230,12 @@ public class Main {
                     req.uri, req.offset, req.importPrefix);
                 yield new CompletionsResponse(req.id, items);
             }
-            case "hover" -> {
-                String hover = navigation.hover(
-                    req.files, orDefault(req.sourceLevel), orEmpty(req.classpath), req.uri, req.offset);
-                yield new HoverResponse(req.id, hover);
+            case "hoverInfo" -> {
+                java.util.Map<String, Object> info = new java.util.LinkedHashMap<>();
+                info.put("id", req.id);
+                info.put("method", "hoverInfo");
+                info.putAll(HoverService.hoverInfo(req, req.line, req.character));
+                yield info;
             }
             case "navigate" -> {
                 List<BridgeLocation> locs = navigation.navigate(
@@ -308,6 +310,50 @@ public class Main {
             case "classFileContents" -> NavigationDataService.classFileContents(req);
             case "classFileInfo" -> NavigationDataService.classFileInfo(req);
             case "astBindings" -> AstBindingsService.handle(req);
+            case "readJarEntry" -> {
+                // JavaElement.getURLContents for a jar: the charset of the
+                // HTML <meta> tag, else UTF-8
+                try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(req.archive)) {
+                    java.util.zip.ZipEntry e = zip.getEntry(req.entry);
+                    if (e == null) {
+                        yield new ErrorResponse(req.id, "missing entry " + req.entry);
+                    }
+                    byte[] bytes;
+                    try (java.io.InputStream in = zip.getInputStream(e)) {
+                        bytes = in.readAllBytes();
+                    }
+                    String head = new String(bytes, 0, Math.min(bytes.length, 4096), java.nio.charset.StandardCharsets.ISO_8859_1);
+                    java.util.regex.Matcher m = java.util.regex.Pattern
+                            .compile("(?i)<meta[^>]*charset=\\\"?([A-Za-z0-9_\\-]+)").matcher(head);
+                    java.nio.charset.Charset cs = java.nio.charset.StandardCharsets.UTF_8;
+                    if (m.find()) {
+                        try {
+                            cs = java.nio.charset.Charset.forName(m.group(1));
+                        } catch (Exception ignored) {
+                            // keep UTF-8
+                        }
+                    }
+                    yield new NavigationDataService.ClassFileContentsResponse(req.id, new String(bytes, cs));
+                } catch (java.io.IOException ex) {
+                    yield new ErrorResponse(req.id, ex.toString());
+                }
+            }
+            case "extractJarEntry" -> {
+                try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(req.archive)) {
+                    java.util.zip.ZipEntry e = zip.getEntry(req.entry);
+                    if (e == null) {
+                        yield new ErrorResponse(req.id, "missing entry " + req.entry);
+                    }
+                    java.nio.file.Path out = java.nio.file.Path.of(req.output);
+                    java.nio.file.Files.createDirectories(out.getParent());
+                    try (java.io.InputStream in = zip.getInputStream(e)) {
+                        java.nio.file.Files.copy(in, out, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    yield new OkResponse(req.id);
+                } catch (java.io.IOException ex) {
+                    yield new ErrorResponse(req.id, ex.toString());
+                }
+            }
             case "shutdown" -> new OkResponse(req.id);
             default -> new ErrorResponse(req.id, "Unknown method: " + req.method);
         };

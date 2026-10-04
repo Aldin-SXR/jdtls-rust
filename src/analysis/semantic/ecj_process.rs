@@ -126,7 +126,9 @@ impl EcjProcess {
             BridgeRequest::Compile { id, .. }
             | BridgeRequest::Complete { id, .. }
             | BridgeRequest::CodeAssist { id, .. }
-            | BridgeRequest::Hover { id, .. }
+            | BridgeRequest::HoverInfo { id, .. }
+            | BridgeRequest::ExtractJarEntry { id, .. }
+            | BridgeRequest::ReadJarEntry { id, .. }
             | BridgeRequest::Navigate { id, .. }
             | BridgeRequest::FindReferences { id, .. }
             | BridgeRequest::CodeAction { id, .. }

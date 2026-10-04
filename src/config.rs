@@ -41,6 +41,10 @@ pub struct Config {
     /// jdt.ls-style `settings` object (`{ "java": { ... } }`).
     pub settings: Option<serde_json::Value>,
 
+    /// Client supports Markdown completion documentation
+    /// (`ClientPreferences.isSupportsCompletionDocumentationMarkdown`).
+    #[serde(skip)]
+    pub completion_documentation_markdown: bool,
     /// Inlay-hint preferences (`java.inlayHints.*`), from `settings`.
     #[serde(skip)]
     pub inlay_hints: crate::features::inlay_hints::InlayHintPreferences,
@@ -48,6 +52,26 @@ pub struct Config {
     /// Client capability `workspace.inlayHint.refreshSupport`.
     #[serde(skip)]
     pub inlay_hint_refresh_support: bool,
+}
+
+impl Config {
+    /// A jdt.ls setting by dotted path, e.g. `java.hover.javadoc.enabled`.
+    pub fn setting(&self, path: &str) -> Option<&serde_json::Value> {
+        let settings = self.settings.as_ref()?;
+        if let Some(v) = settings.get(path) {
+            return Some(v);
+        }
+        path.split('.').try_fold(settings, |v, k| v.get(k))
+    }
+
+    /// `extendedClientCapabilities.<name>` is `true`.
+    pub fn extended_capability(&self, name: &str) -> bool {
+        self.extended_client_capabilities
+            .as_ref()
+            .and_then(|c| c.get(name))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
 }
 
 impl Config {
