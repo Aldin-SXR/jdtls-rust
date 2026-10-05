@@ -386,7 +386,10 @@ impl<'a, 'f> Analyzer<'a, 'f> {
             return e;
         }
         let node = self.rw.copy_sources[info].node;
-        let (start, len) = self.extended_range(node);
+        let (start, len) = if let Some((first, last)) = self.rw.copy_sources[info].range {
+            let start = self.extended_offset(first);
+            (start, self.extended_end(last) - start)
+        } else { self.extended_range(node) };
         let kind = if self.rw.copy_sources[info].is_move { EditKind::MoveSource } else { EditKind::CopySource };
         let e = self.edits.new_edit(start, len, kind);
         self.source_copy_info_to_edit.insert(info, e);
@@ -774,8 +777,10 @@ impl<'a, 'f> Analyzer<'a, 'f> {
                 };
                 match &curr.data {
                     MarkerData::Copy(info) => {
-                        let src_node = self.rw.copy_sources[*info].node;
-                        let src_indent_level = self.get_indent(self.start(src_node));
+                        let source_info = &self.rw.copy_sources[*info];
+                        let src_node = source_info.range.map_or(source_info.node, |(_, last)| last);
+                        let indent_node = source_info.range.map_or(source_info.node, |(first, _)| first);
+                        let src_indent_level = self.get_indent(self.start(indent_node));
                         let source_edit = self.copy_source_edit(*info);
                         self.do_text_copy(source_edit, insert_offset, src_indent_level, &dest_indent)?;
                         curr_pos = offset + curr.length.max(0) as usize;

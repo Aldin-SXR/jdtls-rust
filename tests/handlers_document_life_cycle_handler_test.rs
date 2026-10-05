@@ -100,7 +100,6 @@ fn test_unimplemented_methods() {
 }
 
 #[test]
-#[ignore = "needs QuickFixProcessor port (code action worker): no \"Remove (including condition)\" dead-code quick fix yet"]
 fn test_remove_dead_code_after_if() {
     let mut ws = workspace();
     let root = ws.new_empty_project(&Default::default());

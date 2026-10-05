@@ -110,6 +110,7 @@ impl<'r> Flattener<'r> {
             Some(c) => self.accept(c),
             None => {
                 let text = match prop {
+                    "type" if self.rw.kind(n) == NodeKind::ClassInstanceCreation => "MISSING",
                     "type" | "returnType2" | "elementType" | "rightOperand" if self.rw.kind(n) != NodeKind::InfixExpression => "int",
                     "body" | "finally" => "{}",
                     _ => "MISSING",

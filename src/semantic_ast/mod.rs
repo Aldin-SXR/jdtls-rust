@@ -254,6 +254,8 @@ pub struct Binding {
     /// Compiler IMethodBinding.isSubsignature/overrides relations in this AST.
     pub method_subsignatures: Vec<BindingId>,
     pub method_overrides: Vec<BindingId>,
+    pub assignment_targets: Vec<BindingId>,
+    pub functional_method: Option<BindingId>,
     pub name_offset: i32,
     pub source_offset: i32,
 }
@@ -405,6 +407,8 @@ impl Ast {
                 source_offset: o.source_offset,
                 method_subsignatures: bl(&o.ss).unwrap_or_default(),
                 method_overrides: bl(&o.ov).unwrap_or_default(),
+                assignment_targets: bl(&o.assign).unwrap_or_default(),
+                functional_method: b(o.fim),
             })
             .collect();
         let problems = data
@@ -501,6 +505,12 @@ impl Ast {
     /// The binding with `key`, if this AST knows it.
     pub fn binding_by_key(&self, key: &str) -> Option<BindingRef<'_>> {
         self.bindings.iter().position(|b| b.key == key).map(|i| self.binding(BindingId(i as u32)))
+    }
+
+    /// A type already resolved in the semantic graph (including well-known primitives).
+    pub(crate) fn type_by_name(&self, name: &str) -> Option<BindingRef<'_>> {
+        self.bindings.iter().position(|b| b.kind == Some(BindingKind::Type) && b.qualified_name == name)
+            .map(|i| self.binding(BindingId(i as u32)))
     }
 
     /// Source substring `[start, end)` in UTF-16 units.

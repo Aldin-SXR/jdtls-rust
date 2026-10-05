@@ -66,6 +66,9 @@ pub struct BindingOut {
     pub pn: Option<Vec<i32>>,
     pub ss: Option<Vec<i32>>,
     pub ov: Option<Vec<i32>>,
+    pub assign: Option<Vec<i32>>,
+    #[serde(default = "minus_one")]
+    pub fim: i32,
     #[serde(default = "minus_one", rename = "nameOffset")]
     pub name_offset: i32,
     #[serde(default = "minus_one", rename = "sourceOffset")]

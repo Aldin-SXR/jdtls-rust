@@ -53,7 +53,8 @@ final class SemanticAstService {
         public int qn = -1, bn = -1, pkg = -1;
         public int er = -1, td = -1, dc = -1, dm = -1, sc = -1, el = -1, cmp = -1, bound = -1, gt = -1;
         public int dim;
-        public int[] it, ta, tp, tbs, dmeth, dfld, dtyp, ctors;
+        public int[] it, ta, tp, tbs, dmeth, dfld, dtyp, ctors, assign;
+        public int fim = -1;
         // variable
         public int type = -1, vid = -1, cv = -1, vd = -1;
         // method
@@ -151,6 +152,7 @@ final class SemanticAstService {
         private final Map<String, Integer> bindingIndex = new HashMap<>();
         private final IdentityHashMap<IBinding, Integer> bindingIdentity = new IdentityHashMap<>();
         private final Map<Integer, IMethodBinding> methodBindings = new HashMap<>();
+        private final Map<Integer, ITypeBinding> typeBindings = new HashMap<>();
 
         Collector(CompilationUnit cu, SemanticAstResponse res, BridgeProtocol.Request request) {
             this.cu = cu;
@@ -199,7 +201,18 @@ final class SemanticAstService {
             }
             hierarchyGraph(cu.getAST().resolveWellKnownType("java.lang.Object"), new java.util.HashSet<>());
             constructorMembers(cu.getAST().resolveWellKnownType("java.lang.Object"));
+            boolean conditional = nodeIndex.keySet().stream().anyMatch(n -> n instanceof ConditionalExpression);
+            if (conditional) {
+                java.util.Set<String> seen = new java.util.HashSet<>();
+                for (IMethodBinding method : new ArrayList<>(methodBindings.values())) {
+                    hierarchyGraph(method.getDeclaringClass(), seen);
+                }
+                for (String name : new String[] {"boolean", "byte", "char", "short", "int", "long", "float", "double"}) {
+                    binding(cu.getAST().resolveWellKnownType(name));
+                }
+            }
             memberSourceData();
+            if (conditional) typeRelations();
             methodRelations();
             List<Integer> comments = new ArrayList<>();
             for (Object o : cu.getCommentList()) {
@@ -425,6 +438,7 @@ final class SemanticAstService {
                 if (binding.isRecovered()) f |= RECOVERED;
                 if (binding.isSynthetic()) f |= SYNTHETIC;
                 if (binding instanceof ITypeBinding t) {
+                    typeBindings.put(idx, t);
                     f |= typeFlags(t);
                     b.f = f;
                     type(t, b);
@@ -484,6 +498,39 @@ final class SemanticAstService {
                 // keep what we have
             }
             return idx;
+        }
+
+        // Assignment relations and functional-method bindings are compiler data.
+        // Export only expression/parameter types needed by conditional expressions,
+        // rather than a quadratic relation over the entire member graph.
+        private void typeRelations() {
+            java.util.Set<Integer> types = new java.util.LinkedHashSet<>();
+            for (NodeOut node : nodes) if (node.tb >= 0) types.add(node.tb);
+            for (IMethodBinding method : new ArrayList<>(methodBindings.values())) {
+                for (ITypeBinding parameter : method.getParameterTypes()) types.add(binding(parameter));
+            }
+            for (int id : new ArrayList<>(types)) {
+                ITypeBinding type = typeBindings.get(id);
+                if (type != null) {
+                    try { bindings.get(id).fim = binding(type.getFunctionalInterfaceMethod()); }
+                    catch (RuntimeException e) { /* recovered type */ }
+                }
+            }
+            for (int first : types) {
+                ITypeBinding source = typeBindings.get(first);
+                if (source == null) continue;
+                List<Integer> targets = new ArrayList<>();
+                for (int second : types) {
+                    ITypeBinding target = typeBindings.get(second);
+                    if (target == null) continue;
+                    try {
+                        if (source.isAssignmentCompatible(target)) targets.add(second);
+                    } catch (RuntimeException e) {
+                        // Recovered bindings may not have a valid conversion.
+                    }
+                }
+                bindings.get(first).assign = targets.stream().mapToInt(Integer::intValue).toArray();
+            }
         }
 
         // Compiler predicates are semantic data. Rust chooses methods and builds

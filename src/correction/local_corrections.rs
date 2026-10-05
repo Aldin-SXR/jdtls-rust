@@ -1,5 +1,9 @@
 //! Port of `LocalCorrectionsSubProcessor` / `LocalCorrectionsBaseSubProcessor`.
 
+mod unreachable;
+mod conversion;
+pub use unreachable::proposals as unreachable_code;
+
 use super::edit::Env;
 use super::parentheses::needs_parentheses;
 use super::{kind, messages, relevance, Change, Context, CuChange, ProblemLocation, Proposal};

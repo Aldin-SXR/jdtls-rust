@@ -258,3 +258,12 @@ pub fn can_remove_parentheses(expression: Node<'_>) -> bool {
     expression.is(NodeKind::ParenthesizedExpression)
         && !needs_parentheses(crate::semantic_ast::resolve::unparenthesed_expression(expression), parent, loc)
 }
+
+/// NecessaryParenthesesChecker for a newly constructed CastExpression.
+pub fn needs_parentheses_for_cast(expression: Node<'_>, primitive: bool) -> bool {
+    if !expression_type_needs_parentheses(expression.kind()) {return false;}
+    if expression.is(NodeKind::SwitchExpression) {return true;}
+    if expression.is(NodeKind::PrefixExpression) {return !primitive;}
+    if expression.is(NodeKind::ArrayCreation) {return false;}
+    expression_precedence(expression) < 12
+}

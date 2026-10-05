@@ -121,6 +121,7 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::UnqualifiedFieldAccess => {
             super::getter_setter::add_getter_setter_proposal(env, ctx, problem, proposals, super::relevance::GETTER_SETTER_UNQUALIFIED_FIELD_ACCESS).await;
         }
+        p::CodeCannotBeReached | p::DeadCode => super::local_corrections::unreachable_code(env, ctx, problem, proposals).await,
         p::MissingSerialVersion => super::serial_version::serial_version_proposals(ctx, problem, proposals),
         p::BodyForAbstractMethod | p::AbstractMethodInAbstractClass | p::AbstractMethodInEnum | p::EnumAbstractMethodMustBeImplemented => super::modifier_corrections::abstract_method(ctx, problem, proposals),
         p::AbstractMethodsInConcreteClass => super::modifier_corrections::abstract_type(ctx, problem, proposals),

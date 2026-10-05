@@ -658,13 +658,6 @@ public class Main {
                         CompilationService.lineColToOffset(source, d.endLine, d.endChar)));
             }
 
-            if (problemId == org.eclipse.jdt.core.compiler.IProblem.CodeCannotBeReached
-                    || msg.contains("Dead code")
-                    || msg.contains("Unreachable code")) {
-                BridgeAction a = makeRemoveUnreachableCodeAction(req.uri, source, cu, d);
-                if (a != null) actions.add(a);
-            }
-
             if (msg.contains("Implicit super constructor") && msg.contains("is undefined")) {
                 // Try adding super() to an existing constructor first
                 BridgeAction a = makeAddExplicitSuperConstructorCallAction(req.uri, source, cu, d);
@@ -1205,20 +1198,6 @@ public class Main {
         BridgeAction a = new BridgeAction(); a.title = title; a.kind = "quickfix";
         BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(removalEditFromOffsets(source, start, end));
         a.edits = List.of(fe); return a;
-    }
-
-    private static BridgeAction makeRemoveUnreachableCodeAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d) {
-        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        StatementLocator loc = new StatementLocator(offset); cu.accept(loc);
-        if (loc.found == null) return null;
-        int stmtStart = loc.found.getStartPosition();
-        int e = stmtStart + loc.found.getLength();
-        if (e < source.length() && source.charAt(e) == '\n') e++;
-        // Start from the beginning of the line so the leading whitespace is also
-        // removed; without this the orphaned indent merges with the next line.
-        int lineNum = cu.getLineNumber(stmtStart) - 1; // 0-based
-        int s = lineStart(source, lineNum);
-        return makeRemoveTextAction("Remove unreachable code", uri, source, s, e);
     }
 
     private static List<BridgeAction> makeAddMatchingConstructorActions(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, Map<String, String> files, String sourceLevel, List<String> classpath) {

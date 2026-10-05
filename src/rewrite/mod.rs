@@ -95,6 +95,8 @@ pub struct CopySourceInfo {
     pub location: Option<(RNode, &'static str)>,
     pub node: NodeId,
     pub is_move: bool,
+    /// A contiguous child-list range copied while its enclosing block is removed.
+    pub range: Option<(NodeId, NodeId)>,
 }
 
 /// Rewrite change kinds (`RewriteEvent`).
@@ -747,12 +749,27 @@ impl ASTRewrite {
 
     fn create_target(&mut self, node: NodeId, is_move: bool) -> RNode {
         let location = self.location_of(RNode::Orig(node));
-        self.copy_sources.push(CopySourceInfo { location, node, is_move });
+        self.copy_sources.push(CopySourceInfo { location, node, is_move, range: None });
         let idx = self.copy_sources.len() - 1;
         let kind = self.ast.data(node).kind;
         let placeholder = self.new_placeholder_node(kind);
         if let RNode::New(i) = placeholder {
             self.new_nodes[i as usize].placeholder = Some(Placeholder::Copy(idx));
+        }
+        placeholder
+    }
+
+    /// ListRewrite.createMoveTarget(first, last) for a block whose ancestor
+    /// is removed/replaced. Anchor the source at the enclosing block so the
+    /// whole range (including comments and separators) stays under that edit.
+    pub(crate) fn move_removed_block_contents(&mut self, block: NodeId) -> RNode {
+        let list = self.ast.node(block).list("statements");
+        let range = (list.first().expect("nonempty block").id, list.last().unwrap().id);
+        self.copy_sources.push(CopySourceInfo { location: None, node: block, is_move: true, range: Some(range) });
+        let info = self.copy_sources.len() - 1;
+        let placeholder = self.new_placeholder_node(NodeKind::Block);
+        if let RNode::New(i) = placeholder {
+            self.new_nodes[i as usize].placeholder = Some(Placeholder::Copy(info));
         }
         placeholder
     }

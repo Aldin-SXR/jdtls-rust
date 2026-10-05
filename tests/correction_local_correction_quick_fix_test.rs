@@ -1,4 +1,4 @@
-//! Unimplemented-method ports from LocalCorrectionQuickFixTest; other methods remain unported.
+//! Selected LocalCorrectionQuickFixTest ports with original fixtures and full-source assertions.
 mod common;
 use common::jdtls::test_default_options;
 use common::quickfix::{Expected, QuickFixTest};
@@ -47,4 +47,279 @@ fn test_unimplemented_methods_for_enum() {
         "package test1;\npublic enum F implements E {\n}\n",
     );
     t.assert_code_actions(&uri,&[Expected::new("Add unimplemented methods","package test1;\npublic enum F implements E {\n    ;\n\n    @Override\n    public void foo() {\n        // TODO Auto-generated method stub\n        throw new UnsupportedOperationException(\"Unimplemented method 'foo'\");\n    }\n}\n")]);
+}
+
+fn dead_setup() -> (QuickFixTest, std::path::PathBuf) {
+    let mut t = QuickFixTest::new();
+    let mut options = test_default_options();
+    options.insert(
+        "org.eclipse.jdt.core.compiler.problem.unusedPrivateMember".into(),
+        "error".into(),
+    );
+    options.insert(
+        "org.eclipse.jdt.core.compiler.problem.deadCode".into(),
+        "warning".into(),
+    );
+    let root = t.ws.new_empty_project(&options);
+    t.set_ignored_commands(&["Extract.*"]);
+    (t, root)
+}
+
+#[test]
+fn test_remove_unreachable_code_stmt() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert(
+        "org.eclipse.jdt.core.compiler.problem.unnecessaryElse".into(),
+        "ignore".into(),
+    );
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(int x) {\n        if (x == 9) {\n            return true;\n        } else\n            return false;\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(int x) {\n        if (x == 9) {\n            return true;\n        } else\n            return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_unreachable_code_stmt2() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test", "E.java", "package test;\npublic class E {\n    public String getName() {\n        try{\n            return \"fred\";\n        }\n        catch (Exception e){\n            return e.getLocalizedMessage();\n        }\n        System.err.print(\"wow\");\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test;\npublic class E {\n    public String getName() {\n        try{\n            return \"fred\";\n        }\n        catch (Exception e){\n            return e.getLocalizedMessage();\n        }\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_unreachable_code_while() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo() {\n        while (false) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public boolean foo() {\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_if_then() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        if (false) {\n            System.out.println(\"a\");\n        } else {\n            System.out.println(\"b\");\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public void foo() {\n        System.out.println(\"b\");\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_if_then2() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        Object o = new Object();\n        if (o != null) {\n            if (o == null) {\n            \tSystem.out.println(\"hello\");\n        \t} else {\n            \tSystem.out.println(\"bye\");\n        \t}\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public void foo() {\n        Object o = new Object();\n        if (o != null) {\n            System.out.println(\"bye\");\n        }\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_if_then3() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        Object o = new Object();\n        if (o != null) \n            if (o == null) {\n            \tSystem.out.println(\"hello\");\n        \t} else {\n            \tSystem.out.println(\"bye\");\n            \tSystem.out.println(\"bye-bye\");\n        \t}\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public void foo() {\n        Object o = new Object();\n        if (o != null) {\n        \tSystem.out.println(\"bye\");\n        \tSystem.out.println(\"bye-bye\");\n        }\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_if_then4() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        Object o = new Object();\n        if (o != null) \n            if (true) \n            \tif (o == null) \n            \t\tSystem.out.println(\"hello\");\n\t\tSystem.out.println(\"bye\");\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public void foo() {\n        Object o = new Object();\n        if (o != null) \n            if (true) {\n            }\n\t\tSystem.out.println(\"bye\");\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_if_then5() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        Object o = new Object();\n        if (o != null) \n            if (false) \n            \tif (o == null) \n            \t\tSystem.out.println(\"hello\");\n\t\tSystem.out.println(\"bye\");\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public void foo() {\n        Object o = new Object();\n        if (o != null) {\n        }\n\t\tSystem.out.println(\"bye\");\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_if_then_switch() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        switch (1) {\n            case 1:\n                if (false) {\n                \tfoo();\n\t\t\t\t\tSystem.out.println(\"hi\");\n\t\t\t\t} else {\n                \tSystem.out.println(\"bye\");\n\t\t\t\t}\n                break;\n            case 2:\n                foo();\n                break;\n            default:\n                break;\n        };\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public void foo() {\n        switch (1) {\n            case 1:\n            System.out.println(\"bye\");\n                break;\n            case 2:\n                foo();\n                break;\n            default:\n                break;\n        };\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_if_else() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        if (Math.random() == -1 || true) {\n            System.out.println(\"a\");\n        } else {\n            System.out.println(\"b\");\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public void foo() {\n        System.out.println(\"a\");\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo() {\n        if (true) return false;\n        return true;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public boolean foo() {\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if2() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if ((false && b1) && b2) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (false && b2) {\n            return true;\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if3() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if ((b1 && false) && b2) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (b1 && false) {\n            return true;\n        }\n        return false;\n    }\n}\n"),
+        Expected::new("Split && condition", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (b1 && false) {\n            if (b2) {\n                return true;\n            }\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if4() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if ((((b1 && false))) && b2) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (b1 && false) {\n            return true;\n        }\n        return false;\n    }\n}\n"),
+        Expected::new("Split && condition", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (b1 && false) {\n            if (b2) {\n                return true;\n            }\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if5() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if ((((b1 && false) && b2))) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (b1 && false) {\n            return true;\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if6() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if ((((false && b1) && b2))) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (((false && b2))) {\n            return true;\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if7() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if ((((false && b1))) && b2) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (false && b2) {\n            return true;\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if8() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1) {\n        if ((((false && b1)))) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1) {\n        if (false) {\n            return true;\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if9() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (false && b1 && b2) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (false) {\n            return true;\n        }\n        return false;\n    }\n}\n"),
+        Expected::new("Split && condition", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (false) {\n            if (b1 && b2) {\n                return true;\n            }\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if10() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (((false && b1 && b2))) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if (false) {\n            return true;\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if11() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1) {\n        if ((true || b1) && false) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1) {\n        if (true && false) {\n            return true;\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if12() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2, boolean b3) {\n        if (((b1 && false) && b2) | b3) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2, boolean b3) {\n        if ((b1 && false) | b3) {\n            return true;\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_after_if13() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if ((false | false && b1) & b2) {\n            return true;\n        }\n        return false;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove", "package test1;\npublic class E {\n    public boolean foo(boolean b1, boolean b2) {\n        if ((false | false) & b2) {\n            return true;\n        }\n        return false;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_conditional() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public int foo() {\n        return true ? 1 : 0;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public int foo() {\n        return 1;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_conditional2() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        Object o = true ? new Integer(1) + 2 : new Double(0.0) + 3;\n        System.out.println(o);\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public void foo() {\n        Object o = (double) (new Integer(1) + 2);\n        System.out.println(o);\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_conditional3() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        Object o = true ? new Integer(1) : new Double(0.0);\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public void foo() {\n        Object o = (double) new Integer(1);\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_dead_code_multi_statements() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        if (true)\n            return;\n        foo();\n        foo();\n        foo();\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove (including condition)", "package test1;\npublic class E {\n    public void foo() {\n        return;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_remove_unreachable_code_multi_statements_switch() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        switch (1) {\n        case 1:\n            foo();\n            break;\n            foo();\n            new Object();\n        case 2:\n            foo();\n            break;\n        default:\n            break;\n        };\n    }\n}\n");
+    t.assert_code_action_exists_expected(&uri, &Expected::new("Remove", "package test1;\npublic class E {\n    public void foo() {\n        switch (1) {\n        case 1:\n            foo();\n            break;\n        case 2:\n            foo();\n            break;\n        default:\n            break;\n        };\n    }\n}\n"));
 }
