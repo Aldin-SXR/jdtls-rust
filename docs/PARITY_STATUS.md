@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 807 | 38.7% |
-| Passing | 762 | 36.5% |
+| Ported | 811 | 38.9% |
+| Passing | 766 | 36.7% |
 | Ported but `#[ignore]`d | 45 | 2.2% |
-| Not ported yet | 1,280 | 61.3% |
+| Not ported yet | 1,276 | 61.1% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,325 passed,
-0 failed and 46 ignored across 81 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,364 passed,
+0 failed and 46 ignored across 82 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -39,7 +39,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,325 passed
 `tests/method_correction_regressions.rs`, 29 tests;
 `tests/dead_code_regressions.rs`, 26 tests;
 `tests/unused_code_regressions.rs`, 32 tests;
-`tests/exception_correction_regressions.rs`, 22 tests) and unit
+`tests/exception_correction_regressions.rs`, 22 tests;
+`tests/expression_correction_regressions.rs`, 35 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -52,7 +53,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 132 | 104 | 49% |
-| correction | 604 | 64 | 64 | 11% |
+| correction | 604 | 68 | 68 | 11% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
 | preferences | 53 | 0 | 0 | 0% |
@@ -73,7 +74,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 9 | 1 | 9/9 active; `outgoing_calls_src` resolves into the real JDK's `src.zip` (environment) |
 | handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 11 | 11 | 0 | 11/11 |
 | handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 13 | 1 | 13/13 active; Runnable exposes 3 lenses with the real JDK's sources (environment) |
-| handlers/CompletionHandlerTest | `handlers_completion_handler_test` | 57 | 55 | 2 | 55/55 active; real-JDK TimeUnit and Method* proposal counts differ from rtstubs.jar |
+| handlers/CompletionHandlerTest | `handlers_completion_handler_test` | 57 | 55 | 2 | 54/55 active on the latest oracle run; `test_snippet_ctor` returns unresolved `enclosing_simple_type` in the product, while Rust retains the passing upstream assertion; real-JDK TimeUnit and Method* proposal counts differ from rtstubs.jar |
 | handlers/DocumentHighlightHandlerTest | `handlers_document_highlight_handler_test` | 5 | 5 | 0 | pass |
 | handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` | 19 | 19 | 0 | 19/19 |
 | handlers/DocumentSymbolHandlerTest | `handlers_document_symbol_handler_test` | 14 | 13 | 1 | 13/13 active |
@@ -112,7 +113,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` | 1 | 1 | 0 | 1/1 (unknown-command error) |
 | handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 16 | 3 | 16/16 |
 | correction/AbstractMethodQuickFixTest | `correction_abstract_method_quick_fix_test` | 8 | 8 | 0 | 8/8 |
-| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 48 | 48 | 0 | 48/48 unimplemented-method, unused-declaration, dead/unreachable-code, unreachable-catch and unused-throws cases; 39 upstream methods remain unported |
+| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 52 | 52 | 0 | 52/52 unimplemented-method, unused-declaration, dead/unreachable-code, catch/throws, expression, operator and NLS cases; 35 upstream methods remain unported |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -380,7 +381,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 
 | Work | Upstream tests | Share of suite |
 |---|---:|---:|
-| Remaining quick fixes and assists (`correction`) | 540 | 26% |
+| Remaining quick fixes and assists (`correction`) | 536 | 26% |
 | Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
 | Remaining project managers | 79 | 4% |
 | Refactoring | 119 | 6% |
@@ -392,7 +393,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions|delegate_regressions|override_regressions|method_correction_regressions|dead_code_regressions|unused_code_regressions|exception_correction_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions|delegate_regressions|override_regressions|method_correction_regressions|dead_code_regressions|unused_code_regressions|exception_correction_regressions|expression_correction_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
@@ -402,7 +403,7 @@ Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
 `correction_regressions.rs`, `completion_regressions.rs` and
 `project_download_regressions.rs`, `paste_regressions.rs` and
 `smart_detection_regressions.rs`, `accessor_regressions.rs`,
-`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, `delegate_regressions.rs`, `override_regressions.rs`, `method_correction_regressions.rs`, `dead_code_regressions.rs`, `unused_code_regressions.rs`, `exception_correction_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
+`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, `delegate_regressions.rs`, `override_regressions.rs`, `method_correction_regressions.rs`, `dead_code_regressions.rs`, `unused_code_regressions.rs`, `exception_correction_regressions.rs`, `expression_correction_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.
 
@@ -893,7 +894,7 @@ and global preference/template dependencies remain unfinished.
 All four unneeded-catch and four unnecessary-thrown-exception methods from
 `LocalCorrectionQuickFixTest` preserve the upstream fixtures, compiler and
 formatter options, proposal labels and complete edited-source expectations.
-The class now has 48 of 87 methods ported; 39 remain unported.
+At the end of that batch the class had 48 of 87 methods ported; 39 remained unported.
 
 * Rust ports catch removal, selected multi-catch alternative removal, catch-to-
   throws replacement, existing exception/supertype checks and method/initializer
@@ -925,8 +926,64 @@ file-backed dead-code, unused-code and exception regressions pass against jdt.ls
 cases that return early; 125 cases actually exercise the oracle. Logs are in
 `target/parity-evidence/exception-corrections-full-suite-final-1.log` and
 `target/parity-evidence/exception-corrections-oracle-final-1.log` (gitignored).
-The ledger now has 807 upstream ports, 762 passing and 45 ignored; 1,280 upstream
-tests remain unported. This ports the individual catch/throws corrections, not
+At the end of that batch the ledger had 807 upstream ports, 762 passing and
+45 ignored; 1,280 upstream tests remained unported. This ports the individual catch/throws corrections, not
 the full ChangeMethodSignatureProposal, generic type-reference counter, general
 ListRewrite range API, Javadoc processor or uncaught-exception corrections.
 Earlier conversion, scope, annotation and global preference/template gaps remain.
+
+## Expression/operator and NLS-tag correction evidence
+
+The expression-to-local-variable method, both invalid-operator parentheses
+methods and the unnecessary-NLS-tag method from `LocalCorrectionQuickFixTest`
+retain their upstream sources, compiler/formatter options, labels, assertion
+styles and complete edited-source expectations. The class now has 52 of 87
+methods ported; 35 remain unported.
+
+* Rust ports invalid negation grouping around `instanceof` and infix operators,
+  plus the comparison finder and exact insertion ranges for bitwise equality
+  expressions. Comments, spacing and all intervening operands are preserved.
+* Rust ports `NewLocalVariableCorrectionProposalCore` selection, unparenthesized
+  initializer copying, recovered-cast fallback, type/import handling and reserved
+  identifier discovery. The reserved-name walk retains the reference visitor's
+  exclusions for nested types and variable initializers. Parameter affix ordering,
+  numeric exclusions, Java character casing and identifier categories now share
+  the naming helper with completion.
+* Rust ports `StringFixCore.getReplace` for unnecessary NLS tags, including leading
+  indentation, line delimiters, trailing comment text, one/two slash characters,
+  adjacent tag markers and the EOF rule. The EOF fixture uses an incomplete type
+  containing the tag. A tag after a completed top-level type triggers an oracle
+  suppression-processor NPE; full suppression handling remains unported.
+* Thirty-five own regressions cover operator comments and bitwise operand ranges,
+  primitive/reference/array/generic/recovered types, imports, parameters, later
+  declarations, field and nested-type exclusions, initializers, affix preferences
+  and fallback, case-equivalent exclusions and Unicode case/identifier rules.
+  They also check NLS comment retention, exact source edits, deferred resolution,
+  diagnostic/resource edits, unsaved Unicode/CRLF buffers and unchanged disk
+  sources. Thirty-four file-backed cases pass against the oracle; one Rust-only
+  case exercises all three families with real diagnostics in virtual documents.
+* Reference quirks remain: already-parenthesized invalid negation has no grouping
+  proposal; new locals use parameter preferences and dimension zero for arrays;
+  initializer corrections do not reserve initializer variables. The recovered
+  qualified-generic fixture retains its qualified type and adds no import.
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 82 targets (1,364 passing, zero failures, 46 ignored).
+`expression-regressions-oracle-4.log` reports 35 passes, including the virtual
+case that returns early; 34 cases actually exercise jdt.ls 1.58.0.
+`expression-corrections-upstream-oracle-final-1.log` verifies all 52 local
+correction ports and 54 of 55 active completion ports (two existing ignores).
+The unchanged `test_snippet_ctor` retains the original upstream fixture and
+assertion: the product returns literal `enclosing_simple_type` instead of
+`AnotherClass`. It fails again in isolation in
+`expression-completion-ctor-oracle-recheck-1.log`; Rust passes the assertion.
+The completion row above now records this observed oracle difference rather than
+claiming all active oracle cases pass. These logs and
+`expression-corrections-full-suite-final-1.log` are under
+`target/parity-evidence/` (gitignored).
+
+The ledger now has 811 upstream ports, 766 passing and 45 ignored; 1,276 upstream
+tests remain unported. Full annotation-aware import/type-node construction,
+general ScopeAnalyzer/NamingConventions, string cleanup and suppression processors
+remain unfinished, alongside the earlier conversion, scope and template gaps.
+This batch does not claim full feature parity.

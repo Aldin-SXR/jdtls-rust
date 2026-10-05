@@ -530,3 +530,53 @@ fn test_unnecessary_thrown_exception4() {
         Expected::new("Document thrown exception to avoid 'unused' warning","package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    /**\n     * @throws IOException\n     * @throws ParseException \n     */\n    public E(int i) throws IOException, ParseException {\n        if  (i == 0) {\n            throw new IOException();\n        }\n    }\n    public void foo(int i) throws ParseException {\n        if  (i == 0) {\n            throw new ParseException(null, 4);\n        }\n    }\n}\n")
     ]);
 }
+
+#[test]
+fn test_expression_should_be_variable() {
+    let (mut t, root) = dead_setup();
+    let before = "package test1;\npublic class E {\n    public static void foo (String input) {\n        ((String)input);\n    }\n}";
+    let after = "package test1;\npublic class E {\n    public static void foo (String input) {\n        String string = (String)input;\n    }\n}";
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", before);
+    t.assert_code_action_exists_expected(&uri, &Expected::new("Create local variable using expression", after));
+}
+
+#[test]
+fn test_set_parenteses1() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.localVariableHiding".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.compiler.problem.fieldHiding".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.formatter.tabulation.char".into(), "tab".into());
+    t.ws.set_project_options(&root, &options);
+    let before = "package test1;\npublic class E {\n    public void foo(Object x) {\n        if (!x instanceof Runnable) {\n        }\n    }\n}\n";
+    let after = "package test1;\npublic class E {\n    public void foo(Object x) {\n        if (!(x instanceof Runnable)) {\n        }\n    }\n}\n";
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", before);
+    t.assert_code_actions(&uri, &[Expected::new("Put 'instanceof' in parentheses", after)]);
+}
+
+#[test]
+fn test_set_parenteses2() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.localVariableHiding".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.compiler.problem.fieldHiding".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.formatter.tabulation.char".into(), "tab".into());
+    t.ws.set_project_options(&root, &options);
+    let before = "package test1;\npublic class E {\n    public boolean foo(int x) {\n        return !x instanceof Runnable || true;\n    }\n}\n";
+    let after = "package test1;\npublic class E {\n    public boolean foo(int x) {\n        return !(x instanceof Runnable) || true;\n    }\n}\n";
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", before);
+    t.assert_code_actions(&uri, &[Expected::new("Put 'instanceof' in parentheses", after)]);
+}
+
+#[test]
+fn test_unnecessary_nls_tag() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.nonExternalizedStringLiteral".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.formatter.tabulation.char".into(), "tab".into());
+    t.ws.set_project_options(&root, &options);
+    let before = "package test1;\npublic class E {\n\tpublic void foo(int count) {\n\t\tint a = count; //$NON-NLS-1$\n\t}\n}\n";
+    let after = "package test1;\npublic class E {\n\tpublic void foo(int count) {\n\t\tint a = count;\n\t}\n}\n";
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", before);
+    t.assert_code_action_exists_expected(&uri, &Expected::new("Remove unnecessary '$NON-NLS$' tag", after));
+}

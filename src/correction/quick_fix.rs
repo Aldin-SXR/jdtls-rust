@@ -89,6 +89,9 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
     let ctx = &req.context;
     match id {
         p::UnterminatedString => super::local_corrections::add_quote(ctx, problem, proposals),
+        p::InvalidOperator => super::local_corrections::invalid_operator(ctx, problem, proposals),
+        p::ExpressionShouldBeAVariable => super::local_corrections::expression_variable(env, ctx, problem, proposals).await,
+        p::UnnecessaryNLSTag => super::local_corrections::unnecessary_tag(ctx, problem, proposals),
         p::UnusedPrivateMethod | p::UnusedPrivateConstructor | p::UnusedPrivateType | p::UnusedPrivateField
         | p::LocalVariableIsNeverUsed | p::ArgumentIsNeverUsed | p::LambdaParameterIsNeverUsed => super::local_corrections::unused_member(env, ctx, problem, proposals).await,
         p::UnusedTypeParameter => super::local_corrections::unused_type_parameter(env, ctx, problem, proposals).await,
