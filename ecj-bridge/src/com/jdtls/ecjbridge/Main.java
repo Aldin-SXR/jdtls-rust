@@ -795,9 +795,6 @@ public class Main {
         // Override/implement abstract and interface methods.
         actions.addAll(makeOverrideMethodsActions(req.uri, source, cu, req.range));
 
-        // Generate delegate methods for fields.
-        actions.addAll(makeDelegateMethodsActions(req.uri, source, cu, req.range));
-
         // Quickassists — position-based, no diagnostic required.
         if (req.range != null) {
             BridgeAction extractVar = makeExtractLocalVariableAction(req.uri, source, cu, req.range);
@@ -2809,81 +2806,6 @@ public class Main {
             case "double" -> "0.0";
             default -> "null";
         };
-    }
-
-    // ── Generate delegate methods ────────────────────────────────────────────
-
-    private static List<BridgeAction> makeDelegateMethodsActions(String uri, String source,
-            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
-        org.eclipse.jdt.core.dom.TypeDeclaration td = findEnclosingClass(cu, range);
-        if (td == null) return List.of();
-
-        org.eclipse.jdt.core.dom.ITypeBinding classBinding = td.resolveBinding();
-        if (classBinding == null) return List.of();
-
-        // Collect existing method names to avoid duplicates.
-        Set<String> existing = new HashSet<>();
-        for (org.eclipse.jdt.core.dom.MethodDeclaration md : td.getMethods()) existing.add(methodSignatureKey(md));
-
-        String indent  = indentOf(source, cu.getLineNumber(td.getStartPosition()) - 1) + "    ";
-        int insertOff  = classClosingBrace(td, source);
-        int[] insLC    = CompilationService.offsetToLineCol(source, insertOff);
-
-        List<BridgeAction> result = new ArrayList<>();
-
-        for (org.eclipse.jdt.core.dom.FieldDeclaration fd : instanceFields(td)) {
-            org.eclipse.jdt.core.dom.ITypeBinding fieldType = fd.getType().resolveBinding();
-            if (fieldType == null) continue;
-
-            // Skip primitive-typed fields.
-            if (fieldType.isPrimitive()) continue;
-
-            // Collect public non-static methods of the field type.
-            List<org.eclipse.jdt.core.dom.IMethodBinding> delegatable = new ArrayList<>();
-            for (org.eclipse.jdt.core.dom.IMethodBinding mb : fieldType.getDeclaredMethods()) {
-                if (java.lang.reflect.Modifier.isPublic(mb.getModifiers())
-                        && !java.lang.reflect.Modifier.isStatic(mb.getModifiers())
-                        && !mb.isConstructor()
-                        && !mb.getName().equals("equals")
-                        && !mb.getName().equals("hashCode")
-                        && !mb.getName().equals("toString")
-                        && !existing.contains(bindingSignatureKey(mb))) {
-                    delegatable.add(mb);
-                }
-            }
-            if (delegatable.isEmpty()) continue;
-
-            for (Object fragObj : fd.fragments()) {
-                if (!(fragObj instanceof org.eclipse.jdt.core.dom.VariableDeclarationFragment vdf)) continue;
-                String fieldName = vdf.getName().getIdentifier();
-
-                StringBuilder sb = new StringBuilder();
-                for (org.eclipse.jdt.core.dom.IMethodBinding mb : delegatable) {
-                    String params   = buildParamList(mb);
-                    String args     = buildArgList(mb);
-                    String retType  = mb.getReturnType().getName();
-                    sb.append("\n").append(indent).append("public ").append(retType)
-                      .append(" ").append(mb.getName()).append("(").append(params).append(") {\n");
-                    sb.append(indent).append("    ");
-                    if (!"void".equals(retType)) sb.append("return ");
-                    sb.append(fieldName).append(".").append(mb.getName()).append("(").append(args).append(");\n");
-                    sb.append(indent).append("}\n");
-                }
-
-                BridgeTextEdit edit = new BridgeTextEdit();
-                edit.startLine = insLC[0]; edit.startChar = insLC[1];
-                edit.endLine   = insLC[0]; edit.endChar   = insLC[1];
-                edit.newText   = sb.toString();
-                BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
-
-                BridgeAction a = new BridgeAction();
-                a.title = "Generate Delegate Methods for '" + fieldName + "'";
-                a.kind  = "source.generate.delegateMethods";
-                a.edits = List.of(fe);
-                result.add(a);
-            }
-        }
-        return result;
     }
 
     private static String buildArgList(org.eclipse.jdt.core.dom.IMethodBinding mb) {

@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 732 | 35.1% |
-| Passing | 685 | 32.8% |
+| Ported | 740 | 35.5% |
+| Passing | 693 | 33.2% |
 | Ported but `#[ignore]`d | 47 | 2.3% |
-| Not ported yet | 1,355 | 64.9% |
+| Not ported yet | 1,347 | 64.5% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,066 passed,
-0 failed and 48 ignored across 69 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,114 passed,
+0 failed and 48 ignored across 72 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -33,7 +33,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,066 passed
 `tests/accessor_regressions.rs`, 18 tests;
 `tests/constructor_regressions.rs`, 24 tests;
 `tests/tostring_regressions.rs`, 28 tests;
-`tests/hashcode_regressions.rs`, 30 tests) and unit
+`tests/hashcode_regressions.rs`, 30 tests;
+`tests/delegate_regressions.rs`, 40 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -42,7 +43,7 @@ those duplicate runs are excluded from the upstream-port counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 553 | 534 | 61% |
+| handlers | 871 | 561 | 542 | 62% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 132 | 104 | 49% |
@@ -78,6 +79,8 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/GenerateAccessorsHandlerTest | `handlers_generate_accessors_handler_test` | 7 | 7 | 0 | 7/7 |
 | handlers/GenerateConstructorsActionTest | `handlers_generate_constructors_action_test` | 7 | 7 | 0 | 7/7 |
 | handlers/GenerateConstructorsHandlerTest | `handlers_generate_constructors_handler_test` | 6 | 6 | 0 | 6/6 |
+| handlers/GenerateDelegateMethodsActionTest | `handlers_generate_delegate_methods_action_test` | 3 | 3 | 0 | 3/3 |
+| handlers/GenerateDelegateMethodsHandlerTest | `handlers_generate_delegate_methods_handler_test` | 5 | 5 | 0 | 5/5 |
 | handlers/GenerateToStringActionTest | `handlers_generate_to_string_action_test` | 7 | 7 | 0 | 7/7 |
 | handlers/GenerateToStringHandlerTest | `handlers_generate_to_string_handler_test` | 8 | 8 | 0 | 8/8 |
 | handlers/HashCodeEqualsActionTest | `handlers_hash_code_equals_action_test` | 6 | 6 | 0 | 6/6 |
@@ -348,6 +351,11 @@ assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matche
   conflicts, inherited nullness and type-use annotation rendering still require
   the full ScopeAnalyzer/import-rewrite dependency ports. Comments share the
   global/date/time/user template limitations above.
+* **Delegate generation dependencies:** parameter, nullness and type-use annotation
+  rendering, inherited/external import-scope conflicts and global/date/time/user
+  template resolvers still require the shared StubUtility2Core and ScopeAnalyzer
+  dependency ports. Available source ranges and parameter names now cover current
+  and referenced source units and binary source attachments.
 * **Lombok** is not supported in any feature.
 
 ## Saved work branches
@@ -363,7 +371,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 | Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
 | Remaining project managers | 79 | 4% |
 | Refactoring | 119 | 6% |
-| Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 215 | 10% |
+| Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 207 | 10% |
 | Core utilities, preferences, commands and the rest | 243 | 12% |
 
 ## Updating this file
@@ -371,7 +379,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions|delegate_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
@@ -381,7 +389,7 @@ Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
 `correction_regressions.rs`, `completion_regressions.rs` and
 `project_download_regressions.rs`, `paste_regressions.rs` and
 `smart_detection_regressions.rs`, `accessor_regressions.rs`,
-`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
+`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, `delegate_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.
 
@@ -604,3 +612,57 @@ twenty-nine file-backed regressions pass with `JDTLS_ORACLE=1 --test-threads=2`.
 Logs are in `target/parity-evidence/hashcode-full-suite-final.log` and
 `target/parity-evidence/hashcode-oracle-final.log` (gitignored). Full feature
 parity remains incomplete; dependency gaps remain listed above.
+
+
+## Delegate-method integration evidence
+
+All five `GenerateDelegateMethodsHandlerTest` and three
+`GenerateDelegateMethodsActionTest` methods retain their upstream fixtures,
+settings, selections, discovery assertions and full edited-source expectations.
+All eight pass on Rust and JDT LS 1.58.0. Handler fixtures include the Java 21
+fake JDK, upstream formatter settings and the malformed `int B[] array` field.
+A zero-width EOF range exercises the public endpoint's append path for the
+helper's null-cursor test.
+
+* Rust owns `java/checkDelegateMethodsStatus`, `java/generateDelegateMethods`,
+  field/method discovery, visibility and final-method filtering, erased signature
+  and exception checks, source/attachment ordering, binding-key selection,
+  imports, stubs, comments, cursor insertion and the source prompt action.
+  The approximate Java generator is removed. The bridge supplies targeted member
+  graphs, source ranges, parameter names and synthetic-record flags as data;
+  its source metadata cache is bounded.
+* Forty extra regressions cover exact DTOs, primitives/arrays/static fields,
+  enums, records, type-variable bounds, interfaces and duplicate signatures,
+  covariant-return/exception rules, generic substitution, method type bounds,
+  wildcards, varargs, modifiers, imports, field/parameter collisions, source and
+  JDK attachment ordering, duplicate selections, stale keys, comment templates,
+  argument preferences, header insertion, capability/kind filtering and command
+  fallback. Thirty-nine file-backed cases pass against the oracle; one Rust-only
+  test checks untitled, in-memory and nonexistent-file buffers. Open-buffer edits
+  retain UTF-16/CRLF, preserve disk text and use `WorkspaceEdit.changes`.
+* Reference quirks remain: enum final methods suppress equals/hashCode targets,
+  while synthetic record methods do not; record components are discovery targets
+  but do not enable the prompt; a source prompt can exist with no eligible methods;
+  interface candidates include non-public instance methods; methods retain final
+  but lose synchronized/abstract/native/default modifiers; invocation keeps a bare
+  field even when a parameter shadows it; duplicates generate duplicates; wholly
+  stale keys return an internal error. Empty comment tags follow JDT's line-removal
+  rules and preserve other blank comment lines.
+* The recovered upstream field exposed sentinel extended source ranges that
+  overflowed rewrite arithmetic. Rust now falls back to the ordinary node range
+  when an extended range is invalid; the unchanged upstream edits pass.
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 72 targets (1,114 passing, 48 ignored). The eight upstream ports and
+thirty-nine file-backed regressions pass with `JDTLS_ORACLE=1 --test-threads=3`.
+The oracle log reports 48 harness passes, including the virtual-buffer test that
+returns early; 47 cases actually exercise the oracle. Logs are in
+`target/parity-evidence/delegate-full-suite-final-3.log` and
+`target/parity-evidence/delegate-oracle-final-4.log` (gitignored). Full feature
+parity remains incomplete; the ledger still has 1,347 unported upstream tests.
+
+One earlier full-suite run missed the dependency-scenario lifecycle test's save
+marker notification. The unchanged test passed in isolation
+(`target/parity-evidence/delegate-lifecycle-recheck.log`); the final full-suite
+run above used no overlapping full-suite process. The earlier 39-regression
+full run also passed all 72 targets (1,113 passing, 48 ignored).

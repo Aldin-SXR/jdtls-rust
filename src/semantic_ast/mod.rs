@@ -165,6 +165,7 @@ pub mod bflag {
     pub const RAW_METHOD: u64 = 1 << 36;
     pub const COMPACT_CONSTRUCTOR: u64 = 1 << 37;
     pub const CANONICAL_CONSTRUCTOR: u64 = 1 << 38;
+    pub const SYNTHETIC_RECORD_METHOD: u64 = 1 << 39;
 }
 
 /// `ASTNode` flags plus the bridge's extra node flags.
@@ -251,6 +252,7 @@ pub struct Binding {
     pub exception_types: Vec<BindingId>,
     pub parameter_names: Vec<String>,
     pub name_offset: i32,
+    pub source_offset: i32,
 }
 
 /// `IProblem` of the AST (`CompilationUnit.getProblems()`).
@@ -303,6 +305,7 @@ fn opt_id(i: i32) -> Option<u32> {
 impl Ast {
     /// Decodes a bridge response for `source` (the text the bridge parsed).
     pub fn from_wire(uri: &str, source: &str, data: wire::SemanticAstData) -> Ast {
+        let source_length = source.encode_utf16().count();
         let strings = data.strings;
         let s = |i: i32| -> Option<String> { (i >= 0).then(|| strings.get(i as usize).cloned()).flatten() };
         let b = |i: i32| opt_id(i).map(BindingId);
@@ -329,12 +332,19 @@ impl Ast {
                     };
                     props.push((name, value));
                 }
-                let (es, el) = if n.es >= 0 { (n.es as usize, n.el.max(0) as usize) } else { (n.s.max(0) as usize, n.l.max(0) as usize) };
+                // Recovered declarations can carry JDT sentinel extended ranges.
+                // Use their ordinary source range before passing offsets to rewrite.
+                let start = (n.s.max(0) as usize).min(source_length);
+                let length = (n.l.max(0) as usize).min(source_length - start);
+                let (es, el) = if n.es >= 0 && n.el >= 0
+                    && (n.es as usize).saturating_add(n.el as usize) <= source_length {
+                    (n.es as usize, n.el as usize)
+                } else { (start, length) };
                 NodeData {
                     kind: NodeKind::from_name(&kind_name),
                     kind_name,
-                    start: n.s.max(0) as usize,
-                    length: n.l.max(0) as usize,
+                    start,
+                    length,
                     parent: opt_id(n.p).map(NodeId),
                     location: s(n.loc).map(|l| intern(&l)),
                     extended_start: es,
@@ -389,6 +399,7 @@ impl Ast {
                     .map(|v| v.iter().filter_map(|&i| s(i)).collect())
                     .unwrap_or_default(),
                 name_offset: o.name_offset,
+                source_offset: o.source_offset,
             })
             .collect();
         let problems = data

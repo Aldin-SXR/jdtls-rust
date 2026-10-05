@@ -75,6 +75,14 @@ async fn main() {
             "java/generateHashCodeEquals",
             JavaLanguageServer::generate_hash_code_equals,
         )
+        .custom_method(
+            "java/checkDelegateMethodsStatus",
+            JavaLanguageServer::check_delegate_methods_status,
+        )
+        .custom_method(
+            "java/generateDelegateMethods",
+            JavaLanguageServer::generate_delegate_methods,
+        )
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
         .custom_method("java/buildWorkspace", JavaLanguageServer::build_workspace)
         .custom_method("java/buildProjects", JavaLanguageServer::build_projects)

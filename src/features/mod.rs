@@ -14,6 +14,7 @@ pub mod folding_range;
 pub mod formatting;
 pub mod hover;
 pub mod hashcode;
+pub mod delegates;
 pub mod init;
 pub mod inlay_hint_filter;
 pub mod inlay_hints;

@@ -30,7 +30,8 @@ import org.eclipse.jdt.core.dom.*;
  * value as a string index).</li>
  * <li>{@code bindings}: one entry per distinct binding, referencing others by
  * index (supertypes, erasure, declaring class, parameter types, ...).
- * Declared members are listed for source types and their superclass hierarchy.</li>
+ * Declared members cover source types, owner hierarchies and declared field
+ * type hierarchies. Member source ranges and names include available source attachments.</li>
  * <li>{@code problems}: {@code CompilationUnit.getProblems()}.</li>
  * </ul>
  * String-valued entries index {@code strings}; -1 means absent.
@@ -58,7 +59,7 @@ final class SemanticAstService {
         // method
         public int rt = -1, md = -1;
         public int[] pt, et, pn;
-        public int nameOffset = -1;
+        public int nameOffset = -1, sourceOffset = -1;
     }
 
     static final class ProblemOut {
@@ -91,7 +92,7 @@ final class SemanticAstService {
             EFFECTIVELY_FINAL = 1L << 29;
     static final long CONSTRUCTOR = 1L << 30, DEFAULT_CONSTRUCTOR = 1L << 31, VARARGS = 1L << 32,
             ANNOTATION_MEMBER = 1L << 33, GENERIC_METHOD = 1L << 34, PARAMETERIZED_METHOD = 1L << 35,
-            RAW_METHOD = 1L << 36, COMPACT_CONSTRUCTOR = 1L << 37, CANONICAL_CONSTRUCTOR = 1L << 38;
+            RAW_METHOD = 1L << 36, COMPACT_CONSTRUCTOR = 1L << 37, CANONICAL_CONSTRUCTOR = 1L << 38, SYNTHETIC_RECORD_METHOD = 1L << 39;
 
     // Node flags (NodeOut.f) beyond ASTNode.getFlags() (MALFORMED 1, ORIGINAL 2, PROTECT 4, RECOVERED 8)
     static final int BOXING = 1 << 8, UNBOXING = 1 << 9, COMMENT_ROOT = 1 << 10;
@@ -104,6 +105,15 @@ final class SemanticAstService {
             return size() > MAX_CACHED;
         }
     };
+
+    private record MemberSourceData(String key, int offset, int nameOffset, List<String> parameters) {}
+    private record SourceDataKey(String unit, String source, String environment) {}
+    private static final Map<SourceDataKey, List<MemberSourceData>> MEMBER_SOURCE_CACHE =
+        new LinkedHashMap<>(64, 0.75f, true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<SourceDataKey, List<MemberSourceData>> entry) {
+                return size() > 64;
+            }
+        };
 
     private SemanticAstService() {}
 
@@ -124,13 +134,14 @@ final class SemanticAstService {
             }
             res.cacheKey = req.data;
         }
-        new Collector(cu, res).collect();
+        new Collector(cu, res, req).collect();
         return res;
     }
 
     private static final class Collector {
         private final CompilationUnit cu;
         private final SemanticAstResponse res;
+        private final BridgeProtocol.Request request;
         private final List<String> strings = new ArrayList<>();
         private final Map<String, Integer> stringIndex = new HashMap<>();
         private final List<NodeOut> nodes = new ArrayList<>();
@@ -140,9 +151,10 @@ final class SemanticAstService {
         private final Map<String, Integer> bindingIndex = new HashMap<>();
         private final IdentityHashMap<IBinding, Integer> bindingIdentity = new IdentityHashMap<>();
 
-        Collector(CompilationUnit cu, SemanticAstResponse res) {
+        Collector(CompilationUnit cu, SemanticAstResponse res, BridgeProtocol.Request request) {
             this.cu = cu;
             this.res = res;
+            this.request = request;
         }
 
         void collect() {
@@ -169,22 +181,23 @@ final class SemanticAstService {
             for (ASTNode node : order) {
                 nodes.add(node(node, node != cu && node.getParent() == null));
             }
-            // Export constructor member data only for types declared in this unit
-            // and their direct superclass/root. Rust applies visibility and builds
-            // the operations; this avoids expanding every library member graph.
+            // Export member data for owner and declared-field type hierarchies.
+            // Rust applies visibility and builds operations; parameter and return
+            // types do not recursively expand every library's member graph.
             for (ASTNode node : order) {
                 ITypeBinding type = node instanceof AbstractTypeDeclaration d ? d.resolveBinding()
                         : node instanceof AnonymousClassDeclaration d ? d.resolveBinding() : null;
                 if (type != null) {
                     constructorMembers(type);
                     if (type.getSuperclass() != null) constructorMembers(type.getSuperclass());
-                    java.util.Set<String> seen = new java.util.HashSet<>();
-                    for (ITypeBinding hierarchy = type; hierarchy != null && seen.add(hierarchy.getKey()); hierarchy = hierarchy.getSuperclass()) {
-                        hierarchyMembers(hierarchy);
+                    hierarchyGraph(type, new java.util.HashSet<>());
+                    for (IVariableBinding field : type.getDeclaredFields()) {
+                        hierarchyGraph(field.getType(), new java.util.HashSet<>());
                     }
                 }
             }
             constructorMembers(cu.getAST().resolveWellKnownType("java.lang.Object"));
+            memberSourceData();
             List<Integer> comments = new ArrayList<>();
             for (Object o : cu.getCommentList()) {
                 Integer idx = nodeIndex.get(o);
@@ -398,6 +411,8 @@ final class SemanticAstService {
                     if (binding.getJavaElement() instanceof org.eclipse.jdt.core.IMember member) {
                         org.eclipse.jdt.core.ISourceRange nameRange = member.getNameRange();
                         if (nameRange != null) b.nameOffset = nameRange.getOffset();
+                        org.eclipse.jdt.core.ISourceRange sourceRange = member.getSourceRange();
+                        if (sourceRange != null) b.sourceOffset = sourceRange.getOffset();
                     }
                 } catch (org.eclipse.jdt.core.JavaModelException | RuntimeException e) {
                     // Binary members and standalone ASTs can lack source ranges.
@@ -426,6 +441,7 @@ final class SemanticAstService {
                     IVariableBinding decl = v.getVariableDeclaration();
                     b.vd = decl == v ? idx : binding(decl);
                 } else if (binding instanceof IMethodBinding mb) {
+                    if (mb.isSyntheticRecordMethod()) f |= SYNTHETIC_RECORD_METHOD;
                     if (mb.isConstructor()) f |= CONSTRUCTOR;
                     if (mb.isDefaultConstructor()) f |= DEFAULT_CONSTRUCTOR;
                     if (mb.isVarargs()) f |= VARARGS;
@@ -464,6 +480,138 @@ final class SemanticAstService {
                 // keep what we have
             }
             return idx;
+        }
+
+        // Export a bounded member graph for declared fields and owner hierarchies.
+        // Rust owns visibility, signature checks, ordering and generation.
+        private void hierarchyGraph(ITypeBinding type, java.util.Set<String> seen) {
+            if (type == null || type.isPrimitive() || type.isArray() || !seen.add(type.getKey())) return;
+            hierarchyMembers(type);
+            hierarchyGraph(type.getSuperclass(), seen);
+            for (ITypeBinding parent : type.getInterfaces()) hierarchyGraph(parent, seen);
+            for (ITypeBinding bound : type.getTypeBounds()) hierarchyGraph(bound, seen);
+        }
+
+        /** Ranges and parameter names are binding metadata, never generated code. */
+        private void memberSourceData() {
+            applySourceMembers(sourceMembers(cu));
+            Map<String, String> types = new LinkedHashMap<>();
+            for (BindingOut b : bindings) {
+                if (b.k == IBinding.TYPE && b.dmeth != null && b.bn >= 0) {
+                    String name = strings.get(b.bn);
+                    int nested = name.indexOf('$');
+                    String top = nested < 0 ? name : name.substring(0, nested);
+                    String path = top.replace('.', '/') + ".java";
+                    if ((b.f & FROM_SOURCE) != 0 && b.key >= 0) {
+                        String key = strings.get(b.key);
+                        if (key.startsWith("L")) {
+                            int end = key.length();
+                            for (char separator : new char[] {';', '<', '$', '~'}) {
+                                int index = key.indexOf(separator);
+                                if (index > 0) end = Math.min(end, index);
+                            }
+                            path = key.substring(1, end) + ".java";
+                        }
+                    }
+                    types.put(top, path);
+                }
+            }
+            java.util.Set<String> parsed = new java.util.HashSet<>();
+            parsed.add(request.uri);
+            for (Map.Entry<String, String> typeEntry : types.entrySet()) {
+                String type = typeEntry.getKey();
+                String path = typeEntry.getValue();
+                // Secondary source types encode their compilation unit in the key.
+                String fileUri = null;
+                if (request.files != null) {
+                    for (String uri : request.files.keySet()) {
+                        if (uri.endsWith("/" + path)) { fileUri = uri; break; }
+                    }
+                }
+                if (fileUri != null) {
+                    if (!parsed.add(fileUri)) continue;
+                    BridgeProtocol.Request other = new BridgeProtocol.Request();
+                    other.uri = fileUri; other.files = request.files;
+                    other.classpath = request.classpath; other.sourceLevel = request.sourceLevel;
+                    other.options = request.options;
+                    SourceDataKey cacheKey = new SourceDataKey(fileUri, request.files.get(fileUri),
+                        BridgeOptions.map(request.sourceLevel).toString() + request.classpath + request.files.hashCode());
+                    List<MemberSourceData> data;
+                    synchronized (MEMBER_SOURCE_CACHE) { data = MEMBER_SOURCE_CACHE.get(cacheKey); }
+                    if (data == null) {
+                        CompilationUnit unit = AstBindingsService.parse(other);
+                        data = unit == null ? List.of() : sourceMembers(unit);
+                        synchronized (MEMBER_SOURCE_CACHE) { MEMBER_SOURCE_CACHE.put(cacheKey, data); }
+                    }
+                    applySourceMembers(data);
+                } else {
+                    ClassFileService.ClassFileDesc binary = ClassFileService.locate(request.classpath, type);
+                    String source = binary == null ? null : ClassFileService.attachedSource(binary, request.sourceAttachments);
+                    if (source == null || !parsed.add(binary.root + "|" + path)) continue;
+                    SourceDataKey cacheKey = new SourceDataKey(binary.root + "|" + path, source,
+                        BridgeOptions.map(request.sourceLevel).toString() + request.classpath);
+                    List<MemberSourceData> data;
+                    synchronized (MEMBER_SOURCE_CACHE) { data = MEMBER_SOURCE_CACHE.get(cacheKey); }
+                    if (data != null) { applySourceMembers(data); continue; }
+                    ASTParser parser = ASTParser.newParser(AST.getJLSLatest());
+                    parser.setKind(ASTParser.K_COMPILATION_UNIT);
+                    parser.setSource(source.toCharArray());
+                    parser.setUnitName(path);
+                    parser.setResolveBindings(true);
+                    parser.setBindingsRecovery(true);
+                    Map<String, String> options = BridgeOptions.map(request.sourceLevel);
+                    options.put("org.eclipse.jdt.core.compiler.ignoreUnnamedModuleForSplitPackage", "enabled");
+                    parser.setCompilerOptions(options);
+                    BridgeOptions.configureEnvironment(parser,
+                        request.classpath == null ? new String[0] : request.classpath.toArray(new String[0]), new String[0]);
+                    data = sourceMembers((CompilationUnit) parser.createAST(null));
+                    synchronized (MEMBER_SOURCE_CACHE) { MEMBER_SOURCE_CACHE.put(cacheKey, data); }
+                    applySourceMembers(data);
+                }
+            }
+            // Substituted methods keep declaration source ranges and names.
+            for (BindingOut b : bindings) {
+                if (b.k == IBinding.METHOD && b.md >= 0) {
+                    BindingOut declaration = bindings.get(b.md);
+                    if (declaration.sourceOffset >= 0) b.sourceOffset = declaration.sourceOffset;
+                    if (declaration.pn != null) b.pn = declaration.pn;
+                }
+            }
+        }
+
+        private static List<MemberSourceData> sourceMembers(CompilationUnit unit) {
+            List<MemberSourceData> data = new ArrayList<>();
+            unit.accept(new ASTVisitor() {
+                @Override public boolean visit(MethodDeclaration node) {
+                    List<String> params = new ArrayList<>();
+                    for (Object parameter : node.parameters()) {
+                        params.add(((SingleVariableDeclaration) parameter).getName().getIdentifier());
+                    }
+                    sourceMember(node.resolveBinding(), node, node.getName(), params);
+                    return true;
+                }
+                @Override public boolean visit(VariableDeclarationFragment node) {
+                    if (node.getParent() instanceof FieldDeclaration) sourceMember(node.resolveBinding(), node.getParent(), node.getName(), null);
+                    return true;
+                }
+                private void sourceMember(IBinding binding, ASTNode node, SimpleName name, List<String> params) {
+                    if (binding != null) data.add(new MemberSourceData(binding.getKey(), node.getStartPosition(), name.getStartPosition(), params));
+                }
+            });
+            return data;
+        }
+
+        private void applySourceMembers(List<MemberSourceData> data) {
+            for (MemberSourceData member : data) {
+                Integer index = bindingIndex.get(member.key());
+                if (index == null) continue;
+                BindingOut out = bindings.get(index);
+                out.sourceOffset = member.offset();
+                out.nameOffset = member.nameOffset();
+                if (member.parameters() != null) {
+                    out.pn = member.parameters().stream().mapToInt(this::str).toArray();
+                }
+            }
         }
 
         private void hierarchyMembers(ITypeBinding type) {

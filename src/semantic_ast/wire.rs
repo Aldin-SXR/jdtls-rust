@@ -66,6 +66,8 @@ pub struct BindingOut {
     pub pn: Option<Vec<i32>>,
     #[serde(default = "minus_one", rename = "nameOffset")]
     pub name_offset: i32,
+    #[serde(default = "minus_one", rename = "sourceOffset")]
+    pub source_offset: i32,
 }
 
 #[derive(Debug, Default, Deserialize)]

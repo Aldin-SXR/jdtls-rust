@@ -415,6 +415,25 @@ impl JavaLanguageServer {
         let _ = self.compile_tx.send(next);
     }
 
+    pub async fn check_delegate_methods_status(
+        &self,
+        params: CodeActionParams,
+    ) -> LspResult<crate::features::delegates::CheckDelegateMethodsResponse> {
+        Ok(crate::features::delegates::check(&self.dispatcher, params).await)
+    }
+    pub async fn generate_delegate_methods(
+        &self,
+        params: crate::features::delegates::GenerateDelegateMethodsParams,
+    ) -> LspResult<Option<WorkspaceEdit>> {
+        let format = self.format_env().await;
+        let env = crate::correction::edit::Env {
+            dispatcher: &self.dispatcher,
+            format: &format,
+            lifecycle: &self.lifecycle,
+        };
+        crate::features::delegates::generate(&env, params).await
+    }
+
     pub async fn check_hash_code_equals_status(
         &self,
         params: CodeActionParams,
