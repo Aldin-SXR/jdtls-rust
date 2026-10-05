@@ -585,13 +585,6 @@ public class Main {
                 String varName = mVar.find() ? mVar.group(1) : null;
                 int diagOffset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
 
-                BridgeAction removeAllAction = makeRemoveAllAssignmentsAction(req.uri, source, cu, d, varName);
-                if (removeAllAction != null) actions.add(removeAllAction);
-                else {
-                    BridgeAction removeAction = makeRemoveDeclarationAction(req.uri, source, cu, d);
-                    if (removeAction != null) actions.add(removeAction);
-                }
-
                 BridgeAction varSuppressAction = makeLocalVarSuppressAction("unused", req.uri, source, cu, d, varName);
                 if (varSuppressAction != null) actions.add(varSuppressAction);
 
@@ -608,14 +601,8 @@ public class Main {
                 Matcher mParam = Pattern.compile("(?:parameter) (\\w+)").matcher(msg);
                 String paramName = mParam.find() ? mParam.group(1) : null;
 
-                BridgeAction changeSignatureAction = makeChangeSignatureAction(req.uri, source, cu, d, paramName);
-                if (changeSignatureAction != null) actions.add(changeSignatureAction);
-
                 BridgeAction assignFieldAction = makeAssignParameterToFieldAction(req.uri, source, cu, d, paramName);
                 if (assignFieldAction != null) actions.add(assignFieldAction);
-
-                BridgeAction documentParamAction = makeDocumentParameterAction(req.uri, source, cu, d, paramName);
-                if (documentParamAction != null) actions.add(documentParamAction);
 
                 BridgeAction finalAction = makeAddFinalParameterAction(req.uri, source, cu, d, paramName);
                 if (finalAction != null) actions.add(finalAction);
@@ -624,14 +611,6 @@ public class Main {
             if ((msg.contains("must override") || (msg.contains("override") && msg.contains("annotation")))
                     && !msg.contains("must implement the inherited")) {
                 BridgeAction a = makeAddOverrideAction(req.uri, source, cu, d);
-                if (a != null) actions.add(a);
-            }
-
-            if (problemId == org.eclipse.jdt.core.compiler.IProblem.UnusedPrivateField
-                    || problemId == org.eclipse.jdt.core.compiler.IProblem.UnusedPrivateMethod
-                    || problemId == org.eclipse.jdt.core.compiler.IProblem.UnusedPrivateConstructor
-                    || problemId == org.eclipse.jdt.core.compiler.IProblem.UnusedPrivateType) {
-                BridgeAction a = makeRemoveUnusedMemberAction(req.uri, source, cu, d);
                 if (a != null) actions.add(a);
             }
 
@@ -1055,17 +1034,6 @@ public class Main {
         a.edits = List.of(fe); return a;
     }
 
-    private static BridgeAction makeRemoveDeclarationAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d) {
-        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        VarDeclLocator loc = new VarDeclLocator(offset); cu.accept(loc);
-        if (loc.found == null) return null;
-        int start = loc.found.getStartPosition(), end = start + loc.found.getLength();
-        if (end < source.length() && source.charAt(end) == '\n') end++;
-        BridgeAction a = new BridgeAction(); a.title = "Remove unused variable"; a.kind = "quickfix";
-        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(removalEditFromOffsets(source, start, end));
-        a.edits = List.of(fe); return a;
-    }
-
     private static BridgeAction makeAddOverrideAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d) {
         int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
         MethodLocator loc = new MethodLocator(offset); cu.accept(loc);
@@ -1115,41 +1083,12 @@ public class Main {
         return makeReplaceNodeAction("Surround with try/catch", uri, source, stmt, newText);
     }
 
-    private static BridgeAction makeRemoveAllAssignmentsAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String varName) {
-        if (varName == null) return null;
-        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        VarDeclLocator vloc = new VarDeclLocator(offset); cu.accept(vloc);
-        if (vloc.found == null) return null;
-        AllAssignmentsLocator aloc = new AllAssignmentsLocator(varName); cu.accept(aloc);
-        List<BridgeTextEdit> edits = new ArrayList<>();
-        for (var es : aloc.pureAssignments) {
-            if (cu.getLineNumber(es.getStartPosition()) == cu.getLineNumber(vloc.found.getStartPosition())) continue;
-            edits.add(removalEditFromLine(source, cu.getLineNumber(es.getStartPosition()) - 1));
-        }
-        edits.add(removalEditFromLine(source, cu.getLineNumber(vloc.found.getStartPosition()) - 1));
-        edits.sort((a,b) -> Integer.compare(b.startLine, a.startLine));
-        BridgeAction act = new BridgeAction(); act.title = "Remove '" + varName + "' and all assignments"; act.kind = "quickfix"; act.isPreferred = true;
-        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = edits; act.edits = List.of(fe); return act;
-    }
-
     private static BridgeAction makeLocalVarSuppressAction(String tag, String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String varName) {
         int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
         VarDeclLocator loc = new VarDeclLocator(offset); cu.accept(loc);
         if (loc.found == null) return null;
         int line = cu.getLineNumber(loc.found.getStartPosition()) - 1;
         return singleInsertionAction("Add @SuppressWarnings(\"" + tag + "\") to '" + (varName != null ? varName : "variable") + "'", uri, source, lineStart(source, line), indentOf(source, line) + "@SuppressWarnings(\"" + tag + "\")\n");
-    }
-
-    private static BridgeAction makeChangeSignatureAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String paramName) {
-        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        ParameterLocator loc = new ParameterLocator(offset, paramName); cu.accept(loc);
-        if (loc.found == null) return null;
-        BridgeAction a = new BridgeAction(); a.title = "Remove parameter '" + paramName + "'"; a.kind = "quickfix";
-        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri;
-        @SuppressWarnings("unchecked")
-        List<org.eclipse.jdt.core.dom.SingleVariableDeclaration> params = ((org.eclipse.jdt.core.dom.MethodDeclaration)loc.found.getParent()).parameters();
-        fe.edits = List.of(deletionEditForNodes(source, castAstNodes(params), params.indexOf(loc.found)));
-        a.edits = List.of(fe); return a;
     }
 
     private static BridgeAction makeAssignParameterToFieldAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String paramName) {
@@ -1166,32 +1105,12 @@ public class Main {
         BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = edits; a.edits = List.of(fe); return a;
     }
 
-    private static BridgeAction makeDocumentParameterAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String paramName) {
-        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        ParameterLocator loc = new ParameterLocator(offset, paramName); cu.accept(loc);
-        if (loc.found == null) return null;
-        org.eclipse.jdt.core.dom.MethodDeclaration method = (org.eclipse.jdt.core.dom.MethodDeclaration)loc.found.getParent();
-        if (method.getJavadoc() == null) return singleInsertionAction("Add Javadoc with @param " + paramName, uri, source, lineStart(source, cu.getLineNumber(method.getStartPosition()) - 1), buildParameterDocumentationStub(method, paramName, indentOf(source, cu.getLineNumber(method.getStartPosition()) - 1)));
-        return singleInsertionAction("Add @param " + paramName + " to Javadoc", uri, source, javadocClosingOffset(method.getJavadoc()), " * @param " + paramName + "\n" + indentOf(source, cu.getLineNumber(method.getStartPosition()) - 1));
-    }
-
     private static BridgeAction makeAddFinalParameterAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String paramName) {
         int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
         ParameterLocator loc = new ParameterLocator(offset, paramName); cu.accept(loc);
         if (loc.found == null) return null;
         if ((loc.found.getModifiers() & org.eclipse.jdt.core.dom.Modifier.FINAL) != 0) return null;
         return singleInsertionAction("Make parameter '" + paramName + "' final", uri, source, loc.found.getStartPosition(), "final ");
-    }
-
-    private static BridgeAction makeRemoveUnusedMemberAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d) {
-        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        AnnotatableLocator loc = new AnnotatableLocator(offset); cu.accept(loc);
-        if (loc.bestNode == null) return null;
-        int s = loc.bestNode.getStartPosition(), e = s + loc.bestNode.getLength();
-        if (e < source.length() && source.charAt(e) == '\n') e++;
-        BridgeAction a = new BridgeAction(); a.title = "Remove unused member"; a.kind = "quickfix"; a.isPreferred = true;
-        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(removalEditFromOffsets(source, s, e));
-        a.edits = List.of(fe); return a;
     }
 
     private static BridgeAction makeRemoveTextAction(String title, String uri, String source, int start, int end) {
@@ -2244,12 +2163,6 @@ public class Main {
         return false;
     }
 
-    private static String buildParameterDocumentationStub(org.eclipse.jdt.core.dom.MethodDeclaration m, String p, String ind) {
-        StringBuilder sb = new StringBuilder(); sb.append(ind).append("/**\n").append(ind).append(" * \n").append(ind).append(" * @param ").append(p).append("\n");
-        if (!m.isConstructor() && m.getReturnType2() != null && !"void".equals(m.getReturnType2().toString())) sb.append(ind).append(" * @return\n");
-        sb.append(ind).append(" */\n"); return sb.toString();
-    }
-
     private static String nearestTypeName(org.eclipse.jdt.core.dom.CompilationUnit cu, String missing) {
         Set<String> names = new LinkedHashSet<>();
         cu.accept(new org.eclipse.jdt.core.dom.ASTVisitor() {
@@ -2457,11 +2370,6 @@ public class Main {
     static class MethodLocator extends org.eclipse.jdt.core.dom.ASTVisitor {
         int o; org.eclipse.jdt.core.dom.MethodDeclaration found; MethodLocator(int o) { this.o = o; }
         public boolean visit(org.eclipse.jdt.core.dom.MethodDeclaration n) { int s = n.getStartPosition(), e = s + n.getLength(); if (s <= o && o <= e) found = n; return true; }
-    }
-
-    static class AllAssignmentsLocator extends org.eclipse.jdt.core.dom.ASTVisitor {
-        String n; List<org.eclipse.jdt.core.dom.ExpressionStatement> pureAssignments = new ArrayList<>(); AllAssignmentsLocator(String n) { this.n = n; }
-        public boolean visit(org.eclipse.jdt.core.dom.ExpressionStatement node) { if (node.getExpression() instanceof org.eclipse.jdt.core.dom.Assignment a && a.getLeftHandSide() instanceof org.eclipse.jdt.core.dom.SimpleName sn && n.equals(sn.getIdentifier())) pureAssignments.add(node); return true; }
     }
 
     static class StatementLocator extends org.eclipse.jdt.core.dom.ASTVisitor {

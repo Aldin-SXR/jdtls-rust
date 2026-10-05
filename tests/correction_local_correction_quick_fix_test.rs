@@ -323,3 +323,115 @@ fn test_remove_unreachable_code_multi_statements_switch() {
     let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        switch (1) {\n        case 1:\n            foo();\n            break;\n            foo();\n            new Object();\n        case 2:\n            foo();\n            break;\n        default:\n            break;\n        };\n    }\n}\n");
     t.assert_code_action_exists_expected(&uri, &Expected::new("Remove", "package test1;\npublic class E {\n    public void foo() {\n        switch (1) {\n        case 1:\n            foo();\n            break;\n        case 2:\n            foo();\n            break;\n        default:\n            break;\n        };\n    }\n}\n"));
 }
+
+#[test]
+fn test_unused_private_field() {
+    unused_private_field(false);
+}
+fn unused_private_field(resource_support: bool) {
+    let (mut t, root) = dead_setup();
+    if resource_support { t.ws.capabilities["workspace"]["workspaceEdit"]["resourceOperations"] = serde_json::json!(["create", "rename", "delete"]); }
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    private int count;\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove 'count', keep assignments with side effects", "package test1;\npublic class E {\n}\n"),
+        Expected::new("Generate Getter and Setter for 'count'", "package test1;\npublic class E {\n    private int count;\n\n    /**\n     * @return the count\n     */\n    public int getCount() {\n        return count;\n    }\n\n    /**\n     * @param count the count to set\n     */\n    public void setCount(int count) {\n        this.count = count;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unused_private_field_with_resource_operation_support() {
+    unused_private_field(true);
+}
+
+#[test]
+fn test_unused_private_field1() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    private int count, color= count;\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove 'color', keep assignments with side effects", "package test1;\npublic class E {\n    private int count;\n}\n"),
+        Expected::new("Generate Getter and Setter for 'color'", "package test1;\npublic class E {\n    private int count, color= count;\n\n    /**\n     * @return the color\n     */\n    public int getColor() {\n        return color;\n    }\n\n    /**\n     * @param color the color to set\n     */\n    public void setColor(int color) {\n        this.color = color;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unused_private_field2() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    private int count= 0;\n    public void foo() {\n        count= 1 + 2;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove 'count', keep assignments with side effects", "package test1;\npublic class E {\n    public void foo() {\n    }\n}\n"),
+        Expected::new("Generate Getter and Setter for 'count'", "package test1;\npublic class E {\n    private int count= 0;\n    /**\n     * @return the count\n     */\n    public int getCount() {\n        return count;\n    }\n    /**\n     * @param count the count to set\n     */\n    public void setCount(int count) {\n        this.count = count;\n    }\n    public void foo() {\n        count= 1 + 2;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unused_parameter() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedPrivateMember".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedParameter".into(), "error".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    private void foo(int i, int j) {\n       System.out.println(j);\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove unused parameter 'i'", "package test1;\npublic class E {\n    private void foo(int j) {\n       System.out.println(j);\n    }\n}\n"),
+        Expected::new("Document parameter to avoid 'unused' warning", "package test1;\npublic class E {\n    /**\n     * @param i  \n     */\n    private void foo(int i, int j) {\n       System.out.println(j);\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unused_method() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    private void foo() {}\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove method 'foo'", "package test1;\npublic class E {\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unused_private_constructor() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    int i;\n    private E() {}\n    public E(int i) {\n        this.i = i;    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove constructor 'E'", "package test1;\npublic class E {\n    int i;\n    public E(int i) {\n        this.i = i;    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unused_local_variable() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedPrivateMember".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedLocal".into(), "error".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void foo() {\n        int i = 0;\n        i++;\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove 'i' and all assignments", "package test1;\npublic class E {\n    public void foo() {\n    }\n}\n"),
+        Expected::new("Remove 'i', keep assignments with side effects", "package test1;\npublic class E {\n    public void foo() {\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unused_local_variable_with_keeping_assignments() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedPrivateMember".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedLocal".into(), "error".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root, "src", "test1", "B.java", "package test1;\npublic class B {\n    void test(){\n        String c=\"Test\",d=String.valueOf(true),e=c;\n        e+=\"\";\n        d=\"blubb\";\n        d=String.valueOf(12);\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove 'd' and all assignments", "package test1;\npublic class B {\n    void test(){\n        String c=\"Test\",e=c;\n        e+=\"\";\n    }\n}\n"),
+        Expected::new("Remove 'd', keep assignments with side effects", "package test1;\npublic class B {\n    void test(){\n        String c=\"Test\";\n        String.valueOf(true);\n        String e=c;\n        e+=\"\";\n        String.valueOf(12);\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unused_type_parameter() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedPrivateMember".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedTypeParameter".into(), "error".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    private static class Foo {}\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Remove type 'Foo'", "package test1;\npublic class E {\n}\n")
+    ]);
+}
