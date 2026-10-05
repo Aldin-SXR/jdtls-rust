@@ -22,7 +22,7 @@ fn replace(mut t: BindingRef<'_>) -> BindingRef<'_> {
     }
     t
 }
-fn comment(
+pub(crate) fn inherited_comment(
     ast: &Ast,
     owner: BindingRef<'_>,
     method: BindingRef<'_>,
@@ -30,6 +30,9 @@ fn comment(
     names: &[String],
     throws: &[String],
     profile: &accessors::templates::Profile,
+    template: &str,
+    enclosing: &str,
+    see_variable: &str,
 ) -> anyhow::Result<String> {
     let decl = method.method_declaration().unwrap_or(method);
     let declaring = decl
@@ -66,20 +69,13 @@ fn comment(
         .ok()
         .map(|u| crate::classfile::percent_decode(u.path().rsplit('/').next().unwrap_or("")))
         .unwrap_or_default();
-    // The bundled 1.58.0 manipulation library uses the ordinary delegate
-    // comment template; later versions select a Markdown template here.
-    let template = profile.template(
-        "delegatecomment",
-        "/**\n * ${tags}\n * ${see_to_target}\n */",
-    );
     let marker = "@@JDT_DELEGATE_TAGS@@";
-    let enclosing = owner
-        .qualified_name()
-        .trim_start_matches(owner.package_name().unwrap_or(""));
     let mut text = accessors::templates::expand_template(template, |key| {
+        if key == see_variable {
+            return Some(see.as_str());
+        }
         Some(match key {
             "tags" => marker,
-            "see_to_target" => &see,
             "enclosing_type" => enclosing,
             "enclosing_method" => method.name(),
             "return_type" => result,
@@ -155,16 +151,26 @@ fn stub(
         .map(|t| imports.add_import_binding(*t, context))
         .collect();
     if preferences::generate_comments() {
-        let text = comment(
+        let owner = e
+            .field
+            .declaring_class()
+            .ok_or_else(|| anyhow::anyhow!("Missing delegate declaring class"))?;
+        let text = inherited_comment(
             ast,
-            e.field
-                .declaring_class()
-                .ok_or_else(|| anyhow::anyhow!("Missing delegate declaring class"))?,
+            owner,
             m,
             &result,
             &names,
             &throws,
             profile,
+            profile.template(
+                "delegatecomment",
+                "/**\n * ${tags}\n * ${see_to_target}\n */",
+            ),
+            owner
+                .qualified_name()
+                .trim_start_matches(owner.package_name().unwrap_or("")),
+            "see_to_target",
         )?;
         if !text.trim().is_empty() {
             source.push_str(&text);

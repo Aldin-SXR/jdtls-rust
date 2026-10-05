@@ -11,6 +11,8 @@ pub(crate) struct Profile {
     pub(crate) use_markdown: bool,
     templates: BTreeMap<String, String>,
     pub(crate) project_name: String,
+    pub(crate) override_annotation: bool,
+    pub(crate) create_comments: bool,
 }
 impl Profile {
     pub(super) fn load(root: Option<&Path>) -> Self {
@@ -36,6 +38,12 @@ impl Profile {
             }
         }
         Self {
+            override_annotation: prefs
+                .get("org.eclipse.jdt.ui.overrideannotation")
+                .is_none_or(|s| s == "true"),
+            create_comments: prefs
+                .get("org.eclipse.jdt.ui.javadoc")
+                .is_some_and(|s| s == "true"),
             use_is: prefs
                 .get("org.eclipse.jdt.ui.gettersetter.use.is")
                 .is_none_or(|s| s == "true"),

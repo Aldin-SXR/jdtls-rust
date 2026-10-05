@@ -1,4 +1,6 @@
 //! Port of `ModifierCorrectionSubProcessor(Core)`.
+mod methods;
+pub use methods::{abstract_method, abstract_type, native_method, requires_body};
 
 use super::edit::Env;
 use super::{Context, ProblemLocation, Proposal};

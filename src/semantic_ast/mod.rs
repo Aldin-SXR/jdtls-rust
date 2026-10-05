@@ -251,6 +251,9 @@ pub struct Binding {
     pub parameter_types: Vec<BindingId>,
     pub exception_types: Vec<BindingId>,
     pub parameter_names: Vec<String>,
+    /// Compiler IMethodBinding.isSubsignature/overrides relations in this AST.
+    pub method_subsignatures: Vec<BindingId>,
+    pub method_overrides: Vec<BindingId>,
     pub name_offset: i32,
     pub source_offset: i32,
 }
@@ -400,6 +403,8 @@ impl Ast {
                     .unwrap_or_default(),
                 name_offset: o.name_offset,
                 source_offset: o.source_offset,
+                method_subsignatures: bl(&o.ss).unwrap_or_default(),
+                method_overrides: bl(&o.ov).unwrap_or_default(),
             })
             .collect();
         let problems = data

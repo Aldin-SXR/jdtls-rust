@@ -1,6 +1,6 @@
 //! GenerateDelegateMethodsHandler and StubUtility2Core's delegate discovery.
 pub(crate) mod actions;
-mod operation;
+pub(crate) mod operation;
 use super::{
     accessors,
     constructors::{LspMethodBinding, LspVariableBinding},
@@ -46,7 +46,7 @@ struct Entry<'a> {
 pub(crate) fn erasure(t: BindingRef<'_>) -> BindingRef<'_> {
     t.erasure().unwrap_or(t)
 }
-fn subtype(a: BindingRef<'_>, b: BindingRef<'_>) -> bool {
+pub(crate) fn subtype(a: BindingRef<'_>, b: BindingRef<'_>) -> bool {
     fn visit(a: BindingRef<'_>, b: BindingRef<'_>, seen: &mut HashSet<String>) -> bool {
         if a.key() == b.key() {
             return true;

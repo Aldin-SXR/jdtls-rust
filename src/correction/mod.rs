@@ -34,6 +34,7 @@ pub mod parentheses;
 pub mod serial_hash;
 pub mod serial_version;
 pub mod source_assist;
+pub mod unimplemented;
 
 use std::sync::Arc;
 

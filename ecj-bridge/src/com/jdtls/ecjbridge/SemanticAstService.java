@@ -58,7 +58,7 @@ final class SemanticAstService {
         public int type = -1, vid = -1, cv = -1, vd = -1;
         // method
         public int rt = -1, md = -1;
-        public int[] pt, et, pn;
+        public int[] pt, et, pn, ss, ov;
         public int nameOffset = -1, sourceOffset = -1;
     }
 
@@ -150,6 +150,7 @@ final class SemanticAstService {
         private final List<BindingOut> bindings = new ArrayList<>();
         private final Map<String, Integer> bindingIndex = new HashMap<>();
         private final IdentityHashMap<IBinding, Integer> bindingIdentity = new IdentityHashMap<>();
+        private final Map<Integer, IMethodBinding> methodBindings = new HashMap<>();
 
         Collector(CompilationUnit cu, SemanticAstResponse res, BridgeProtocol.Request request) {
             this.cu = cu;
@@ -199,6 +200,7 @@ final class SemanticAstService {
             hierarchyGraph(cu.getAST().resolveWellKnownType("java.lang.Object"), new java.util.HashSet<>());
             constructorMembers(cu.getAST().resolveWellKnownType("java.lang.Object"));
             memberSourceData();
+            methodRelations();
             List<Integer> comments = new ArrayList<>();
             for (Object o : cu.getCommentList()) {
                 Integer idx = nodeIndex.get(o);
@@ -442,6 +444,7 @@ final class SemanticAstService {
                     IVariableBinding decl = v.getVariableDeclaration();
                     b.vd = decl == v ? idx : binding(decl);
                 } else if (binding instanceof IMethodBinding mb) {
+                    methodBindings.put(idx, mb);
                     if (mb.isSyntheticRecordMethod()) f |= SYNTHETIC_RECORD_METHOD;
                     if (mb.isConstructor()) f |= CONSTRUCTOR;
                     if (mb.isDefaultConstructor()) f |= DEFAULT_CONSTRUCTOR;
@@ -481,6 +484,32 @@ final class SemanticAstService {
                 // keep what we have
             }
             return idx;
+        }
+
+        // Compiler predicates are semantic data. Rust chooses methods and builds
+        // corrections; only the compiler can reliably compare substituted signatures.
+        private void methodRelations() {
+            Map<String, List<Integer>> byName = new HashMap<>();
+            for (var entry : methodBindings.entrySet()) {
+                byName.computeIfAbsent(entry.getValue().getName(), name -> new ArrayList<>()).add(entry.getKey());
+            }
+            for (List<Integer> group : byName.values()) {
+                for (int first : group) {
+                    IMethodBinding method = methodBindings.get(first);
+                    List<Integer> subsignatures = new ArrayList<>(), overrides = new ArrayList<>();
+                    for (int second : group) {
+                        IMethodBinding other = methodBindings.get(second);
+                        try {
+                            if (method.isSubsignature(other)) subsignatures.add(second);
+                            if (method.overrides(other)) overrides.add(second);
+                        } catch (RuntimeException e) {
+                            // Recovered or incomplete bindings need not have valid relations.
+                        }
+                    }
+                    bindings.get(first).ss = subsignatures.stream().mapToInt(Integer::intValue).toArray();
+                    bindings.get(first).ov = overrides.stream().mapToInt(Integer::intValue).toArray();
+                }
+            }
         }
 
         // Export a bounded member graph for declared fields and owner hierarchies.

@@ -1,6 +1,6 @@
 //! OverrideMethodsHandler, OverrideMethodsOperation and inherited-method discovery.
 pub(crate) mod actions;
-mod operation;
+pub(crate) mod operation;
 use super::{
     accessors,
     delegates::{overridden, subsignature},

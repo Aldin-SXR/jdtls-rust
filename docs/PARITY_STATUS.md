@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 751 | 36.0% |
-| Passing | 704 | 33.7% |
-| Ported but `#[ignore]`d | 47 | 2.3% |
-| Not ported yet | 1,336 | 64.0% |
+| Ported | 761 | 36.5% |
+| Passing | 715 | 34.3% |
+| Ported but `#[ignore]`d | 46 | 2.2% |
+| Not ported yet | 1,326 | 63.5% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,158 passed,
-0 failed and 48 ignored across 75 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,198 passed,
+0 failed and 47 ignored across 78 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -35,7 +35,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,158 passed
 `tests/tostring_regressions.rs`, 28 tests;
 `tests/hashcode_regressions.rs`, 30 tests;
 `tests/delegate_regressions.rs`, 40 tests;
-`tests/override_regressions.rs`, 33 tests) and unit
+`tests/override_regressions.rs`, 33 tests;
+`tests/method_correction_regressions.rs`, 29 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -44,11 +45,11 @@ those duplicate runs are excluded from the upstream-port counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 562 | 543 | 62% |
+| handlers | 871 | 562 | 544 | 62% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 132 | 104 | 49% |
-| correction | 604 | 8 | 8 | 1% |
+| correction | 604 | 18 | 18 | 3% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
 | preferences | 53 | 0 | 0 | 0% |
@@ -71,7 +72,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 13 | 1 | 13/13 active; Runnable exposes 3 lenses with the real JDK's sources (environment) |
 | handlers/CompletionHandlerTest | `handlers_completion_handler_test` | 57 | 55 | 2 | 55/55 active; real-JDK TimeUnit and Method* proposal counts differ from rtstubs.jar |
 | handlers/DocumentHighlightHandlerTest | `handlers_document_highlight_handler_test` | 5 | 5 | 0 | pass |
-| handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` | 19 | 17 | 2 | 17/17 active cases |
+| handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` | 19 | 18 | 1 | 18/18 active cases |
 | handlers/DocumentSymbolHandlerTest | `handlers_document_symbol_handler_test` | 14 | 13 | 1 | 13/13 active |
 | handlers/FileEventHandlerTest | `handlers_file_event_handler_test` | 8 | 8 | 0 | 8/8 |
 | handlers/FoldingRangeHandlerTest | `handlers_folding_range_handler_test` | 9 | 9 | 0 | 9/9 |
@@ -107,6 +108,8 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/WorkspaceDiagnosticsHandlerTest | `handlers_workspace_diagnostics_handler_test` | 2 | 2 | 0 | 2/2 (package deletion and diagnostic filtering) |
 | handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` | 1 | 1 | 0 | 1/1 (unknown-command error) |
 | handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 16 | 3 | 16/16 |
+| correction/AbstractMethodQuickFixTest | `correction_abstract_method_quick_fix_test` | 8 | 8 | 0 | 8/8 |
+| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 2 | 2 | 0 | 2/2 unimplemented-method cases; 85 upstream methods remain unported |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -142,7 +145,7 @@ ignored test keeps its upstream assertions unchanged.
 | Kotlin not supported | 1 | `test_kotlin` |
 | Direct completion-requestor state access | 1 | `test_signature_help_for_selected_completion_proposal` selects the first raw proposal directly, whose ordering differs from LSP items; the public selection flow is implemented and oracle verified separately |
 | The upstream test assumes a Java 10 JDK | 1 | `test_hover_on_java10var` |
-| Needs code-action/quick-fix parity | 2 | lifecycle `test_unimplemented_methods` and `test_remove_dead_code_after_if` |
+| Needs code-action/quick-fix parity | 1 | lifecycle `test_remove_dead_code_after_if` |
 | Requires an installed JavaSE-1.8 or Java 26 VM | 4 | Eclipse `test_forbidden_reference`, `test_preview_features_disabled_by_default`; invisible `test_preview_features_enabled_by_default`; Maven `test_java26_project` |
 | Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
 | Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
@@ -246,8 +249,8 @@ fixtures, diagnostic inputs, kind restrictions and edit assertions.
   ambiguous imports, sorting, wildcards and static imports need dedicated ports.
   Active AST tracking across other editor handlers, invalid proposal errors,
   snippet edits and full project-setting refresh on compiler-ignore actions also
-  remain. The two lifecycle quick-fix tests stay ignored with their assertions;
-  unimplemented-method generation is missing even though kind filtering is fixed.
+  remain. The lifecycle dead-code quick-fix test stays ignored with its assertions;
+  unimplemented-method generation is now covered by the method-correction ports below.
 
 This raises passing upstream ports from 422 to 441. The two correction helper unit
 tests and three own regressions are excluded from the upstream-port count.
@@ -375,7 +378,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 
 | Work | Upstream tests | Share of suite |
 |---|---:|---:|
-| Remaining quick fixes and assists (`correction`) | 596 | 29% |
+| Remaining quick fixes and assists (`correction`) | 586 | 28% |
 | Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
 | Remaining project managers | 79 | 4% |
 | Refactoring | 119 | 6% |
@@ -387,7 +390,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions|delegate_regressions|override_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions|delegate_regressions|override_regressions|method_correction_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
@@ -397,7 +400,7 @@ Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
 `correction_regressions.rs`, `completion_regressions.rs` and
 `project_download_regressions.rs`, `paste_regressions.rs` and
 `smart_detection_regressions.rs`, `accessor_regressions.rs`,
-`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, `delegate_regressions.rs`, `override_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
+`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, `delegate_regressions.rs`, `override_regressions.rs`, `method_correction_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.
 
@@ -726,3 +729,59 @@ returns early; 43 cases actually exercise the oracle. Logs are in
 `target/parity-evidence/override-full-suite-final-2.log` and
 `target/parity-evidence/override-oracle-final-9.log` (gitignored). The ledger now
 has 751 upstream ports, with 1,336 upstream tests still unported.
+
+## Abstract/native/unimplemented-method correction evidence
+
+All eight `AbstractMethodQuickFixTest` methods and the two unimplemented-method
+cases from `LocalCorrectionQuickFixTest` preserve the upstream fixtures, labels,
+settings and complete edited-source expectations. The other 85 methods in
+`LocalCorrectionQuickFixTest` remain unported. The existing lifecycle
+`test_unimplemented_methods` is enabled with its original action-count and kind
+assertions; the lifecycle dead-code case remains ignored.
+
+* Rust owns abstract/native modifier corrections, missing method bodies,
+  make-type-abstract edits, inherited method selection, source-position ordering,
+  enum-constant/anonymous-class targets, imports and implementation edits.
+  The bridge exports compiler subsignature and override relations as semantic
+  data; it does not select methods or generate these corrections.
+* Unimplemented methods use the ordinary throwing method-body template and
+  project Javadoc/Override preferences. The custom override command retains its
+  alternative class template and existing comment behavior. Shared inherited
+  comment expansion handles tags and `see_to_overridden` without changing
+  delegate comments.
+* Twenty-nine own regressions cover body preservation/removal, primitive,
+  reference, Optional and old-style array defaults, constructors, interface
+  static/default alternatives, annotations, modifier ordering, generic
+  substitution/bounds, covariance, varargs, throws, concrete/default suppression,
+  source order and reversed interface order, enum constants and anonymous
+  classes. They also check templates, comment/annotation preferences, import
+  conflicts, cross-package protected inheritance, deferred resolution with
+  resource edits, diagnostics, unsaved Unicode/CRLF buffers and unchanged disk
+  contents. Twenty-eight file-backed cases pass against the oracle; one Rust-only
+  case uses untitled, in-memory and nonexistent-file documents with real
+  diagnostics.
+* Reference quirks are retained: make-type-abstract appends `abstract` even after
+  `final`; removing `native` replaces an existing body with a default return;
+  an imported Optional receives `null` while a fully qualified Optional receives
+  `java.util.Optional.empty()` in missing-body corrections. Own abstract methods
+  remain selected when another inherited method is missing. Inherited interface
+  methods precede superclass methods, and directly implemented interfaces sort
+  in reverse declaration order.
+* The old-style array regression caught an incorrect AST property lookup and now
+  receives `return null`. The cross-package regression caught compilation-order
+  dependence in ECJ's source name environment: source package prefixes are now
+  indexed before compiling units, allowing superclass resolution, missing-method
+  diagnostics and the matching correction to work across packages.
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 78 targets (1,198 passing, 47 ignored). The ten new upstream ports,
+all eighteen active lifecycle cases and twenty-eight file-backed regressions
+pass with `JDTLS_ORACLE=1 --test-threads=3`. The oracle log reports 57 harness
+passes, including the virtual-buffer case that returns early; 56 cases actually
+exercise the oracle. Logs are in
+`target/parity-evidence/method-corrections-full-suite-final-1.log` and
+`target/parity-evidence/method-corrections-oracle-final-2.log` (gitignored).
+The ledger now has 761 upstream ports, 715 passing and 46 ignored; 1,326 upstream
+tests remain unported. Shared nullness/type-use annotation, scope and global
+preference/template dependencies above remain unfinished; this batch does not
+claim full feature parity.

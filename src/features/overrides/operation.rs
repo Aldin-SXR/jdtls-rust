@@ -53,16 +53,17 @@ fn stub(
     context: &ConstructorImportContext,
     options: &BTreeMap<String, String>,
     profile: &accessors::templates::Profile,
+    quick_fix: bool,
 ) -> anyhow::Result<String> {
     let dc = m
         .declaring_class()
         .ok_or_else(|| anyhow::anyhow!("No overridden declaring type"))?;
-    let in_interface = owner.is_interface();
+    let in_interface = !quick_fix && owner.is_interface();
     let is_object = dc.qualified_name() == "java.lang.Object";
     let mut source = String::new();
     let skip = in_interface && is_object && m.modifiers() & modifier::PUBLIC == 0;
     let override_enabled=!dc.is_interface() || options.get("org.eclipse.jdt.core.compiler.problem.missingOverrideAnnotationForInterfaceMethodImplementation").is_none_or(|s|s!="disabled");
-    if !skip && override_enabled {
+    if !skip && override_enabled && (!quick_fix || profile.override_annotation) {
         source.push_str(&format!(
             "@{}\n",
             imports.add_import("java.lang.Override", &DefaultContext)
@@ -204,11 +205,36 @@ fn stub(
     }
     enclosing.reverse();
     let type_name = enclosing.join(".");
+    if quick_fix
+        && profile.create_comments
+        && context.declaration.is_some_and(|n| {
+            !matches!(
+                context.ast.node(n).kind(),
+                NodeKind::AnonymousClassDeclaration | NodeKind::EnumConstantDeclaration
+            )
+        })
+    {
+        let comment = crate::features::delegates::operation::inherited_comment(
+            &context.ast,
+            owner,
+            m,
+            &result,
+            &names,
+            &throws,
+            profile,
+            profile.template("overridecomment", ""),
+            &type_name,
+            "see_to_overridden",
+        )?;
+        if !comment.trim().is_empty() {
+            source = format!("{comment}\n{source}");
+        }
+    }
     let todo = options
         .get("org.eclipse.jdt.core.compiler.taskTags")
         .and_then(|s| s.split(',').next())
         .unwrap_or("TODO");
-    let template = if in_interface {
+    let template = if in_interface || quick_fix {
         profile.template("methodbody","// ${todo} Auto-generated method stub\nthrow new UnsupportedOperationException(\"Unimplemented method '${enclosing_method}'\");")
     } else {
         profile.template(
@@ -272,9 +298,34 @@ pub(super) async fn create(
     methods: &[BindingRef<'_>],
     before: Option<NodeId>,
 ) -> anyhow::Result<CuChange> {
+    create_impl(env, ast, selected.declaration, methods, before, false).await
+}
+pub(crate) async fn create_unimplemented(
+    env: &Env<'_>,
+    ast: Arc<Ast>,
+    declaration: NodeId,
+    methods: &[BindingRef<'_>],
+) -> anyhow::Result<CuChange> {
+    create_impl(env, ast, declaration, methods, None, true).await
+}
+async fn create_impl(
+    env: &Env<'_>,
+    ast: Arc<Ast>,
+    declaration: NodeId,
+    methods: &[BindingRef<'_>],
+    before: Option<NodeId>,
+    quick_fix: bool,
+) -> anyhow::Result<CuChange> {
     let owner = ast
-        .node(selected.declaration)
+        .node(declaration)
         .binding()
+        .and_then(|b| {
+            if b.is_variable() {
+                b.declaring_class()
+            } else {
+                Some(b)
+            }
+        })
         .ok_or_else(|| anyhow::anyhow!("No override target binding"))?;
     let options = env.options(&ast.uri).await;
     let profile =
@@ -282,16 +333,41 @@ pub(super) async fn create(
     let mut imports = ImportRewrite::create_for_corrections(ast.clone(), &options);
     let context = ConstructorImportContext {
         ast: ast.clone(),
-        declaration: Some(selected.declaration),
+        declaration: Some(declaration),
     };
     let mut rewrite = ASTRewrite::new(ast.clone());
+    let parent = if ast.node(declaration).is(NodeKind::EnumConstantDeclaration) {
+        let anonymous = rewrite.new_node(NodeKind::AnonymousClassDeclaration);
+        rewrite.put_list(anonymous, "bodyDeclarations", Vec::new());
+        rewrite.set(
+            RNode::Orig(declaration),
+            "anonymousClassDeclaration",
+            Some(anonymous),
+        );
+        anonymous
+    } else {
+        RNode::Orig(declaration)
+    };
     let eol = if ast.source.windows(2).any(|w| w == [13, 10]) {
         "\r\n"
     } else {
         "\n"
     };
     for m in methods {
-        let method = stub(*m, owner, &mut imports, &context, &options, &profile)?;
+        let target = if quick_fix {
+            m.declaring_class().unwrap_or(owner)
+        } else {
+            owner
+        };
+        let method = stub(
+            *m,
+            target,
+            &mut imports,
+            &context,
+            &options,
+            &profile,
+            quick_fix,
+        )?;
         let formatted = match env
             .dispatcher
             .format_source(
@@ -315,7 +391,6 @@ pub(super) async fn create(
         };
         let formatted = indent_body_blanks(&formatted);
         let node = rewrite.create_string_placeholder(&formatted, NodeKind::MethodDeclaration);
-        let parent = RNode::Orig(selected.declaration);
         if let Some(b) = before {
             rewrite.list_insert_before(parent, "bodyDeclarations", node, RNode::Orig(b));
         } else {

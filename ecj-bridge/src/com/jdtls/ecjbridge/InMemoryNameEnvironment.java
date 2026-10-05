@@ -36,6 +36,7 @@ public class InMemoryNameEnvironment implements INameEnvironment {
 
     /** URI string → Java source code for all open files */
     private final Map<String, String> sourceFiles;
+    private final Set<String> sourcePackages = new HashSet<>();
     private Map<String, String> expectedPackages;
 
     /** Expected package per source URI (see {@link InMemoryCompilationUnit}). */
@@ -52,6 +53,16 @@ public class InMemoryNameEnvironment implements INameEnvironment {
     public InMemoryNameEnvironment(Map<String, String> sourceFiles, List<String> classpath) {
         this.sourceFiles = sourceFiles;
         this.classpathEntries = cachedClasspath(classpath);
+        // ECJ asks whether a prefix is a package before resolving its source
+        // type. Include units not compiled yet, regardless of compilation order.
+        for (String source : sourceFiles.values()) {
+            String pkg = InMemorySourceClasspath.packageOf(source).replace('.', '/');
+            while (!pkg.isEmpty()) {
+                sourcePackages.add(pkg);
+                int slash = pkg.lastIndexOf('/');
+                pkg = slash < 0 ? "" : pkg.substring(0, slash);
+            }
+        }
     }
 
     /**
@@ -123,6 +134,7 @@ public class InMemoryNameEnvironment implements INameEnvironment {
         String pkg = (parentPackageName != null && parentPackageName.length > 0
                 ? toBinaryName(parentPackageName) + "/" : "")
                 + new String(packageName);
+        if (sourcePackages.contains(pkg)) return true;
         // Check compiled classes
         for (String name : compiledClasses.keySet()) {
             if (name.startsWith(pkg + "/")) return true;
