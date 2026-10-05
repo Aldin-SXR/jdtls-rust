@@ -72,6 +72,7 @@ pub async fn source_actions(
     out.extend(crate::features::tostring::actions::actions(env, req, first).await);
     out.extend(crate::features::hashcode::actions::actions(env, req).await);
     out.extend(crate::features::delegates::actions::actions(env, req).await);
+    out.extend(crate::features::overrides::actions::actions(env, req).await);
     out
 }
 

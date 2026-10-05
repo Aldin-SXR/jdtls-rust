@@ -83,6 +83,14 @@ async fn main() {
             "java/generateDelegateMethods",
             JavaLanguageServer::generate_delegate_methods,
         )
+        .custom_method(
+            "java/listOverridableMethods",
+            JavaLanguageServer::list_overridable_methods,
+        )
+        .custom_method(
+            "java/addOverridableMethods",
+            JavaLanguageServer::add_overridable_methods,
+        )
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
         .custom_method("java/buildWorkspace", JavaLanguageServer::build_workspace)
         .custom_method("java/buildProjects", JavaLanguageServer::build_projects)

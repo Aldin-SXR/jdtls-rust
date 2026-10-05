@@ -415,6 +415,25 @@ impl JavaLanguageServer {
         let _ = self.compile_tx.send(next);
     }
 
+    pub async fn list_overridable_methods(
+        &self,
+        params: CodeActionParams,
+    ) -> LspResult<crate::features::overrides::OverridableMethodsResponse> {
+        Ok(crate::features::overrides::list(&self.dispatcher, params).await)
+    }
+    pub async fn add_overridable_methods(
+        &self,
+        params: crate::features::overrides::AddOverridableMethodParams,
+    ) -> LspResult<Option<WorkspaceEdit>> {
+        let format = self.format_env().await;
+        let env = crate::correction::edit::Env {
+            dispatcher: &self.dispatcher,
+            format: &format,
+            lifecycle: &self.lifecycle,
+        };
+        Ok(crate::features::overrides::generate(&env, params).await)
+    }
+
     pub async fn check_delegate_methods_status(
         &self,
         params: CodeActionParams,

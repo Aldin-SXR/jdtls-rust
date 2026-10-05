@@ -196,6 +196,7 @@ final class SemanticAstService {
                     }
                 }
             }
+            hierarchyGraph(cu.getAST().resolveWellKnownType("java.lang.Object"), new java.util.HashSet<>());
             constructorMembers(cu.getAST().resolveWellKnownType("java.lang.Object"));
             memberSourceData();
             List<Integer> comments = new ArrayList<>();

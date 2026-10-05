@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 740 | 35.5% |
-| Passing | 693 | 33.2% |
+| Ported | 751 | 36.0% |
+| Passing | 704 | 33.7% |
 | Ported but `#[ignore]`d | 47 | 2.3% |
-| Not ported yet | 1,347 | 64.5% |
+| Not ported yet | 1,336 | 64.0% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,114 passed,
-0 failed and 48 ignored across 72 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,158 passed,
+0 failed and 48 ignored across 75 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -34,7 +34,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,114 passed
 `tests/constructor_regressions.rs`, 24 tests;
 `tests/tostring_regressions.rs`, 28 tests;
 `tests/hashcode_regressions.rs`, 30 tests;
-`tests/delegate_regressions.rs`, 40 tests) and unit
+`tests/delegate_regressions.rs`, 40 tests;
+`tests/override_regressions.rs`, 33 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -43,7 +44,7 @@ those duplicate runs are excluded from the upstream-port counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 561 | 542 | 62% |
+| handlers | 871 | 562 | 543 | 62% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 132 | 104 | 49% |
@@ -51,7 +52,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
 | preferences | 53 | 0 | 0 | 0% |
-| codemanipulation | 20 | 0 | 0 | 0% |
+| codemanipulation | 20 | 10 | 10 | 50% |
 | cleanup | 18 | 0 | 0 | 0% |
 | syntaxserver | 14 | 0 | 0 | 0% |
 | contentassist | 6 | 0 | 0 | 0% |
@@ -93,6 +94,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/NavigateToDeclarationHandlerTest | `handlers_navigate_to_declaration_handler_test` | 5 | 5 | 0 | pass |
 | handlers/NavigateToDefinitionHandlerTest | `handlers_navigate_to_definition_handler_test` | 11 | 8 | 3 | pass, except rtstubs/Kotlin |
 | handlers/NavigateToTypeDefinitionHandlerTest | `handlers_navigate_to_type_definition_handler_test` | 7 | 6 | 1 | pass, except rtstubs |
+| handlers/OverrideMethodsActionTest | `handlers_override_methods_action_test` | 1 | 1 | 0 | 1/1 |
 | handlers/PasteEventHandlerTest | `handlers_paste_event_handler_test` | 22 | 22 | 0 | 22/22 |
 | handlers/PrepareRenameHandlerTest | `handlers_prepare_rename_handler_test` | 15 | 15 | 0 | 15/15 |
 | handlers/ReferencesHandlerTest | `handlers_references_handler_test` | 7 | 6 | 1 | pass |
@@ -108,6 +110,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
+| codemanipulation/OverrideMethodsTestCase | `codemanipulation_override_methods_test_case` | 10 | 10 | 0 | 10/10 |
 | commands/DiagnosticsCommandTest | `commands_diagnostics_command_test` | 2 | 2 | 0 | 2/2 |
 | commands/TypeHierarchyCommandTest | `commands_type_hierarchy_command_test` | 5 | 5 | 0 | 5/5 |
 | javadoc/JavaDoc2MarkdownConverterTest | unit tests in `src/javadoc/converter.rs` | 19 | 19 | 0 | n/a (unit tests) |
@@ -356,6 +359,11 @@ assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matche
   template resolvers still require the shared StubUtility2Core and ScopeAnalyzer
   dependency ports. Available source ranges and parameter names now cover current
   and referenced source units and binary source attachments.
+* **Override/implementation dependencies:** inherited nullness, parameter and
+  type-use annotations, complete inherited/external scope conflicts and global
+  date/time/user body-template resolvers still need the shared dependency ports.
+  Existing unqualified source-type references now prevent conflicting imports;
+  exact custom-JDK binding contents retain the standalone-parser limitation above.
 * **Lombok** is not supported in any feature.
 
 ## Saved work branches
@@ -371,15 +379,15 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 | Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
 | Remaining project managers | 79 | 4% |
 | Refactoring | 119 | 6% |
-| Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 207 | 10% |
-| Core utilities, preferences, commands and the rest | 243 | 12% |
+| Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 206 | 10% |
+| Core utilities, preferences, commands and the rest | 233 | 11% |
 
 ## Updating this file
 
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions|delegate_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions|delegate_regressions|override_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
@@ -389,7 +397,7 @@ Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
 `correction_regressions.rs`, `completion_regressions.rs` and
 `project_download_regressions.rs`, `paste_regressions.rs` and
 `smart_detection_regressions.rs`, `accessor_regressions.rs`,
-`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, `delegate_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
+`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, `delegate_regressions.rs`, `override_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.
 
@@ -666,3 +674,55 @@ marker notification. The unchanged test passed in isolation
 (`target/parity-evidence/delegate-lifecycle-recheck.log`); the final full-suite
 run above used no overlapping full-suite process. The earlier 39-regression
 full run also passed all 72 targets (1,113 passing, 48 ignored).
+
+## Override/implementation integration evidence
+
+All ten `OverrideMethodsTestCase` methods and the `OverrideMethodsActionTest`
+method are ported through the public endpoints, preserving upstream discovery,
+method/import counts, selections and complete cursor-insertion expectations.
+Fixtures use the Java 21 fake JDK and original formatter settings. JavaModel's
+`createType` snippets are realized inside the existing package `p` compilation
+unit, including the snippet with `package P`; the package-mismatched
+`Test480682.java` compilation-unit fixture remains verbatim. A name selection
+exercises the operation's null-cursor append behavior on the requested type.
+
+* Rust owns `java/listOverridableMethods`, `java/addOverridableMethods`, inherited
+  method discovery, visibility, override/subsignature checks, final-method
+  suppression, Cloneable flags, DTOs, selection, imports, implementation stubs,
+  cursor insertion and the override/implement prompt actions. The approximate
+  Java source-action generator is removed; the bridge exports the complete
+  Object member graph for interface targets as semantic data.
+* Thirty-three extra regressions cover binding DTOs, overloads, package visibility,
+  static/private/own/final exclusions, covariance and generic substitution,
+  primitive/reference/Optional defaults, synchronized modifiers, bounds,
+  varargs, throws, argument affixes, task tags, direct and indirect interface
+  super calls, interface default bodies and bodyless Object methods. They also
+  cover record/enum behavior, named/local/anonymous type selection, body
+  templates, binding-key-only selections, ordering/deduplication, empty/stale
+  selections, capability/kind filtering, command fallback, resolve,
+  module/package-info exclusions and open-buffer UTF-16/CRLF edits.
+  Thirty-two file-backed cases pass against the oracle; one Rust-only case checks
+  untitled, in-memory and nonexistent-file documents.
+* Reference quirks are retained: requested methods follow inherited binding
+  order; duplicates are deduplicated; wholly stale keys return an empty edit;
+  comments remain disabled even when generateComments is enabled. Interface
+  defaults use the ordinary throwing body template, while classes use the
+  alternative template and super/default-return statements. Object declarations
+  in interfaces have no body, with no Override annotation on clone/finalize.
+  Synthetic record methods allow explicit Object overrides. Local type names
+  use JavaModel names rather than binary names, and body-template blank lines
+  preserve JDT's exact indentation.
+* The shared import context now checks existing unqualified type references.
+  The unchanged bug119171 fixture generates a fully qualified
+  `java.util.Properties` parameter and no import, preserving `p.Properties`.
+  Remaining ScopeAnalyzer, annotation, custom-JDK and template dependencies are
+  listed above and are not counted as full feature parity.
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 75 targets (1,158 passing, 48 ignored). The eleven upstream ports and
+thirty-two file-backed regressions pass with `JDTLS_ORACLE=1 --test-threads=3`.
+The oracle log reports 44 harness passes, including the virtual-buffer test that
+returns early; 43 cases actually exercise the oracle. Logs are in
+`target/parity-evidence/override-full-suite-final-2.log` and
+`target/parity-evidence/override-oracle-final-9.log` (gitignored). The ledger now
+has 751 upstream ports, with 1,336 upstream tests still unported.

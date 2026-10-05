@@ -370,6 +370,29 @@ impl ImportRewriteContext for ConstructorImportContext {
                     };
                 }
             }
+            // ContextSensitiveImportRewriteContext also checks the unqualified
+            // type references already used in the compilation unit. A type in
+            // another source file can otherwise be silently shadowed by an import.
+            for node in self.ast.all_nodes() {
+                if node.kind() != NodeKind::SimpleName
+                    || node.parent().is_some_and(|p| {
+                        p.kind() == NodeKind::QualifiedName
+                            || p.kind() == NodeKind::TypeParameter
+                            || p.kind().is_abstract_type_declaration()
+                    })
+                {
+                    continue;
+                }
+                if let Some(binding) = node
+                    .binding()
+                    .filter(|b| b.is_type() && !b.is_type_variable() && !b.is_recovered())
+                {
+                    let binding = binding.type_declaration().unwrap_or(binding);
+                    if binding.name() == name && binding.qualified_name() != qualified {
+                        return RES_NAME_CONFLICT;
+                    }
+                }
+            }
         }
         imports.find_in_imports(qualifier, name, kind)
     }

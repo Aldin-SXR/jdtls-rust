@@ -43,7 +43,7 @@ struct Entry<'a> {
     field: BindingRef<'a>,
     method: BindingRef<'a>,
 }
-fn erasure(t: BindingRef<'_>) -> BindingRef<'_> {
+pub(crate) fn erasure(t: BindingRef<'_>) -> BindingRef<'_> {
     t.erasure().unwrap_or(t)
 }
 fn subtype(a: BindingRef<'_>, b: BindingRef<'_>) -> bool {
@@ -86,7 +86,7 @@ fn subtype(a: BindingRef<'_>, b: BindingRef<'_>) -> bool {
 }
 /// Bindings.areOverriddenMethods is deliberately different from subsignature:
 /// it checks erased parameters, covariant returns and declared exceptions.
-fn overridden(a: BindingRef<'_>, b: BindingRef<'_>) -> bool {
+pub(crate) fn overridden(a: BindingRef<'_>, b: BindingRef<'_>) -> bool {
     a.name() == b.name()
         && a.parameter_types().len() == b.parameter_types().len()
         && a.return_type()
@@ -130,7 +130,7 @@ fn bounds(t: BindingRef<'_>) -> HashSet<String> {
         .collect()
 }
 /// Port of Bindings.isSubsignature used for the final-method hierarchy check.
-fn subsignature(a: BindingRef<'_>, b: BindingRef<'_>) -> bool {
+pub(crate) fn subsignature(a: BindingRef<'_>, b: BindingRef<'_>) -> bool {
     let (ap, bp, at, bt) = (
         a.parameter_types(),
         b.parameter_types(),
