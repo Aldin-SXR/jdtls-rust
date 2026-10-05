@@ -10,7 +10,7 @@ fn text(rw: &mut ASTRewrite, value: &str) -> RNode {
     rw.put_simple(node, "text", value);
     node
 }
-fn argument(tag: Node<'_>) -> Option<String> {
+pub(super) fn argument(tag: Node<'_>) -> Option<String> {
     let fragments = tag.list("fragments");
     let first = fragments.first()?;
     if first.kind().is_name() {
@@ -109,14 +109,11 @@ fn add_tag(rw: &mut ASTRewrite, declaration: Node<'_>, missing: Node<'_>) -> boo
                 .into_iter()
                 .take_while(|n| n.id != missing.id)
             {
-                leading.insert(typ.ast.substring(typ.start(), typ.end()));
+                leading.insert(super::exceptions::type_name(typ, false));
             }
             (
                 "@throws",
-                vec![text(
-                    rw,
-                    &missing.ast.substring(missing.start(), missing.end()),
-                )],
+                vec![text(rw, &super::exceptions::type_name(missing, true))],
             )
         }
         _ => return false,

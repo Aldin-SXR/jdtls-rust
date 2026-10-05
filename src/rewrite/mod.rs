@@ -763,9 +763,18 @@ impl ASTRewrite {
     /// is removed/replaced. Anchor the source at the enclosing block so the
     /// whole range (including comments and separators) stays under that edit.
     pub(crate) fn move_removed_block_contents(&mut self, block: NodeId) -> RNode {
+        self.removed_block_contents(block, true)
+    }
+
+    /// ListRewrite.createCopyTarget(first, last) under a removed/replaced ancestor.
+    pub(crate) fn copy_removed_block_contents(&mut self, block: NodeId) -> RNode {
+        self.removed_block_contents(block, false)
+    }
+
+    fn removed_block_contents(&mut self, block: NodeId, is_move: bool) -> RNode {
         let list = self.ast.node(block).list("statements");
         let range = (list.first().expect("nonempty block").id, list.last().unwrap().id);
-        self.copy_sources.push(CopySourceInfo { location: None, node: block, is_move: true, range: Some(range) });
+        self.copy_sources.push(CopySourceInfo { location: None, node: block, is_move, range: Some(range) });
         let info = self.copy_sources.len() - 1;
         let placeholder = self.new_placeholder_node(NodeKind::Block);
         if let RNode::New(i) = placeholder {

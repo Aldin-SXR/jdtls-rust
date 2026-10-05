@@ -661,12 +661,6 @@ public class Main {
                         orDefault(req.sourceLevel), orEmpty(req.classpath), problemId, msg));
             }
 
-            if (problemId == org.eclipse.jdt.core.compiler.IProblem.UnusedMethodDeclaredThrownException
-                    || problemId == org.eclipse.jdt.core.compiler.IProblem.UnusedConstructorDeclaredThrownException) {
-                BridgeAction a = makeRemoveUnusedThrownExceptionAction(req.uri, source, cu, d);
-                if (a != null) actions.add(a);
-            }
-
             if (problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocMissingParamTag
                     || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocMissingReturnTag
                     || problemId == org.eclipse.jdt.core.compiler.IProblem.JavadocMissingThrowsTag) {
@@ -1612,30 +1606,6 @@ public class Main {
                 return true;
             }
         });
-    }
-
-    private static BridgeAction makeRemoveUnusedThrownExceptionAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d) {
-        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        MethodLocator loc = new MethodLocator(offset); cu.accept(loc);
-        if (loc.found == null) return null;
-        org.eclipse.jdt.core.dom.Type ex = findThrownExceptionType(loc.found, offset);
-        if (ex == null) return null;
-        int s = ex.getStartPosition(), e = s + ex.getLength();
-        @SuppressWarnings("unchecked")
-        List<org.eclipse.jdt.core.dom.Type> thrown = loc.found.thrownExceptionTypes();
-        int idx = thrown.indexOf(ex);
-        if (thrown.size() > 1) {
-            if (idx == 0) e = thrown.get(1).getStartPosition();
-            else {
-                s = thrown.get(idx - 1).getStartPosition() + thrown.get(idx - 1).getLength();
-                while (s < ex.getStartPosition() && source.charAt(s) != ',') s++;
-                if (s < ex.getStartPosition()) s++;
-            }
-        } else {
-            int prev = s; while (prev > 0 && !source.substring(prev, s).contains("throws")) prev--;
-            s = prev;
-        }
-        return makeRemoveTextAction("Remove unused thrown exception", uri, source, s, e);
     }
 
     private static BridgeAction makeInitializeLocalVariableAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d) {

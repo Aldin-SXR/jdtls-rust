@@ -3559,7 +3559,7 @@ fn ecj_code_action_serial_version_uid() {
     );
 }
 
-/// Method declaring `throws IOException` but never throwing → "Remove unused thrown exception" quickfix.
+/// Method declaring `throws IOException` but never throwing → "Remove thrown exception" quickfix.
 #[test]
 fn ecj_code_action_remove_unused_thrown() {
     let mut c = LspClient::spawn();
@@ -3598,7 +3598,7 @@ fn ecj_code_action_remove_unused_thrown() {
         titles
             .iter()
             .any(|t| t.to_lowercase().contains("remove") && t.to_lowercase().contains("thrown")),
-        "expected 'Remove unused thrown exception' action, got: {titles:?}"
+        "expected 'Remove thrown exception' action, got: {titles:?}"
     );
 }
 

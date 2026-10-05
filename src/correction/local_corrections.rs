@@ -4,6 +4,8 @@ mod unreachable;
 mod conversion;
 mod unused;
 mod javadoc;
+mod exceptions;
+pub use exceptions::{unnecessary_throws, unreachable_catch};
 pub use unreachable::proposals as unreachable_code;
 pub use unused::{proposals as unused_member, type_parameter as unused_type_parameter};
 

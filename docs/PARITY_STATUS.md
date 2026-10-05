@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 799 | 38.3% |
-| Passing | 754 | 36.1% |
+| Ported | 807 | 38.7% |
+| Passing | 762 | 36.5% |
 | Ported but `#[ignore]`d | 45 | 2.2% |
-| Not ported yet | 1,288 | 61.7% |
+| Not ported yet | 1,280 | 61.3% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,295 passed,
-0 failed and 46 ignored across 80 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,325 passed,
+0 failed and 46 ignored across 81 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -38,7 +38,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,295 passed
 `tests/override_regressions.rs`, 33 tests;
 `tests/method_correction_regressions.rs`, 29 tests;
 `tests/dead_code_regressions.rs`, 26 tests;
-`tests/unused_code_regressions.rs`, 32 tests) and unit
+`tests/unused_code_regressions.rs`, 32 tests;
+`tests/exception_correction_regressions.rs`, 22 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -51,7 +52,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 132 | 104 | 49% |
-| correction | 604 | 56 | 56 | 9% |
+| correction | 604 | 64 | 64 | 11% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
 | preferences | 53 | 0 | 0 | 0% |
@@ -111,7 +112,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` | 1 | 1 | 0 | 1/1 (unknown-command error) |
 | handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 16 | 3 | 16/16 |
 | correction/AbstractMethodQuickFixTest | `correction_abstract_method_quick_fix_test` | 8 | 8 | 0 | 8/8 |
-| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 40 | 40 | 0 | 40/40 unimplemented-method, unused-declaration and dead/unreachable-code cases; 47 upstream methods remain unported |
+| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 48 | 48 | 0 | 48/48 unimplemented-method, unused-declaration, dead/unreachable-code, unreachable-catch and unused-throws cases; 39 upstream methods remain unported |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -379,7 +380,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 
 | Work | Upstream tests | Share of suite |
 |---|---:|---:|
-| Remaining quick fixes and assists (`correction`) | 548 | 26% |
+| Remaining quick fixes and assists (`correction`) | 540 | 26% |
 | Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
 | Remaining project managers | 79 | 4% |
 | Refactoring | 119 | 6% |
@@ -391,7 +392,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions|delegate_regressions|override_regressions|method_correction_regressions|dead_code_regressions|unused_code_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions|delegate_regressions|override_regressions|method_correction_regressions|dead_code_regressions|unused_code_regressions|exception_correction_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
@@ -401,7 +402,7 @@ Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
 `correction_regressions.rs`, `completion_regressions.rs` and
 `project_download_regressions.rs`, `paste_regressions.rs` and
 `smart_detection_regressions.rs`, `accessor_regressions.rs`,
-`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, `delegate_regressions.rs`, `override_regressions.rs`, `method_correction_regressions.rs`, `dead_code_regressions.rs`, `unused_code_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
+`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, `delegate_regressions.rs`, `override_regressions.rs`, `method_correction_regressions.rs`, `dead_code_regressions.rs`, `unused_code_regressions.rs`, `exception_correction_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
 come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.
 
@@ -842,7 +843,8 @@ feature parity or the rest of LocalCorrectionsSubProcessor/quick assists.
 All ten unused-declaration methods from `LocalCorrectionQuickFixTest` now
 preserve the upstream fixtures, compiler options, labels and complete edited
 sources, including resource-operation support and the existing getter/setter
-alternatives. That class has 40 of 87 methods ported; 47 remain unported.
+alternatives. At the end of that batch the class had 40 of 87 methods ported;
+47 remained unported.
 The upstream method named `testUnusedTypeParameter` actually removes an unused
 private nested type. Separate regressions verify real class/method type parameters.
 
@@ -880,8 +882,51 @@ pass against jdt.ls 1.58.0. The oracle log reports 72 harness passes including
 one virtual-document case that returns early; 71 cases actually use the oracle.
 Logs are in `target/parity-evidence/unused-full-suite-final-2.log` and
 `target/parity-evidence/unused-oracle-final-4.log` (gitignored).
-The ledger now has 799 upstream ports, 754 passing and 45 ignored; 1,288 upstream
-tests remain unported. This batch ports the individual unused-declaration fixes,
+At the end of that batch the ledger had 799 upstream ports, 754 passing and
+45 ignored; 1,288 upstream tests remained unported. This batch ports the individual unused-declaration fixes,
 not the full unused-code cleanup, general linked-node finder, Javadoc processor,
 or remaining LocalCorrectionsSubProcessor. Earlier conversion, scope, annotation
 and global preference/template dependencies remain unfinished.
+
+## Unreachable-catch and unused-throws correction evidence
+
+All four unneeded-catch and four unnecessary-thrown-exception methods from
+`LocalCorrectionQuickFixTest` preserve the upstream fixtures, compiler and
+formatter options, proposal labels and complete edited-source expectations.
+The class now has 48 of 87 methods ported; 39 remain unported.
+
+* Rust ports catch removal, selected multi-catch alternative removal, catch-to-
+  throws replacement, existing exception/supertype checks and method/initializer
+  restrictions. Resources, other catches and `finally` preserve the try statement;
+  otherwise the surviving body is promoted, with braces for multiple statements
+  in a control body. Copying a statement range retains comments and blank lines.
+* Rust removes unused thrown types, their matching `@throws`/`@exception` tags
+  and imports when the reference type counter finds no other counted use. The
+  shared Javadoc helper now renders thrown-type names without annotations or
+  type arguments. The approximate Java thrown-exception action and dispatch are
+  removed, including their obsolete proposal title.
+* Twenty-two own regressions cover empty/single/multiple bodies, resources,
+  `finally`, multi-catch selections, subtype alternatives, existing throws,
+  annotations, imports, type arguments, Javadoc and exact comment preservation.
+  Deferred resolution, diagnostic attachment, resource edits, unsaved Unicode/
+  CRLF buffers and unchanged disk contents are also covered. Twenty-one cases
+  exercise the oracle; one Rust-only case uses real diagnostics for untitled,
+  in-memory and nonexistent-file documents.
+* Reference quirks are retained: catch-to-throws is offered even when an overridden
+  method does not declare the exception; type-literal references do not contribute
+  to the import-removal counter. The copy retains type annotations while Javadoc
+  uses the ordinary qualified type name.
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 81 targets (1,325 passing, zero failures, 46 ignored). With
+`JDTLS_ORACLE=1` and `--test-threads=3`, all 48 local-correction ports and the
+file-backed dead-code, unused-code and exception regressions pass against jdt.ls
+1.58.0. The oracle log reports 128 harness passes, including three virtual-document
+cases that return early; 125 cases actually exercise the oracle. Logs are in
+`target/parity-evidence/exception-corrections-full-suite-final-1.log` and
+`target/parity-evidence/exception-corrections-oracle-final-1.log` (gitignored).
+The ledger now has 807 upstream ports, 762 passing and 45 ignored; 1,280 upstream
+tests remain unported. This ports the individual catch/throws corrections, not
+the full ChangeMethodSignatureProposal, generic type-reference counter, general
+ListRewrite range API, Javadoc processor or uncaught-exception corrections.
+Earlier conversion, scope, annotation and global preference/template gaps remain.

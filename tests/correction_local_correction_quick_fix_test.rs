@@ -435,3 +435,98 @@ fn test_unused_type_parameter() {
         Expected::new("Remove type 'Foo'", "package test1;\npublic class E {\n}\n")
     ]);
 }
+
+#[test]
+fn test_unneeded_catch_block() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root,"src","test1","E.java","package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void goo() throws IOException {\n    }\n    public void foo() {\n        try {\n            goo();\n        } catch (IOException e) {\n        } catch (ParseException e) {\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri,&[
+        Expected::new("Remove catch clause","package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void goo() throws IOException {\n    }\n    public void foo() {\n        try {\n            goo();\n        } catch (IOException e) {\n        }\n    }\n}\n"),
+        Expected::new("Replace catch clause with throws","package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void goo() throws IOException {\n    }\n    public void foo() throws ParseException {\n        try {\n            goo();\n        } catch (IOException e) {\n        }\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unneeded_catch_block_in_initializer() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root,"src","test1","E.java","package test1;\nimport java.text.ParseException;\npublic class E {\n    static {\n        try {\n            int x= 1;\n        } catch (ParseException e) {\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri,&[
+        Expected::new("Remove catch clause","package test1;\nimport java.text.ParseException;\npublic class E {\n    static {\n        int x= 1;\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unneeded_catch_block_single() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root,"src","test1","E.java","package test1;\nimport java.io.IOException;\npublic class E {\n    public void goo() {\n    }\n    public void foo() {\n        try {\n            goo();\n        } catch (IOException e) {\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri,&[
+        Expected::new("Remove catch clause","package test1;\nimport java.io.IOException;\npublic class E {\n    public void goo() {\n    }\n    public void foo() {\n        goo();\n    }\n}\n"),
+        Expected::new("Replace catch clause with throws","package test1;\nimport java.io.IOException;\npublic class E {\n    public void goo() {\n    }\n    public void foo() throws IOException {\n        goo();\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unneeded_catch_block_with_finally() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root,"src","test1","E.java","package test1;\nimport java.io.IOException;\npublic class E {\n    public void goo() {\n    }\n    public void foo() {\n        try {\n            goo();\n        } catch (IOException e) {\n        } finally {\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri,&[
+        Expected::new("Remove catch clause","package test1;\nimport java.io.IOException;\npublic class E {\n    public void goo() {\n    }\n    public void foo() {\n        try {\n            goo();\n        } finally {\n        }\n    }\n}\n"),
+        Expected::new("Replace catch clause with throws","package test1;\nimport java.io.IOException;\npublic class E {\n    public void goo() {\n    }\n    public void foo() throws IOException {\n        try {\n            goo();\n        } finally {\n        }\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unnecessary_thrown_exception1() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedDeclaredThrownException".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.formatter.tabulation.char".into(), "tab".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root,"src","test1","E.java","package test1;\nimport java.io.IOException;\npublic class E {\n    public void foo(String b) throws IOException {\n        if  (b != null) {\n            System.out.println();\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri,&[
+        Expected::new("Remove thrown exception","package test1;\n\npublic class E {\n    public void foo(String b) {\n        if  (b != null) {\n            System.out.println();\n        }\n    }\n}\n"),
+        Expected::new("Document thrown exception to avoid 'unused' warning","package test1;\nimport java.io.IOException;\npublic class E {\n    /**\n\t * @throws IOException  \n\t */\n    public void foo(String b) throws IOException {\n        if  (b != null) {\n            System.out.println();\n        }\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unnecessary_thrown_exception2() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedDeclaredThrownException".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.formatter.tabulation.char".into(), "tab".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root,"src","test1","E.java","package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    /**\n     * @throws IOException\n     */\n    public E(int i) throws IOException, ParseException {\n        if  (i == 0) {\n            throw new IOException();\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri,&[
+        Expected::new("Remove thrown exception","package test1;\nimport java.io.IOException;\npublic class E {\n    /**\n     * @throws IOException\n     */\n    public E(int i) throws IOException {\n        if  (i == 0) {\n            throw new IOException();\n        }\n    }\n}\n"),
+        Expected::new("Document thrown exception to avoid 'unused' warning","package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    /**\n     * @throws IOException\n     * @throws ParseException \n     */\n    public E(int i) throws IOException, ParseException {\n        if  (i == 0) {\n            throw new IOException();\n        }\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unnecessary_thrown_exception3() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedDeclaredThrownException".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.formatter.tabulation.char".into(), "tab".into());
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedDeclaredThrownExceptionIncludeDocCommentReference".into(), "disabled".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root,"src","test1","E.java","package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    /**\n     * @param i\n     * @throws IOException\n     * @throws ParseException\n     */\n    public void foo(int i) throws IOException, ParseException {\n        if  (i == 0) {\n            throw new IOException();\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri,&[
+        Expected::new("Remove thrown exception","package test1;\nimport java.io.IOException;\npublic class E {\n    /**\n     * @param i\n     * @throws IOException\n     */\n    public void foo(int i) throws IOException {\n        if  (i == 0) {\n            throw new IOException();\n        }\n    }\n}\n")
+    ]);
+}
+
+#[test]
+fn test_unnecessary_thrown_exception4() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedDeclaredThrownException".into(), "error".into());
+    options.insert("org.eclipse.jdt.core.formatter.tabulation.char".into(), "tab".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root,"src","test1","E.java","package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    /**\n     * @throws IOException\n     */\n    public E(int i) throws IOException, ParseException {\n        if  (i == 0) {\n            throw new IOException();\n        }\n    }\n    public void foo(int i) throws ParseException {\n        if  (i == 0) {\n            throw new ParseException(null, 4);\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri,&[
+        Expected::new("Remove thrown exception","package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    /**\n     * @throws IOException\n     */\n    public E(int i) throws IOException {\n        if  (i == 0) {\n            throw new IOException();\n        }\n    }\n    public void foo(int i) throws ParseException {\n        if  (i == 0) {\n            throw new ParseException(null, 4);\n        }\n    }\n}\n"),
+        Expected::new("Document thrown exception to avoid 'unused' warning","package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    /**\n     * @throws IOException\n     * @throws ParseException \n     */\n    public E(int i) throws IOException, ParseException {\n        if  (i == 0) {\n            throw new IOException();\n        }\n    }\n    public void foo(int i) throws ParseException {\n        if  (i == 0) {\n            throw new ParseException(null, 4);\n        }\n    }\n}\n")
+    ]);
+}

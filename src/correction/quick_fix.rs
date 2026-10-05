@@ -92,6 +92,8 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::UnusedPrivateMethod | p::UnusedPrivateConstructor | p::UnusedPrivateType | p::UnusedPrivateField
         | p::LocalVariableIsNeverUsed | p::ArgumentIsNeverUsed | p::LambdaParameterIsNeverUsed => super::local_corrections::unused_member(env, ctx, problem, proposals).await,
         p::UnusedTypeParameter => super::local_corrections::unused_type_parameter(env, ctx, problem, proposals).await,
+        p::UnreachableCatch | p::InvalidCatchBlockSequence | p::InvalidUnionTypeReferenceSequence => super::local_corrections::unreachable_catch(ctx, problem, proposals),
+        p::UnusedMethodDeclaredThrownException | p::UnusedConstructorDeclaredThrownException => super::local_corrections::unnecessary_throws(env, ctx, problem, proposals).await,
         p::RedundantSuperinterface => super::local_corrections::redundant_super_interface(ctx, problem, proposals),
         p::NonStaticAccessToStaticField
         | p::NonStaticAccessToStaticMethod
