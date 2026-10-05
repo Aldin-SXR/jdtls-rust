@@ -219,6 +219,17 @@ final class SemanticAstService {
                     }
                 }
             }
+            // Local declaration types expose method headers for resource lifetime
+            // and invocation analysis. Rust decides which members matter.
+            java.util.Set<String> localTypes = new java.util.HashSet<>();
+            for (ASTNode node : order) {
+                Type declared = node instanceof VariableDeclarationStatement d ? d.getType()
+                        : node instanceof VariableDeclarationExpression d ? d.getType() : null;
+                if (declared != null) localTypeMethods(declared.resolveBinding(), localTypes);
+                ITypeBinding functional = node instanceof LambdaExpression e ? e.resolveTypeBinding()
+                        : node instanceof MethodReference e ? e.resolveTypeBinding() : null;
+                if (functional != null) bindings.get(binding(functional)).fim = binding(functional.getFunctionalInterfaceMethod());
+            }
             hierarchyGraph(cu.getAST().resolveWellKnownType("java.lang.Object"), new java.util.HashSet<>());
             constructorMembers(cu.getAST().resolveWellKnownType("java.lang.Object"));
             boolean conditional = nodeIndex.keySet().stream().anyMatch(n -> n instanceof ConditionalExpression);
@@ -594,6 +605,14 @@ final class SemanticAstService {
             hierarchyGraph(type.getSuperclass(), seen);
             for (ITypeBinding parent : type.getInterfaces()) hierarchyGraph(parent, seen);
             for (ITypeBinding bound : type.getTypeBounds()) hierarchyGraph(bound, seen);
+        }
+
+        private void localTypeMethods(ITypeBinding type, java.util.Set<String> seen) {
+            if (type == null || type.isPrimitive() || type.isArray() || !seen.add(type.getKey())) return;
+            bindings.get(binding(type)).dmeth = bindings(type.getDeclaredMethods());
+            localTypeMethods(type.getSuperclass(), seen);
+            for (ITypeBinding parent : type.getInterfaces()) localTypeMethods(parent, seen);
+            for (ITypeBinding bound : type.getTypeBounds()) localTypeMethods(bound, seen);
         }
 
         /** Ranges and parameter names are binding metadata, never generated code. */

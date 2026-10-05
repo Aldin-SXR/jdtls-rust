@@ -5,11 +5,13 @@ mod conversion;
 mod unused;
 mod javadoc;
 mod exceptions;
+mod uncaught;
 mod expressions;
 mod nls;
 pub use expressions::{expression_variable, invalid_operator};
 pub use nls::unnecessary_tag;
 pub use exceptions::{unnecessary_throws, unreachable_catch};
+pub use uncaught::{proposals as uncaught_exception, resource_proposals, resource_assist};
 pub use unreachable::proposals as unreachable_code;
 pub use unused::{proposals as unused_member, type_parameter as unused_type_parameter};
 

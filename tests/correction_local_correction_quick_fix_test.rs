@@ -580,3 +580,206 @@ fn test_unnecessary_nls_tag() {
     let uri = t.ws.create_cu(&root, "src", "test1", "E.java", before);
     t.assert_code_action_exists_expected(&uri, &Expected::new("Remove unnecessary '$NON-NLS$' tag", after));
 }
+
+
+// Uncaught-exception ports: original upstream inputs and full-source expectations.
+#[test]
+fn test_uncaught_exception() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.IOException;\npublic class E {\n    public void goo() throws IOException {\n    }\n    public void foo() {\n        goo();\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.IOException;\npublic class E {\n    public void goo() throws IOException {\n    }\n    public void foo() throws IOException {\n        goo();\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.IOException;\npublic class E {\n    public void goo() throws IOException {\n    }\n    public void foo() {\n        try {\n            goo();\n        } catch (IOException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception2() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.IOException;\npublic class E {\n    public String goo() throws IOException {\n        return null;\n    }\n    /**\n     * Not much to say here.\n     */\n    public void foo() {\n        goo().substring(2);\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.IOException;\npublic class E {\n    public String goo() throws IOException {\n        return null;\n    }\n    /**\n     * Not much to say here.\n     * @throws IOException \n     */\n    public void foo() throws IOException {\n        goo().substring(2);\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.IOException;\npublic class E {\n    public String goo() throws IOException {\n        return null;\n    }\n    /**\n     * Not much to say here.\n     */\n    public void foo() {\n        try {\n            goo().substring(2);\n        } catch (IOException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception3() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public String goo() throws IOException, ParseException {\n        return null;\n    }\n    /**\n     * Not much to say here.\n     * @throws ParseException Parsing failed\n     */\n    public void foo() throws ParseException {\n        goo().substring(2);\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public String goo() throws IOException, ParseException {\n        return null;\n    }\n    /**\n     * Not much to say here.\n     * @throws ParseException Parsing failed\n     * @throws IOException \n     */\n    public void foo() throws ParseException, IOException {\n        goo().substring(2);\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public String goo() throws IOException, ParseException {\n        return null;\n    }\n    /**\n     * Not much to say here.\n     * @throws ParseException Parsing failed\n     */\n    public void foo() throws ParseException {\n        try {\n            goo().substring(2);\n        } catch (IOException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        } catch (ParseException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception4() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.FileNotFoundException;\nimport java.io.InterruptedIOException;\npublic class E {\n    public E goo(int i) throws InterruptedIOException {\n        return new E();\n    }\n    public E bar() throws FileNotFoundException {\n        return new E();\n    }\n    /**\n     * Not much to say here.\n     */\n    public void foo() {\n        goo(1).bar();\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.FileNotFoundException;\nimport java.io.InterruptedIOException;\npublic class E {\n    public E goo(int i) throws InterruptedIOException {\n        return new E();\n    }\n    public E bar() throws FileNotFoundException {\n        return new E();\n    }\n    /**\n     * Not much to say here.\n     * @throws InterruptedIOException \n     * @throws FileNotFoundException \n     */\n    public void foo() throws FileNotFoundException, InterruptedIOException {\n        goo(1).bar();\n    }\n}\n"),
+        Expected::new("Surround with try/multi-catch", "package test1;\nimport java.io.FileNotFoundException;\nimport java.io.InterruptedIOException;\npublic class E {\n    public E goo(int i) throws InterruptedIOException {\n        return new E();\n    }\n    public E bar() throws FileNotFoundException {\n        return new E();\n    }\n    /**\n     * Not much to say here.\n     */\n    public void foo() {\n        try {\n            goo(1).bar();\n        } catch (FileNotFoundException | InterruptedIOException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.FileNotFoundException;\nimport java.io.InterruptedIOException;\npublic class E {\n    public E goo(int i) throws InterruptedIOException {\n        return new E();\n    }\n    public E bar() throws FileNotFoundException {\n        return new E();\n    }\n    /**\n     * Not much to say here.\n     */\n    public void foo() {\n        try {\n            goo(1).bar();\n        } catch (FileNotFoundException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        } catch (InterruptedIOException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception5() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.IOException;\npublic class E {\n    public void throwIOException () throws IOException {\n        throw new IOException();\n    }\n    void foo() {\n        try {\n            throwIOException();\n        } catch (IOException e) {\n            throwIOException();\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.IOException;\npublic class E {\n    public void throwIOException () throws IOException {\n        throw new IOException();\n    }\n    void foo() throws IOException {\n        try {\n            throwIOException();\n        } catch (IOException e) {\n            throwIOException();\n        }\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.IOException;\npublic class E {\n    public void throwIOException () throws IOException {\n        throw new IOException();\n    }\n    void foo() {\n        try {\n            throwIOException();\n        } catch (IOException e) {\n            try {\n                throwIOException();\n            } catch (IOException e1) {\n                // TODO Auto-generated catch block\n                e1.printStackTrace();\n            }\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_import_conflict() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "Test.java", "package test1;\npublic class Test {\n    public void test1() {\n        test2();\n    }\n\n    public void test2() throws de.muenchen.test.Exception {\n        throw new de.muenchen.test.Exception();\n    }\n\n    public void test3() {\n        try {\n            java.io.File.createTempFile(\"\", \".tmp\");\n        } catch (Exception ex) {\n\n        }\n    }\n}\n");
+    t.ws.create_cu(&root, "src", "de.muenchen.test", "Exception.java", "package de.muenchen.test;\n\npublic class Exception extends java.lang.Throwable {\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\npublic class Test {\n    public void test1() throws de.muenchen.test.Exception {\n        test2();\n    }\n\n    public void test2() throws de.muenchen.test.Exception {\n        throw new de.muenchen.test.Exception();\n    }\n\n    public void test3() {\n        try {\n            java.io.File.createTempFile(\"\", \".tmp\");\n        } catch (Exception ex) {\n\n        }\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\npublic class Test {\n    public void test1() {\n        try {\n            test2();\n        } catch (de.muenchen.test.Exception e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n\n    public void test2() throws de.muenchen.test.Exception {\n        throw new de.muenchen.test.Exception();\n    }\n\n    public void test3() {\n        try {\n            java.io.File.createTempFile(\"\", \".tmp\");\n        } catch (Exception ex) {\n\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_remove_more_specific() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.IOException;\nimport java.net.SocketException;\npublic class E {\n    public void goo() throws IOException {\n        return;\n    }\n    /**\n     * @throws SocketException Sockets are dangerous\n     * @since 3.0\n     */\n    public void foo() throws SocketException {\n        this.goo();\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.IOException;\npublic class E {\n    public void goo() throws IOException {\n        return;\n    }\n    /**\n     * @throws IOException \n     * @since 3.0\n     */\n    public void foo() throws IOException {\n        this.goo();\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.IOException;\nimport java.net.SocketException;\npublic class E {\n    public void goo() throws IOException {\n        return;\n    }\n    /**\n     * @throws SocketException Sockets are dangerous\n     * @since 3.0\n     */\n    public void foo() throws SocketException {\n        try {\n            this.goo();\n        } catch (IOException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_to_surrounding_try() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public static void goo() throws IOException, ParseException {\n        return;\n    }\n    public void foo() {\n        try {\n            E.goo();\n        } catch (IOException e) {\n        }\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public static void goo() throws IOException, ParseException {\n        return;\n    }\n    public void foo() throws ParseException {\n        try {\n            E.goo();\n        } catch (IOException e) {\n        }\n    }\n}\n"),
+        Expected::new("Add catch clause to surrounding try", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public static void goo() throws IOException, ParseException {\n        return;\n    }\n    public void foo() {\n        try {\n            E.goo();\n        } catch (IOException e) {\n        } catch (ParseException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+        Expected::new("Add exception to existing catch clause", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public static void goo() throws IOException, ParseException {\n        return;\n    }\n    public void foo() {\n        try {\n            E.goo();\n        } catch (IOException | ParseException e) {\n        }\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public static void goo() throws IOException, ParseException {\n        return;\n    }\n    public void foo() {\n        try {\n            try {\n                E.goo();\n            } catch (ParseException e) {\n                // TODO Auto-generated catch block\n                e.printStackTrace();\n            }\n        } catch (IOException e) {\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_bug2711() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n    public void throwException () throws Exception {\n        throw new Exception();\n    }    public void test () {\n        throwException();\n        try {\n        } catch (Exception e) {\n            // TODO: handle exception\n        }\n    }\n}");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Surround with try/catch", "package test1;\npublic class E {\n    public void throwException () throws Exception {\n        throw new Exception();\n    }    public void test () {\n        try {\n            throwException();\n        } catch (Exception e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n        try {\n        } catch (Exception e) {\n            // TODO: handle exception\n        }\n    }\n}"),
+    ]);
+}
+
+#[test]
+fn test_multi_catch_uncaught_exceptions() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.EOFException;\nimport java.io.FileNotFoundException;\npublic class E {\n    public void foo() throws EOFException {}\n    public void bar() throws FileNotFoundException {}\n    public void test() {\n        System.out.println(1);\n        foo();\n        System.out.println(2);\n        bar();\n        System.out.println(3);\n    }\n}\n");
+    t.assert_code_actions_range(&uri, serde_json::json!({"start": {"line": 7, "character": 8}, "end": {"line": 11, "character": 30}}), &[
+        Expected::new("Surround with try/multi-catch", "package test1;\nimport java.io.EOFException;\nimport java.io.FileNotFoundException;\npublic class E {\n    public void foo() throws EOFException {}\n    public void bar() throws FileNotFoundException {}\n    public void test() {\n        try {\n            System.out.println(1);\n            foo();\n            System.out.println(2);\n            bar();\n            System.out.println(3);\n        } catch (EOFException | FileNotFoundException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_multi_catch_uncaught_exceptions2() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.EOFException;\nimport java.io.FileNotFoundException;\npublic class E {\n    public void foo() throws EOFException {}\n    public void bar() throws FileNotFoundException {}\n    public void test() {\n        System.out.println(1);\n        foo();\n        System.out.println(2);\n        bar();\n        System.out.println(3);\n    }\n}\n");
+    t.assert_code_actions_range(&uri, serde_json::json!({"start": {"line": 8, "character": 8}, "end": {"line": 10, "character": 14}}), &[
+        Expected::new("Surround with try/multi-catch", "package test1;\nimport java.io.EOFException;\nimport java.io.FileNotFoundException;\npublic class E {\n    public void foo() throws EOFException {}\n    public void bar() throws FileNotFoundException {}\n    public void test() {\n        System.out.println(1);\n        try {\n            foo();\n            System.out.println(2);\n            bar();\n        } catch (EOFException | FileNotFoundException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n        System.out.println(3);\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_on_super1() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.FileInputStream;\npublic class E extends FileInputStream {\n    public E() {\n        super(\"x\");\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.FileInputStream;\nimport java.io.FileNotFoundException;\npublic class E extends FileInputStream {\n    public E() throws FileNotFoundException {\n        super(\"x\");\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_on_super2() {
+    let (mut t, root) = dead_setup();
+    t.ws.create_cu(&root, "src", "test1", "A.java", "package test1;\npublic class A {\n    public A() throws Exception {\n    }\n}\n");
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E extends A {\n    /**\n     * @throws Exception sometimes...\n     */\n    public E() {\n        super();\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\npublic class E extends A {\n    /**\n     * @throws Exception sometimes...\n     */\n    public E() throws Exception {\n        super();\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_on_super3() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "A.java", "package test1;\npublic class A implements Runnable {\n    public void run() {\n        Class.forName(null);\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Surround with try/catch", "package test1;\npublic class A implements Runnable {\n    public void run() {\n        try {\n            Class.forName(null);\n        } catch (ClassNotFoundException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_on_super4() {
+    let (mut t, root) = dead_setup();
+    t.ws.create_cu(&root, "src", "test1", "A.java", "package test1;\npublic class A {\n    public void foo() {\n    }\n}\n");
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E extends A {\n    private void throwException() throws Exception {\n        throw new Exception();\n    }\n    public void foo() {\n        throwException();\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\npublic class E extends A {\n    private void throwException() throws Exception {\n        throw new Exception();\n    }\n    public void foo() throws Exception {\n        throwException();\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\npublic class E extends A {\n    private void throwException() throws Exception {\n        throw new Exception();\n    }\n    public void foo() {\n        try {\n            throwException();\n        } catch (Exception e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_on_super5() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "A.java", "package test1;\nimport java.io.Closeable;\nimport java.io.FileNotFoundException;\npublic class A implements Closeable {\n    public void throwFileNotFoundException () throws FileNotFoundException {\n        throw new FileNotFoundException();\n    }\n    public void close() {\n        throwFileNotFoundException();\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.Closeable;\nimport java.io.FileNotFoundException;\npublic class A implements Closeable {\n    public void throwFileNotFoundException () throws FileNotFoundException {\n        throw new FileNotFoundException();\n    }\n    public void close() throws FileNotFoundException {\n        throwFileNotFoundException();\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.Closeable;\nimport java.io.FileNotFoundException;\npublic class A implements Closeable {\n    public void throwFileNotFoundException () throws FileNotFoundException {\n        throw new FileNotFoundException();\n    }\n    public void close() {\n        try {\n            throwFileNotFoundException();\n        } catch (FileNotFoundException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_on_super6() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "A.java", "package test1;\nimport java.io.Closeable;\npublic class A implements Closeable {\n    public void throwThrowable() throws Throwable {\n        throw new Throwable();\n    }\n    public void close() {\n        throwThrowable();\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.Closeable;\npublic class A implements Closeable {\n    public void throwThrowable() throws Throwable {\n        throw new Throwable();\n    }\n    public void close() {\n        try {\n            throwThrowable();\n        } catch (Throwable e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_duplicate() {
+    let (mut t, root) = dead_setup();
+    t.ws.create_cu(&root, "src", "test1", "MyException.java", "package test1;\npublic class MyException extends Exception {\n}\n");
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void m1() throws IOException {\n        m2();\n    }\n    public void m2() throws IOException, ParseException, MyException {\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void m1() throws IOException, ParseException, MyException {\n        m2();\n    }\n    public void m2() throws IOException, ParseException, MyException {\n    }\n}\n"),
+        Expected::new("Surround with try/multi-catch", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void m1() throws IOException {\n        try {\n            m2();\n        } catch (IOException | ParseException | MyException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n    public void m2() throws IOException, ParseException, MyException {\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void m1() throws IOException {\n        try {\n            m2();\n        } catch (IOException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        } catch (ParseException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        } catch (MyException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n    public void m2() throws IOException, ParseException, MyException {\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_multiple_uncaught_exceptions() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void goo() throws IOException, ParseException {\n    }\n    public void foo() {\n        goo();\n    }\n}\n");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Add throws declaration", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void goo() throws IOException, ParseException {\n    }\n    public void foo() throws IOException, ParseException {\n        goo();\n    }\n}\n"),
+        Expected::new("Surround with try/multi-catch", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void goo() throws IOException, ParseException {\n    }\n    public void foo() {\n        try {\n            goo();\n        } catch (IOException | ParseException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+        Expected::new("Surround with try/catch", "package test1;\nimport java.io.IOException;\nimport java.text.ParseException;\npublic class E {\n    public void goo() throws IOException, ParseException {\n    }\n    public void foo() {\n        try {\n            goo();\n        } catch (IOException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        } catch (ParseException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}\n"),
+    ]);
+}
+
+#[test]
+fn test_uncaught_exception_for_closeable() {
+    let (mut t, root) = dead_setup();
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\n\nimport java.io.FileInputStream;\nimport java.io.InputStream;\nimport java.nio.file.Path;\n\npublic class E {\n    public void test () {\n        InputStream inp = new FileInputStream(Path.of(\"test\").toFile());\n    }\n}");
+    t.assert_code_actions(&uri, &[
+        Expected::new("Surround with try-with-resources", "package test1;\n\nimport java.io.FileInputStream;\nimport java.io.IOException;\nimport java.io.InputStream;\nimport java.nio.file.Path;\n\npublic class E {\n    public void test () {\n        try (InputStream inp = new FileInputStream(Path.of(\"test\").toFile())) {\n        } catch (IOException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}"),
+    ]);
+}

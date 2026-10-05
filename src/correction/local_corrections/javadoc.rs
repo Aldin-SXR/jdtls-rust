@@ -192,3 +192,35 @@ pub async fn document_unused(
         ));
     }
 }
+
+/// ChangeMethodSignatureProposalCore inserts new throws tags using the old
+/// exception list as ordering context, without adding documentation to a method
+/// that had no Javadoc.
+pub(super) fn insert_throws_tag(
+    rw: &mut ASTRewrite,
+    doc: Node<'_>,
+    name: &str,
+    original: &[Node<'_>],
+) {
+    let leading: HashSet<_> = original
+        .iter()
+        .map(|t| super::exceptions::type_name(*t, false))
+        .collect();
+    let tag = rw.new_node(NodeKind::TagElement);
+    rw.put_simple(tag, "tagName", "@throws");
+    let reference = rw.new_name(name);
+    let comment = text(rw, "");
+    rw.put_list(tag, "fragments", vec![reference, comment]);
+    let after = doc.list("tags").into_iter().rev().find(|t| {
+        t.simple("tagName").is_none_or(|n| {
+            rank("@throws") > rank(n)
+                || matches!(n, "@throws" | "@exception")
+                    && argument(*t).is_some_and(|a| leading.contains(&a))
+        })
+    });
+    if let Some(after) = after {
+        rw.list_insert_after(RNode::Orig(doc.id), "tags", tag, RNode::Orig(after.id));
+    } else {
+        rw.list_insert_first(RNode::Orig(doc.id), "tags", tag);
+    }
+}

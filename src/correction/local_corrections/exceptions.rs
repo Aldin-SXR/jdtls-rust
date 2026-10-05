@@ -240,7 +240,7 @@ pub fn unreachable_catch(ctx: &Context, problem: &ProblemLocation, proposals: &m
 }
 /// ASTNodes.getNumberOfTypeReferences: declaration/expression types only,
 /// ignoring imports and Javadoc, and descending into parameterized types.
-fn type_references(binding: BindingRef<'_>) -> usize {
+pub(super) fn type_references(binding: BindingRef<'_>) -> usize {
     let mut count = 0;
     for node in binding
         .ast

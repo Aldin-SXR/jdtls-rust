@@ -215,6 +215,8 @@ pub struct ASTRewrite {
     insert_bound_to_previous: HashSet<RNode>,
     /// `TightSourceRangeComputer` nodes (use the plain node range).
     tight_nodes: HashSet<NodeId>,
+    /// Overrides from a feature's `TargetSourceRangeComputer`.
+    source_ranges: std::collections::HashMap<NodeId, (usize, usize)>,
 }
 
 impl ASTRewrite {
@@ -226,6 +228,7 @@ impl ASTRewrite {
             copy_sources: Vec::new(),
             insert_bound_to_previous: HashSet::new(),
             tight_nodes: HashSet::new(),
+            source_ranges: std::collections::HashMap::new(),
         }
     }
 
@@ -361,12 +364,19 @@ impl ASTRewrite {
 
     /// `TargetSourceRangeComputer.computeSourceRange`: `(start, length)`.
     pub fn extended_range(&self, n: NodeId) -> (usize, usize) {
+        if let Some(range) = self.source_ranges.get(&n) {
+            return *range;
+        }
         let node = self.ast.node(n);
         if self.tight_nodes.contains(&n) {
             (node.start(), node.length())
         } else {
             (node.extended_start(), node.extended_length())
         }
+    }
+
+    pub fn set_source_range(&mut self, n: NodeId, start: usize, length: usize) {
+        self.source_ranges.insert(n, (start, length));
     }
 
     // ── Events ──────────────────────────────────────────────────────────────

@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 811 | 38.9% |
-| Passing | 766 | 36.7% |
+| Ported | 831 | 39.8% |
+| Passing | 786 | 37.7% |
 | Ported but `#[ignore]`d | 45 | 2.2% |
-| Not ported yet | 1,276 | 61.1% |
+| Not ported yet | 1,256 | 60.2% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,440 passed,
-0 failed and 46 ignored across 84 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,478 passed,
+0 failed and 46 ignored across 85 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -42,7 +42,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,440 passed
 `tests/exception_correction_regressions.rs`, 22 tests;
 `tests/expression_correction_regressions.rs`, 35 tests;
 `tests/type_import_regressions.rs`, 37 tests;
-`tests/nullness_generation_regressions.rs`, 39 tests) and unit
+`tests/nullness_generation_regressions.rs`, 39 tests;
+`tests/uncaught_exception_regressions.rs`, 18 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -55,7 +56,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
 | managers | 211 | 132 | 104 | 49% |
-| correction | 604 | 68 | 68 | 11% |
+| correction | 604 | 88 | 88 | 15% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
 | preferences | 53 | 0 | 0 | 0% |
@@ -115,7 +116,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` | 1 | 1 | 0 | 1/1 (unknown-command error) |
 | handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 16 | 3 | 16/16 |
 | correction/AbstractMethodQuickFixTest | `correction_abstract_method_quick_fix_test` | 8 | 8 | 0 | 8/8 |
-| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 52 | 52 | 0 | 52/52 unimplemented-method, unused-declaration, dead/unreachable-code, catch/throws, expression, operator and NLS cases; 35 upstream methods remain unported |
+| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 72 | 72 | 0 | 72/72 with `--test-threads=1`, including uncaught exceptions, multi-catch and resource closing; 15 upstream methods remain unported |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -1107,3 +1108,61 @@ binary package annotation discovery still need compiler-environment support;
 other generation callers still need the AST import overload. Full ScopeAnalyzer,
 NamingConventions and template dependencies remain unfinished. Full feature
 parity is not yet achieved.
+
+
+## Uncaught-exception and resource-closing correction evidence
+
+Twenty additional `LocalCorrectionQuickFixTest` methods preserve the upstream
+sources, selections, expected labels and complete resulting source. The class
+now has 72 passing ports out of 87 upstream tests.
+
+* Rust owns uncaught-exception collection, declared/caught-exception filtering,
+  hierarchy ordering, subtype elimination, surround proposals, additional catches,
+  existing multi-catch updates and throws-declaration changes. Binary overrides
+  restrict new throws to their inherited contract; source overrides retain the
+  reference behavior. More-specific existing throws and matching Javadoc tags
+  are replaced, and imports are added or removed through the shared rewrite.
+* Lexical scope analysis chooses catch names with the project exception-variable
+  preference. Catch templates retain task tags and enclosing type/method variables,
+  including the different exception-type variables used for ordinary and resource
+  catches. Selection-aware source ranges keep leading comments outside a surround
+  correction and include selected trailing comments.
+* Expression lambdas become blocks containing the try/catch. Method references
+  become lambdas with invocation/creation bodies, return versus expression
+  statements, parameter names, name-conflict suffixes and receiver handling.
+  Exceptions stay inside the lambda instead of adding throws to the outer method.
+  Local declarations used after a selection stay in their original scope;
+  initializers become assignments inside the try, `final` is removed, and escaping
+  `var` declarations use their inferred type and the reference proposal label.
+* Try-with-resources moves selected resource declarations and repeatedly extends
+  the body through dependent local uses. It includes close-method exceptions,
+  extends an existing try when appropriate, and rethrows narrower exceptions
+  already declared by the enclosing method before handling a broader close type.
+* Java exports only compiler facts for local-type methods and functional-interface
+  methods. The legacy message-regex throws and try/catch action generators are
+  removed. The shared rewrite flattener now uses JDT's valid `MISSING()` expression
+  statement placeholder, which lets the formatter process copied expressions.
+* `uncaught_exception_regressions` has 18 passing Rust cases: 17 complete-source
+  snapshots captured from JDT LS, plus a Rust-only regression that exercises both
+  uncaught and resource corrections on untitled, in-memory and missing-file buffers.
+  The snapshots cover lambda boundaries, bound/static/unbound/creation references,
+  parameter conflicts, escaping locals, resource lifetimes/rethrows, existing try
+  statements, comments and custom templates.
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 85 targets (1,478 passing, zero failures, 46 ignored), recorded in
+`target/parity-evidence/uncaught-exceptions-full-suite-final-1.log`.
+`uncaught-exceptions-oracle-final-1.log` passes all 90 harness cases with
+`JDTLS_ORACLE=1 --test-threads=1`: 72 upstream ports and 18 additional cases,
+including the virtual-buffer case that skips oracle requests (89 actual oracle
+comparisons). An earlier concurrent oracle run returned a malformed surround edit
+for `test_uncaught_exception_on_super4`; its isolated rerun and the final serial
+run both pass, with the upstream assertion unchanged.
+
+The ledger now has 831 upstream ports, 786 passing and 45 ignored, leaving 1,256
+upstream methods unported. The 15 remaining LocalCorrectionQuickFixTest methods
+cover unchecked conversions, variable hiding, duplicate methods and unused
+allocations. Pattern-variable scope expansion and broader method-reference,
+synthetic-SAM and surround-selection coverage still need porting and verification,
+alongside the remaining quick assists and refactorings. Full feature parity remains
+unfinished.

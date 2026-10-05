@@ -13,6 +13,7 @@ pub(crate) struct Profile {
     pub(crate) project_name: String,
     pub(crate) override_annotation: bool,
     pub(crate) create_comments: bool,
+    pub(crate) exception_variable: String,
 }
 impl Profile {
     pub(super) fn load(root: Option<&Path>) -> Self {
@@ -38,6 +39,10 @@ impl Profile {
             }
         }
         Self {
+            exception_variable: prefs
+                .get("org.eclipse.jdt.ui.exception.name")
+                .cloned()
+                .unwrap_or_else(|| "e".into()),
             override_annotation: prefs
                 .get("org.eclipse.jdt.ui.overrideannotation")
                 .is_none_or(|s| s == "true"),

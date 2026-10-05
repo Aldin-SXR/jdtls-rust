@@ -614,13 +614,6 @@ public class Main {
                 if (a != null) actions.add(a);
             }
 
-            Matcher mEx = Pattern.compile("Unhandled exception type ([\\w.$<>\\[\\]]+)").matcher(msg);
-            if (mEx.find()) {
-                String exType = mEx.group(1).trim();
-                actions.add(makeAddThrowsAction(req.uri, source, cu, d, exType));
-                actions.add(makeTryCatchAction(req.uri, source, cu, d, exType));
-            }
-
             Matcher mCast = Pattern.compile("Type mismatch: cannot convert from ([\\w.<>\\[\\],\\s]+) to ([\\w.<>\\[\\],\\s]+)").matcher(msg);
             if (mCast.find()) {
                 actions.add(makeCastAction(req.uri, source, cu, d, mCast.group(2).trim()));
@@ -1052,29 +1045,6 @@ public class Main {
         if (node == null) return null;
         org.eclipse.jdt.core.dom.CastExpression cast = (org.eclipse.jdt.core.dom.CastExpression)node;
         return makeReplaceNodeAction("Remove unnecessary cast", uri, source, cast, source.substring(cast.getExpression().getStartPosition(), cast.getExpression().getStartPosition() + cast.getExpression().getLength()));
-    }
-
-    private static BridgeAction makeAddThrowsAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String exType) {
-        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        MethodLocator loc = new MethodLocator(offset); cu.accept(loc);
-        if (loc.found == null || loc.found.getBody() == null) return null;
-        String simpleName = exType.contains(".") ? exType.substring(exType.lastIndexOf('.') + 1) : exType;
-        @SuppressWarnings("unchecked")
-        List<org.eclipse.jdt.core.dom.Type> thrown = loc.found.thrownExceptionTypes();
-        int insertPos = thrown.isEmpty() ? loc.found.getBody().getStartPosition() : (thrown.get(thrown.size() - 1).getStartPosition() + thrown.get(thrown.size() - 1).getLength());
-        return singleInsertionAction("Add throws declaration for '" + simpleName + "'", uri, source, insertPos, (thrown.isEmpty() ? "throws " : ", ") + simpleName + (thrown.isEmpty() ? " " : ""));
-    }
-
-    private static BridgeAction makeTryCatchAction(String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String exType) {
-        int offset = CompilationService.lineColToOffset(source, d.startLine, d.startChar);
-        StatementLocator loc = new StatementLocator(offset); cu.accept(loc);
-        if (loc.found == null) return null;
-        org.eclipse.jdt.core.dom.Statement stmt = loc.found;
-        int start = stmt.getStartPosition(), end = start + stmt.getLength();
-        if (end < source.length() && source.charAt(end) == '\n') end++;
-        String indent = indentOf(source, cu.getLineNumber(start) - 1), simpleName = simpleTypeName(exType);
-        String newText = indent + "try {\n    " + indent + source.substring(start, start + stmt.getLength()).replace("\n", "\n    ") + "\n" + indent + "} catch (" + simpleName + " e) {\n    " + indent + "e.printStackTrace();\n" + indent + "}\n";
-        return makeReplaceNodeAction("Surround with try/catch", uri, source, stmt, newText);
     }
 
     private static BridgeAction makeLocalVarSuppressAction(String tag, String uri, String source, org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeDiagnostic d, String varName) {
