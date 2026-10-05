@@ -40,6 +40,9 @@ pub const GRADLE_NATURE: &str = "org.eclipse.buildship.core.gradleprojectnature"
 /// `UnmanagedFolderNature.NATURE_ID` (invisible projects).
 pub const UNMANAGED_FOLDER_NATURE: &str = "org.eclipse.jdt.ls.unmanagedFolderNature";
 
+/// Bridge-only environment option; imported projects use their declared JRE.
+pub const INCLUDE_RUNNING_VM: &str = "jdtls.bridge.includeRunningVM";
+
 pub const JRE_CONTAINER: &str = "org.eclipse.jdt.launching.JRE_CONTAINER";
 pub const MAVEN_CONTAINER: &str = "org.eclipse.m2e.MAVEN2_CLASSPATH_CONTAINER";
 pub const GRADLE_CONTAINER: &str = "org.eclipse.buildship.core.gradleclasspathcontainer";

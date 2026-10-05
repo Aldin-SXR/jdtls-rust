@@ -47,9 +47,9 @@ fn test_local_variable() {
 }
 
 #[test]
-#[ignore = "expects the disassembled stub of rtstubs.jar's javax.tools.Tool (fake JDK without sources); the running JDK's javax.tools.Tool has attached source (lib/src.zip) with a different layout"]
 fn test_disassembled_source() {
     let mut ws = setup();
+    ws.use_upstream_maven_test_jdk("salut", "1.8");
     let class_name = "javax.tools.Tool";
     let uri = ws.class_file_uri("salut", class_name);
     let definitions = type_definition(&mut ws, &uri, 11, 12);

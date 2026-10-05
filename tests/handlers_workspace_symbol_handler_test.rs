@@ -83,9 +83,9 @@ fn test_workspace_search_no_class_content_support() {
 }
 
 #[test]
-#[ignore = "expects the 11 'Array' types of upstream's rtstubs.jar fake JDK and jdt:// class file URIs"]
 fn test_workspace_search() {
     let mut ws = setup();
+    ws.use_upstream_test_jdk("hello");
     let query = "Array";
     let results = search(&mut ws, Some(query));
     assert_eq!(results.len(), 11, "Unexpected results");
@@ -153,9 +153,9 @@ fn test_camel_case_search() {
 }
 
 #[test]
-#[ignore = "expects the JDK content of upstream's rtstubs.jar fake JDK (a real JDK has more '*Buff*Stream*' types)"]
 fn test_camel_case_fuzzy_search() {
     let mut ws = setup();
+    ws.use_upstream_test_jdk("hello");
     let expected: HashSet<&str> = ["BufferedInputStream", "BufferedOutputStream", "StringBufferInputStream"].into_iter().collect();
     let results = search(&mut ws, Some("BuffStream"));
     assert!(!results.is_empty());
@@ -307,9 +307,9 @@ fn test_deprecated_property() {
 }
 
 #[test]
-#[ignore = "expects class file URIs into upstream's rtstubs.jar fake JDK"]
 fn test_workspace_search_with_class_content_support() {
     let mut ws = setup();
+    ws.use_upstream_test_jdk("hello");
     set_class_file_content_support(&mut ws, true);
     //Classes will be found with jar container path.
     let results = search(&mut ws, Some("Array"));

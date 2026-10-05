@@ -71,9 +71,16 @@ final class BridgeOptions {
         return new CompilerOptions(map(sourceLevel));
     }
 
+    /** Rust's project model determines whether the running VM is on the build path. */
+    static boolean includeRunningVM() {
+        return !"false".equals(CURRENT.get().get("jdtls.bridge.includeRunningVM"));
+    }
+
     /**
      * Classpath + JDK system library for binding resolution.  ECJ >= 3.40
-     * requires a system library to be present when resolving bindings.
+     * requires a system library to be present when resolving bindings. The
+     * standalone parser needs the VM bootstrap even with an explicit runtime
+     * archive. Project type-search roots are governed separately by Rust.
      */
     static void configureEnvironment(org.eclipse.jdt.core.dom.ASTParser parser, String[] classpath) {
         parser.setEnvironment(classpath, null, null, /* includeRunningVMBootclasspath */ true);

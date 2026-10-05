@@ -136,9 +136,9 @@ fn test_selection_range() {
 }
 
 #[test]
-#[ignore = "upstream rtstubs has no source; the real JDK locates currentThread in src.zip, identically on the oracle"]
 fn outgoing_calls_src() {
     let mut ws = setup();
+    ws.use_upstream_test_jdk("hello");
     // Line 34 from `CallHierarchy`
     //    protected void <|>method_1() {
     let uri = get_uri_from_src_project(&ws, "org.sample.CallHierarchy");

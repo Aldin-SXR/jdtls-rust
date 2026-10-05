@@ -265,7 +265,8 @@ async fn scope(dispatcher: &Dispatcher, ws: &Workspace, project_name: Option<&st
             }
         }
         let missing: Vec<String> = archives.iter().filter(|a| type_index::cached_archive(a).is_none()).cloned().collect();
-        let need_jdk = type_index::cached_jdk().is_none();
+        let include_jdk = projects.is_empty() || projects.iter().any(|p| p.classpath.iter().any(|entry| entry.is_jre_container()));
+        let need_jdk = include_jdk && type_index::cached_jdk().is_none();
         if !missing.is_empty() || need_jdk {
             let sem = Semantic::new(dispatcher).await;
             if let Some(v) = sem.list_types(&missing, need_jdk).await {
@@ -275,7 +276,7 @@ async fn scope(dispatcher: &Dispatcher, ws: &Workspace, project_name: Option<&st
         for a in &archives {
             types.extend(type_index::cached_archive(a).unwrap_or_default());
         }
-        types.extend(type_index::cached_jdk().unwrap_or_default());
+        if include_jdk { types.extend(type_index::cached_jdk().unwrap_or_default()); }
     }
     SearchScope { project, types, methods, texts }
 }

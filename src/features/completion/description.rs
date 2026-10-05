@@ -57,7 +57,9 @@ fn type_display_name(type_signature: &str) -> String {
 
 pub fn append_unbounded_parameter_list(buf: &mut String, p: &Proposal) {
     let s = sig::fix83600(p.signature());
-    let names = p.parameter_names();
+    // JDT permits computed parameter names to be null (e.g. enum valueOf
+    // in a static import). Labels then contain parameter types alone.
+    let names = p.parameter_names.as_deref();
     let mut types: Vec<String> = sig::get_parameter_types(&s)
         .unwrap_or_default()
         .iter()
@@ -67,7 +69,7 @@ pub fn append_unbounded_parameter_list(buf: &mut String, p: &Proposal) {
         let i = types.len() - 1;
         types[i] = convert_to_vararg(&types[i]);
     }
-    append_parameter_signature(buf, &types, Some(&names));
+    append_parameter_signature(buf, &types, names);
 }
 
 fn convert_to_vararg(t: &str) -> String {

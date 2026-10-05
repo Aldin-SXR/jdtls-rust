@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub(crate) struct Profile {
     pub use_is: bool,
-    use_this: bool,
+    pub(crate) use_this: bool,
     pub(crate) use_markdown: bool,
     templates: BTreeMap<String, String>,
     pub(crate) project_name: String,

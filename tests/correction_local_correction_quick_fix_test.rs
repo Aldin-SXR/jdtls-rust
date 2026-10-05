@@ -783,3 +783,33 @@ fn test_uncaught_exception_for_closeable() {
         Expected::new("Surround with try-with-resources", "package test1;\n\nimport java.io.FileInputStream;\nimport java.io.IOException;\nimport java.io.InputStream;\nimport java.nio.file.Path;\n\npublic class E {\n    public void test () {\n        try (InputStream inp = new FileInputStream(Path.of(\"test\").toFile())) {\n        } catch (IOException e) {\n            // TODO Auto-generated catch block\n            e.printStackTrace();\n        }\n    }\n}"),
     ]);
 }
+
+#[test]
+fn test_unused_allocation1() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedObjectAllocation".into(), "error".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n\tpublic void foo(int count) throws Exception {\n\t\tnew RuntimeException();\n\t}\n}\n");
+    t.assert_code_action_exists_expected(&uri, &Expected::new("Throw the allocated object", "package test1;\npublic class E {\n\tpublic void foo(int count) throws Exception {\n\t\tthrow new RuntimeException();\n\t}\n}\n"));
+}
+
+#[test]
+fn test_unused_allocation2() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedObjectAllocation".into(), "error".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n\tpublic String foo(int count) throws Exception {\n\t\tif (count < 3) {\n\t\t\tnew String(\"abc\");\n\t\t}\n\t\treturn \"def\";\n\t}\n}\n");
+    t.assert_code_action_exists_expected(&uri, &Expected::new("Return the allocated object", "package test1;\npublic class E {\n\tpublic String foo(int count) throws Exception {\n\t\tif (count < 3) {\n\t\t\treturn new String(\"abc\");\n\t\t}\n\t\treturn \"def\";\n\t}\n}\n"));
+}
+
+#[test]
+fn test_unused_allocation3() {
+    let (mut t, root) = dead_setup();
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedObjectAllocation".into(), "error".into());
+    t.ws.set_project_options(&root, &options);
+    let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n\tpublic String foo(int count) throws Exception {\n\t\tif (count < 3) {\n\t\t\tnew String(\"abc\");\n\t\t}\n\t\treturn \"def\";\n\t}\n}\n");
+    t.assert_code_action_exists_expected(&uri, &Expected::new("Remove", "package test1;\npublic class E {\n\tpublic String foo(int count) throws Exception {\n\t\tif (count < 3) {\n\t\t}\n\t\treturn \"def\";\n\t}\n}\n"));
+}

@@ -49,7 +49,7 @@ fn functional_method(node: Node<'_>) -> Option<BindingRef<'_>> {
     };
     typ.data().functional_method.map(|m| typ.ast.binding(m))
 }
-fn enclosing(node: Node<'_>) -> Option<Node<'_>> {
+pub(super) fn enclosing(node: Node<'_>) -> Option<Node<'_>> {
     if node.kind().is_method_reference() {
         return Some(node);
     }
@@ -58,7 +58,7 @@ fn enclosing(node: Node<'_>) -> Option<Node<'_>> {
     }
     find_parent_body_declaration(node)
 }
-fn normalize(mut typ: BindingRef<'_>) -> BindingRef<'_> {
+pub(super) fn normalize(mut typ: BindingRef<'_>) -> BindingRef<'_> {
     let mut seen = HashSet::new();
     while seen.insert(typ.key().to_owned()) {
         let replacement = if typ.is_null_type() {
@@ -86,7 +86,7 @@ fn normalize(mut typ: BindingRef<'_>) -> BindingRef<'_> {
     }
     typ
 }
-fn add<'a>(out: &mut Vec<BindingRef<'a>>, typ: BindingRef<'a>) {
+pub(super) fn add<'a>(out: &mut Vec<BindingRef<'a>>, typ: BindingRef<'a>) {
     let typ = normalize(typ);
     if !out.contains(&typ) {
         out.push(typ);
@@ -227,7 +227,7 @@ fn visit_exceptions<'a>(
         visit_exceptions(child, root, start, end, out);
     }
 }
-fn exceptions(
+pub(super) fn exceptions(
     root: Node<'_>,
     start: usize,
     end: usize,
@@ -263,7 +263,7 @@ fn exceptions(
     out.sort_by_key(|t| std::cmp::Reverse(depth(*t)));
     out
 }
-fn filter_subtypes<'a>(types: &[BindingRef<'a>]) -> Vec<BindingRef<'a>> {
+pub(super) fn filter_subtypes<'a>(types: &[BindingRef<'a>]) -> Vec<BindingRef<'a>> {
     types
         .iter()
         .copied()
@@ -281,7 +281,7 @@ fn lambda_statement(rw: &mut ASTRewrite, expression: RNode, method: BindingRef<'
 
 /// ASTNodes.getVisibleLocalVariablesInScope: declarations in ancestor lexical
 /// scopes, including method/lambda parameters, but excluding fields and siblings.
-fn visible_locals(node: Node<'_>) -> HashSet<String> {
+pub(super) fn visible_locals(node: Node<'_>) -> HashSet<String> {
     node.root()
         .descendants()
         .filter(|n| {
@@ -560,7 +560,7 @@ struct Scope {
     children: Vec<usize>,
     names: HashSet<String>,
 }
-fn exception_name(
+pub(super) fn exception_name(
     decl: Node<'_>,
     start: usize,
     end: usize,
@@ -659,7 +659,7 @@ fn exception_name(
         .find(|s| !in_use(s))
         .unwrap()
 }
-fn import_context(
+pub(super) fn import_context(
     ctx: &Context,
     node: Node<'_>,
     options: &BTreeMap<String, String>,
@@ -674,12 +674,12 @@ fn import_context(
         ),
     }
 }
-enum CatchTemplate {
+pub(super) enum CatchTemplate {
     Binding,
     Imported,
     General,
 }
-fn catch_clause(
+pub(super) fn catch_clause(
     rw: &mut ASTRewrite,
     imports: &mut ImportRewrite,
     context: &ConstructorImportContext,
@@ -1191,7 +1191,7 @@ pub async fn proposals(
     }
 }
 
-fn is_autocloseable(typ: BindingRef<'_>, seen: &mut HashSet<String>) -> bool {
+pub(super) fn is_autocloseable(typ: BindingRef<'_>, seen: &mut HashSet<String>) -> bool {
     if !seen.insert(typ.key().into()) {
         return false;
     }
@@ -1206,6 +1206,41 @@ fn resource_type(node: Node<'_>) -> Option<BindingRef<'_>> {
     }
     let typ = node.child("type")?.binding()?;
     is_autocloseable(typ, &mut HashSet::new()).then_some(typ)
+}
+
+/// SurroundWithTryWithResourcesAnalyzer.calculateCatchesAndRethrows, shared
+/// with assignment into a new resource declaration.
+pub(super) fn resource_exception_types<'a>(
+    selected: Node<'a>,
+    root: Node<'a>,
+    thrown: &[BindingRef<'a>],
+) -> (Vec<BindingRef<'a>>, Vec<BindingRef<'a>>) {
+    let caught = selected
+        .ancestors()
+        .filter(|n| n.is(NodeKind::TryStatement))
+        .flat_map(|n| n.list("catchClauses"))
+        .flat_map(caught_types)
+        .collect::<Vec<_>>();
+    let declared = if root.is(NodeKind::MethodDeclaration) {
+        root.binding()
+            .map(|m| m.exception_types())
+            .unwrap_or_default()
+    } else {
+        functional_method(root)
+            .map(|m| m.exception_types())
+            .unwrap_or_default()
+    };
+    let mut catch_types = filter_subtypes(thrown);
+    catch_types.retain(|t| !caught.iter().chain(&declared).any(|s| subtype(*t, *s)));
+    let mut rethrows = Vec::new();
+    for typ in &catch_types {
+        for covered in caught.iter().chain(&declared) {
+            if subtype(*covered, *typ) {
+                add(&mut rethrows, *covered);
+            }
+        }
+    }
+    (catch_types, rethrows)
 }
 /// QuickAssistProcessor.findEndPosition repeatedly extends through uses of
 /// local declarations so moving a resource also moves code that depends on it.
@@ -1322,27 +1357,7 @@ async fn resources(env: &Env<'_>, ctx: &Context, node: Node<'_>, proposals: &mut
                 .is_some_and(|s| s.id == selected.id)
         })
     });
-    let caught = selected
-        .ancestors()
-        .filter(|n| n.is(NodeKind::TryStatement))
-        .flat_map(|n| n.list("catchClauses"))
-        .flat_map(caught_types)
-        .collect::<Vec<_>>();
-    let declared = root
-        .binding()
-        .filter(|_| root.is(NodeKind::MethodDeclaration))
-        .map(|m| m.exception_types())
-        .unwrap_or_default();
-    let mut catch_types = filter_subtypes(&thrown);
-    catch_types.retain(|t| !caught.iter().chain(&declared).any(|s| subtype(*t, *s)));
-    let mut rethrow = Vec::new();
-    for typ in &catch_types {
-        for covered in caught.iter().chain(&declared) {
-            if subtype(*covered, *typ) {
-                add(&mut rethrow, *covered);
-            }
-        }
-    }
+    let (catch_types, rethrow) = resource_exception_types(selected, root, &thrown);
     let Ok(uri) = tower_lsp::lsp_types::Url::parse(&ctx.ast.uri) else {
         return;
     };

@@ -72,7 +72,7 @@ public class InMemoryNameEnvironment implements INameEnvironment {
      */
     private static List<ClasspathEntry> cachedClasspath(List<String> classpath) {
         // Normalise order so ["a","b"] and ["b","a"] share the same cache entry.
-        String key = classpath.stream().sorted().collect(java.util.stream.Collectors.joining("|"));
+        String key = BridgeOptions.includeRunningVM() + "|" + classpath.stream().sorted().collect(java.util.stream.Collectors.joining("|"));
         return CLASSPATH_CACHE.computeIfAbsent(key, k -> buildClasspathEntries(classpath));
     }
 
@@ -92,7 +92,7 @@ public class InMemoryNameEnvironment implements INameEnvironment {
         }
         // Boot classpath (JDK)
         String javaHome = System.getProperty("java.home");
-        if (javaHome != null) {
+        if (BridgeOptions.includeRunningVM() && javaHome != null) {
             File rtJar = new File(javaHome, "lib/rt.jar");
             if (rtJar.exists()) {
                 entries.add(new JarClasspathEntry(rtJar));

@@ -24,6 +24,6 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
 }
 
 /// `RefactorProcessor.getProposals`.
-pub async fn refactor_proposals(_env: &Env<'_>, _req: &Request<'_>) -> Vec<Proposal> {
-    Vec::new()
+pub async fn refactor_proposals(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
+    super::local_corrections::assignment_refactors(env, req).await
 }

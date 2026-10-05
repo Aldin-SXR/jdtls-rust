@@ -11,6 +11,8 @@
 //! `jdt://` class file), applies the jdt.ls preferences, builds `jdt://`
 //! URIs and shapes the LSP results.
 
+mod binary_implementations;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -341,7 +343,11 @@ pub async fn implementation(d: &Dispatcher, uri: &Url, pos: Position) -> Option<
     if !is_resolvable(d, uri) {
         return Some(Vec::new());
     }
-    nav(d, uri, pos, "implementation", false).await.map(|o| o.locations)
+    let mut locations = nav(d, uri, pos, "implementation", false).await?.locations;
+    if prefs().class_file_contents_support {
+        binary_implementations::append(d, uri, pos, &mut locations).await;
+    }
+    Some(locations)
 }
 
 /// `textDocument/references` (`ReferencesHandler.findReferences`).

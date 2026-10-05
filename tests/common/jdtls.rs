@@ -343,6 +343,42 @@ impl Workspace {
         }
     }
 
+    /// Use the upstream TestVMType library matching the fixture's JRE
+    /// container, without source attachments. Keep its other entries.
+    pub fn use_upstream_test_jdk(&mut self, project: &str) {
+        assert!(self.client.is_none(), "configure the test JDK before starting the server");
+        let root = self.project_root(project);
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        let path = root.join(".classpath");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        let ranges: Vec<_> = doc.descendants().filter(|n| n.tag_name().name() == "classpathentry"
+            && n.attribute("kind") == Some("con")
+            && n.attribute("path").is_some_and(|p| p.starts_with("org.eclipse.jdt.launching.JRE_CONTAINER")))
+            .map(|n| n.range()).collect();
+        assert_eq!(ranges.len(), 1, "missing or ambiguous JRE container: {}",path.display());
+        let container = doc.descendants().find(|n| n.range() == ranges[0]).unwrap();
+        let version = container.attribute("path").unwrap().rsplit('/').next().unwrap()
+            .strip_prefix("JavaSE-").unwrap_or("21");
+        std::fs::copy(fixtures_dir().join(format!("fakejdk/{version}/rtstubs.jar")), root.join("lib/rtstubs.jar")).unwrap();
+        text.replace_range(ranges[0].clone(), "<classpathentry kind=\"lib\" path=\"lib/rtstubs.jar\"/>");
+        std::fs::write(path,text).unwrap();
+    }
+
+    /// m2e retains explicit libraries in .classpath. Make the test VM's
+    /// sourceless classes available alongside the unchanged Maven dependencies.
+    pub fn use_upstream_maven_test_jdk(&mut self, project: &str, version: &str) {
+        assert!(self.client.is_none(), "configure the test JDK before starting the server");
+        let root = self.project_root(project);
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        std::fs::copy(fixtures_dir().join(format!("fakejdk/{version}/rtstubs.jar")), root.join("lib/rtstubs.jar")).unwrap();
+        let path = root.join(".classpath");
+        let mut text = std::fs::read_to_string(&path).unwrap_or_else(|_| "<classpath><classpathentry kind=\"src\" path=\"src/main/java\"/><classpathentry kind=\"src\" path=\"src/test/java\"/><classpathentry kind=\"con\" path=\"org.eclipse.m2e.MAVEN2_CLASSPATH_CONTAINER\"/><classpathentry kind=\"output\" path=\"target/classes\"/></classpath>".to_owned());
+        let end = text.rfind("</classpath>").unwrap();
+        text.insert_str(end, "<classpathentry kind=\"lib\" path=\"lib/rtstubs.jar\"/>");
+        std::fs::write(path,text).unwrap();
+    }
+
     /// `AbstractProjectsManagerBasedTest.newEmptyProject`: an Eclipse Java
     /// project named `TestProject` with source folder `src`.
     pub fn new_empty_project(&mut self, options: &BTreeMap<String, String>) -> PathBuf {
@@ -556,6 +592,13 @@ impl Workspace {
             }
         };
         for exact in [true, false] {
+            // The fixture explicitly supplies the upstream test VM library.
+            // Maven also retains the host VM, so select the fixture's class
+            // file when workspace/symbol reports both binary roots.
+            if let Some(s) = symbols.iter().find(|s| matches(s, exact) && in_project(s)
+                && s["location"]["uri"].as_str().is_some_and(|uri| uri.starts_with("jdt://contents/rtstubs.jar/"))) {
+                return s["location"]["uri"].as_str().map(str::to_owned);
+            }
             if let Some(s) = symbols
                 .iter()
                 .find(|s| matches(s, exact) && in_project(s))

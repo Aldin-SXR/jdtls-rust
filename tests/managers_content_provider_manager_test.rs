@@ -4,8 +4,8 @@
 //! jdtls-rust has the jdt.ls default providers only: `sourceContentProvider`
 //! (attached source) and `fernflowerContentProvider`.  The upstream test
 //! plugin's `FakeContentProvider`/`placeholderContentProvider` extensions
-//! cannot be registered, and upstream's sourceless JDK classes come from the
-//! fake JDK `rtstubs.jar`, whereas the running JDK attaches `lib/src.zip`.
+//! cannot be registered. Sourceless binary cases use the upstream fake JDK
+//! `rtstubs.jar` alongside the original Maven dependencies.
 
 mod common;
 use common::jdtls::Workspace;
@@ -21,9 +21,12 @@ struct Fixture {
     source_available_uri: String,
 }
 
-fn setup() -> Fixture {
+fn setup() -> Fixture { setup_with_test_jdk(false) }
+
+fn setup_with_test_jdk(stub_jdk: bool) -> Fixture {
     let mut ws = Workspace::new();
     ws.import_projects(&["maven/salut"]);
+    if stub_jdk { ws.use_upstream_maven_test_jdk("salut", "1.8"); }
     let sourceless_uri = ws.class_file_uri("salut", "java.math.BigDecimal");
     let source_available_uri = ws.class_file_uri("salut", "org.apache.commons.lang3.text.WordUtils");
     Fixture { ws, sourceless_uri, source_available_uri }
@@ -85,7 +88,7 @@ fn test_decompile_nothing() {
 }
 
 #[test]
-#[ignore = "requires the upstream test plugin's FakeContentProvider (throwing) and the fake JDK rtstubs.jar (sourceless java.math.BigDecimal); the running JDK attaches lib/src.zip"]
+#[ignore = "requires the upstream test plugin's throwing FakeContentProvider and its logged-error assertion"]
 fn test_throws_exception() {
     let mut f = setup();
     let uri = f.sourceless_uri.clone();
@@ -94,7 +97,7 @@ fn test_throws_exception() {
 }
 
 #[test]
-#[ignore = "requires the upstream test plugin's FakeContentProvider (throwing) and the fake JDK rtstubs.jar (sourceless java.math.BigDecimal); the running JDK attaches lib/src.zip"]
+#[ignore = "requires the upstream test plugin's throwing FakeContentProvider and its logged-error assertion"]
 fn test_decompile_throws_exception() {
     let mut f = setup();
     let uri = f.sourceless_uri.clone();
@@ -103,7 +106,7 @@ fn test_decompile_throws_exception() {
 }
 
 #[test]
-#[ignore = "expects java.math.BigDecimal to be sourceless (fake JDK rtstubs.jar) and a log about the test plugin's duplicate providers; the running JDK attaches lib/src.zip"]
+#[ignore = "requires the upstream test plugin's duplicate-provider extensions and logged-error assertion"]
 fn test_default_order() {
     let mut f = setup();
     let uri = f.sourceless_uri.clone();
@@ -112,7 +115,7 @@ fn test_default_order() {
 }
 
 #[test]
-#[ignore = "expects java.math.BigDecimal to be sourceless (fake JDK rtstubs.jar) and a log about the test plugin's duplicate providers; the running JDK attaches lib/src.zip"]
+#[ignore = "requires the upstream test plugin's duplicate-provider extensions and logged-error assertion"]
 fn test_decompile_default_order() {
     let mut f = setup();
     let uri = f.sourceless_uri.clone();
@@ -139,7 +142,7 @@ fn test_decompile_prefer_existing_provider_class() {
 }
 
 #[test]
-#[ignore = "expects java.math.BigDecimal to be sourceless (fake JDK rtstubs.jar) and a log from the test plugin's placeholderContentProvider; the running JDK attaches lib/src.zip"]
+#[ignore = "requires the upstream test plugin's placeholderContentProvider and logged-info assertion"]
 fn test_prefer_non_existing_provider_class() {
     let mut f = setup();
     set_preferred(&mut f.ws, &["placeholderContentProvider"]);
@@ -149,7 +152,7 @@ fn test_prefer_non_existing_provider_class() {
 }
 
 #[test]
-#[ignore = "expects java.math.BigDecimal to be sourceless (fake JDK rtstubs.jar) and a log from the test plugin's placeholderContentProvider; the running JDK attaches lib/src.zip"]
+#[ignore = "requires the upstream test plugin's placeholderContentProvider and logged-info assertion"]
 fn test_decompile_prefer_non_existing_provider_class() {
     let mut f = setup();
     set_preferred(&mut f.ws, &["placeholderContentProvider"]);
@@ -159,9 +162,8 @@ fn test_decompile_prefer_non_existing_provider_class() {
 }
 
 #[test]
-#[ignore = "expects java.math.BigDecimal to be sourceless (fake JDK rtstubs.jar); the running JDK attaches lib/src.zip"]
 fn test_prefer_unknown_extension() {
-    let mut f = setup();
+    let mut f = setup_with_test_jdk(true);
     set_preferred(&mut f.ws, &["unknownContentProvider"]);
     let uri = f.sourceless_uri.clone();
     let result = get_content(&mut f.ws, &uri);
@@ -169,9 +171,8 @@ fn test_prefer_unknown_extension() {
 }
 
 #[test]
-#[ignore = "expects java.math.BigDecimal to be sourceless (fake JDK rtstubs.jar); the running JDK attaches lib/src.zip"]
 fn test_prefer_disassembler() {
-    let mut f = setup();
+    let mut f = setup_with_test_jdk(true);
     set_preferred(&mut f.ws, &["disassemblerContentProvider"]);
     let uri = f.sourceless_uri.clone();
     let result = get_content(&mut f.ws, &uri);
@@ -180,9 +181,8 @@ fn test_prefer_disassembler() {
 }
 
 #[test]
-#[ignore = "expects java.util.Map to be sourceless (fake JDK rtstubs.jar); the running JDK attaches lib/src.zip"]
 fn test_disassemble_inner_class() {
-    let mut f = setup();
+    let mut f = setup_with_test_jdk(true);
     set_preferred(&mut f.ws, &["disassemblerContentProvider"]);
     let uri = f.ws.class_file_uri("salut", "java.util.Map");
     let result = get_content(&mut f.ws, &uri);

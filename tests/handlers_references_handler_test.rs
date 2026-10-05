@@ -100,9 +100,9 @@ fn test_declaration_in_references() {
 
 // https://github.com/eclipse/eclipse.jdt.ls/issues/2405
 #[test]
-#[ignore = "calls ReferencesHandler.search(IField) on java.lang.System.out directly (no LSP equivalent) and expects a match inside rtstubs.jar's System.class; searching references inside the JDK's class files is not implemented"]
 fn test_references_in_jre() {
     let mut ws = setup();
+    ws.use_upstream_test_jdk("hello");
     with_class_file_support(&mut ws);
     let uri = ws.class_file_uri("hello", "java.lang.System");
     // `System.out` declaration in the System class file.

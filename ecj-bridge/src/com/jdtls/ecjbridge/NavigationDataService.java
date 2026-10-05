@@ -144,9 +144,10 @@ final class NavigationDataService {
                 return -1;
             }
             int start = lineStarts[line];
-            int end = line + 1 < lineStarts.length ? lineStarts[line + 1] : source.length();
+            // JsonRpcHelpers.toOffset adds the column to the line offset;
+            // it does not reject a column that crosses into a later line.
             int off = start + character;
-            return off > end ? -1 : off;
+            return off < 0 || off > source.length() ? -1 : off;
         }
     }
 

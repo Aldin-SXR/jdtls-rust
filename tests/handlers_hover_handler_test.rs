@@ -421,10 +421,10 @@ fn test_hover_javadoc_snippet2() {
 }
 
 #[test]
-#[ignore = "expects upstream's fake test JDK (rtstubs.jar); with a real JDK the link is jdt://contents/java.base/... (jdt.ls 1.58 fails it the same way)"]
 fn test_hover_javadoc_link_plain() {
     let mut ws = setup();
     let root = java_project(&mut ws, "java18");
+    ws.use_upstream_test_jdk("java18");
     let buf = "package test1;\n/**\n * <h4><a id=\"special_cases_constructor\">Special cases</a></h4>\n * A simple mention of {@linkplain ##special_cases_constructor Special Cases}.\n * <p> A link to {@linkplain String}\n */\npublic class Test {\n}\n";
     let cu = ws.create_cu(&root, "src/main/java", "test1", "Test.java", buf);
     let hover = get_hover(&mut ws, &cu, 6, 15);

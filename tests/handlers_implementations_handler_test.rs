@@ -178,9 +178,9 @@ fn test_implementation_from_binary_type_without_class_content_support() {
 }
 
 #[test]
-#[ignore = "expects exactly the 8 Runnable implementations of the fake JDK rtstubs.jar; the running JDK has hundreds, and binary subtype search over the JDK is not implemented"]
 fn test_implementation_from_binary_type_with_class_content_support() {
     let mut ws = setup();
+    ws.use_upstream_test_jdk("hello");
     ws.init_options = json!({ "extendedClientCapabilities": { "classFileContentsSupport": true } });
     // workspace + binary implementations returned
     let implementations = get_runnable_implementations(&mut ws);

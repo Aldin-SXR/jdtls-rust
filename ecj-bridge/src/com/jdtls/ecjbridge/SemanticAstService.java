@@ -226,6 +226,7 @@ final class SemanticAstService {
                 Type declared = node instanceof VariableDeclarationStatement d ? d.getType()
                         : node instanceof VariableDeclarationExpression d ? d.getType() : null;
                 if (declared != null) localTypeMethods(declared.resolveBinding(), localTypes);
+                if (node instanceof ExpressionStatement statement) localTypeMethods(statement.getExpression().resolveTypeBinding(), localTypes);
                 ITypeBinding functional = node instanceof LambdaExpression e ? e.resolveTypeBinding()
                         : node instanceof MethodReference e ? e.resolveTypeBinding() : null;
                 if (functional != null) bindings.get(binding(functional)).fim = binding(functional.getFunctionalInterfaceMethod());
@@ -244,7 +245,7 @@ final class SemanticAstService {
             }
             namespaceAnnotations();
             memberSourceData();
-            if (conditional) typeRelations();
+            if (conditional || order.stream().anyMatch(n -> n instanceof ExpressionStatement)) typeRelations();
             methodRelations();
             List<Integer> comments = new ArrayList<>();
             for (Object o : cu.getCommentList()) {
@@ -539,13 +540,14 @@ final class SemanticAstService {
         }
 
         // Assignment relations and functional-method bindings are compiler data.
-        // Export only expression/parameter types needed by conditional expressions,
-        // rather than a quadratic relation over the entire member graph.
+        // Export expression, parameter and return types for conditional expressions
+        // and standalone-expression corrections, excluding unrelated member types.
         private void typeRelations() {
             java.util.Set<Integer> types = new java.util.LinkedHashSet<>();
             for (NodeOut node : nodes) if (node.tb >= 0) types.add(node.tb);
             for (IMethodBinding method : new ArrayList<>(methodBindings.values())) {
                 for (ITypeBinding parameter : method.getParameterTypes()) types.add(binding(parameter));
+                if (!method.isConstructor()) types.add(binding(method.getReturnType()));
             }
             for (int id : new ArrayList<>(types)) {
                 ITypeBinding type = typeBindings.get(id);

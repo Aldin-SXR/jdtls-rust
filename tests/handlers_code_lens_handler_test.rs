@@ -80,9 +80,9 @@ fn test_get_code_lens_symbols() {
 }
 
 #[test]
-#[ignore = "upstream rtstubs has no source; the real JDK exposes 3 lenses, identically on the oracle"]
 fn test_get_code_lens_symbols_for_class() {
     let mut ws = setup();
+    ws.use_upstream_test_jdk("hello");
     set_pref(&mut ws, "java.implementationCodeLens", json!("types"));
     let uri = ws.class_file_uri("hello", "java.lang.Runnable");
     let lenses = get_code_lens_symbols(&mut ws, &uri);

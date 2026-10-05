@@ -1,5 +1,5 @@
 //! Port of JDT `InternalNamingConventions.suggestVariableNames` for local
-//! variables (`VK_LOCAL`, `BK_TYPE_NAME`, no configured prefixes/suffixes).
+//! variables and parameters, with configured prefixes/suffixes.
 
 use crate::features::scanner::is_keyword;
 use once_cell::sync::Lazy;
@@ -249,6 +249,17 @@ pub fn suggest_parameter_names(
     excluded: &[String],
     options: &std::collections::BTreeMap<String, String>,
 ) -> Vec<String> {
+    suggest_names_with_affixes(base_name, 0, excluded, options, "argument")
+}
+
+/// NamingConventions for parameter, local and instance/static field names.
+pub fn suggest_names_with_affixes(
+    base_name: &str,
+    dimensions: usize,
+    excluded: &[String],
+    options: &std::collections::BTreeMap<String, String>,
+    preference: &str,
+) -> Vec<String> {
     let base_name = base_name.split('<').next().unwrap_or(base_name);
     let first_word: String = base_name
         .chars()
@@ -275,11 +286,12 @@ pub fn suggest_parameter_names(
         list.push(String::new());
         list
     };
-    let prefixes = affixes("argumentPrefixes");
-    let suffixes = affixes("argumentSuffixes");
+    let prefixes = affixes(&format!("{preference}Prefixes"));
+    let suffixes = affixes(&format!("{preference}Suffixes"));
     let mut ranked = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for base in bases.into_iter().filter(|s| !s.is_empty()) {
+        let base = if dimensions > 0 { pluralize(&base) } else { base };
         for (i, prefix) in prefixes.iter().enumerate() {
             let mut chars = base.chars();
             let first = chars.next().unwrap();

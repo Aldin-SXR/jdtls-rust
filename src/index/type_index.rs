@@ -41,6 +41,8 @@ pub struct TypeEntry {
     /// JDT modifier flags (`AccInterface`, `AccEnum`, `AccAnnotation`, `AccDeprecated`, ...).
     pub modifiers: u32,
     pub origin: TypeOrigin,
+    /// Fully qualified direct supertypes from class-file headers.
+    pub super_types: Vec<String>,
 }
 
 impl TypeEntry {
@@ -99,6 +101,7 @@ fn collect(uri: &str, package: &str, enclosing: &[String], t: &TypeDecl, types: 
         name: t.name.clone(),
         modifiers,
         origin: TypeOrigin::Source { uri: uri.to_owned(), name: t.name_range },
+        super_types: Vec::new(),
     });
     let mut chain = enclosing.to_vec();
     chain.push(t.name.clone());
@@ -196,6 +199,9 @@ fn parse_types(v: Option<&Value>, archive: &str, module: Option<String>) -> Vec<
             enclosing: parts,
             name,
             modifiers,
+            super_types: t.get(3).and_then(Value::as_str).into_iter().chain(
+                t.get(4).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
+            ).map(str::to_owned).collect(),
             origin: TypeOrigin::Binary { archive: archive.to_owned(), module: module.clone(), class_file: format!("{simple}.class") },
         });
     }

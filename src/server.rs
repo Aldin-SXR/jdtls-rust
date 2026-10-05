@@ -415,6 +415,16 @@ impl JavaLanguageServer {
         let _ = self.compile_tx.send(next);
     }
 
+    pub async fn get_refactor_edit(&self, params: Value) -> LspResult<Option<Value>> {
+        let format = self.format_env().await;
+        let env = crate::correction::edit::Env {
+            dispatcher: &self.dispatcher,
+            format: &format,
+            lifecycle: &self.lifecycle,
+        };
+        Ok(crate::correction::local_corrections::get_refactor_edit(&env, params).await)
+    }
+
     pub async fn list_overridable_methods(
         &self,
         params: CodeActionParams,

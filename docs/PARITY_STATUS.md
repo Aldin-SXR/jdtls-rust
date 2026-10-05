@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 831 | 39.8% |
-| Passing | 786 | 37.7% |
-| Ported but `#[ignore]`d | 45 | 2.2% |
-| Not ported yet | 1,256 | 60.2% |
+| Ported | 836 | 40.1% |
+| Passing | 807 | 38.7% |
+| Ported but `#[ignore]`d | 29 | 1.4% |
+| Not ported yet | 1,251 | 59.9% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,478 passed,
-0 failed and 46 ignored across 85 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,523 passed,
+0 failed and 30 ignored across 87 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -43,7 +43,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,478 passed
 `tests/expression_correction_regressions.rs`, 35 tests;
 `tests/type_import_regressions.rs`, 37 tests;
 `tests/nullness_generation_regressions.rs`, 39 tests;
-`tests/uncaught_exception_regressions.rs`, 18 tests) and unit
+`tests/uncaught_exception_regressions.rs`, 18 tests;
+`tests/allocation_correction_regressions.rs`, 24 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -52,11 +53,11 @@ those duplicate runs are excluded from the upstream-port counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 562 | 545 | 63% |
+| handlers | 871 | 562 | 558 | 64% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
-| managers | 211 | 132 | 104 | 49% |
-| correction | 604 | 88 | 88 | 15% |
+| managers | 211 | 132 | 107 | 51% |
+| correction | 604 | 93 | 93 | 15% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
 | preferences | 53 | 0 | 0 | 0% |
@@ -74,10 +75,10 @@ those duplicate runs are excluded from the upstream-port counts.
 | Upstream class | Test file | Ported | Pass | Ignored | Oracle |
 |---|---|---:|---:|---:|---|
 | handlers/BuildWorkspaceHandlerTest | `handlers_build_workspace_handler_test` | 5 | 5 | 0 | 5/5 |
-| handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 9 | 1 | 9/9 active; `outgoing_calls_src` resolves into the real JDK's `src.zip` (environment) |
+| handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 10 | 0 | 10/10; restored stub-JDK source-location assertion verified |
 | handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 11 | 11 | 0 | 11/11 |
-| handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 13 | 1 | 13/13 active; Runnable exposes 3 lenses with the real JDK's sources (environment) |
-| handlers/CompletionHandlerTest | `handlers_completion_handler_test` | 57 | 55 | 2 | 54/55 active on the latest oracle run; `test_snippet_ctor` returns unresolved `enclosing_simple_type` in the product, while Rust retains the passing upstream assertion; real-JDK TimeUnit and Method* proposal counts differ from rtstubs.jar |
+| handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 14 | 0 | 14/14; restored two-lens binary assertion verified |
+| handlers/CompletionHandlerTest | `handlers_completion_handler_test` | 57 | 57 | 0 | 56/57 verified, including both restored stub-JDK tests; existing `test_snippet_ctor` product template mismatch remains |
 | handlers/DocumentHighlightHandlerTest | `handlers_document_highlight_handler_test` | 5 | 5 | 0 | pass |
 | handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` | 19 | 19 | 0 | 19/19 |
 | handlers/DocumentSymbolHandlerTest | `handlers_document_symbol_handler_test` | 14 | 13 | 1 | 13/13 active |
@@ -94,18 +95,18 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/GenerateToStringHandlerTest | `handlers_generate_to_string_handler_test` | 8 | 8 | 0 | 8/8 |
 | handlers/HashCodeEqualsActionTest | `handlers_hash_code_equals_action_test` | 6 | 6 | 0 | 6/6 |
 | handlers/HashCodeEqualsHandlerTest | `handlers_hash_code_equals_handler_test` | 10 | 10 | 0 | 10/10 |
-| handlers/HoverHandlerTest | `handlers_hover_handler_test` | 36 | 34 | 2 | pass (the 2 ignored also fail on jdt.ls) |
-| handlers/ImplementationsHandlerTest | `handlers_implementations_handler_test` | 13 | 12 | 1 | pass |
+| handlers/HoverHandlerTest | `handlers_hover_handler_test` | 36 | 35 | 1 | 35 active ports; restored sourceless link assertion verified; Java 10 VM assumption remains |
+| handlers/ImplementationsHandlerTest | `handlers_implementations_handler_test` | 13 | 13 | 0 | 13/13; restored eight source/binary implementation assertion verified |
 | handlers/InitHandlerTest | `handlers_init_handler_test`, plus unit tests in `server.rs` and `preferences.rs` | 14 | 14 | 0 | 12/12 LSP cases; 2 unit cases |
 | handlers/InlayHintHandlerTest | `handlers_inlay_hint_handler_test` | 46 | 46 | 0 | 43/46; 3 differ because the real JDK has sources |
 | handlers/InlayHintFilterManagerTest | unit tests in `src/features/inlay_hint_filter.rs` | 7 | 7 | 0 | n/a (unit tests) |
 | handlers/NavigateToDeclarationHandlerTest | `handlers_navigate_to_declaration_handler_test` | 5 | 5 | 0 | pass |
-| handlers/NavigateToDefinitionHandlerTest | `handlers_navigate_to_definition_handler_test` | 11 | 8 | 3 | pass, except rtstubs/Kotlin |
-| handlers/NavigateToTypeDefinitionHandlerTest | `handlers_navigate_to_type_definition_handler_test` | 7 | 6 | 1 | pass, except rtstubs |
+| handlers/NavigateToDefinitionHandlerTest | `handlers_navigate_to_definition_handler_test` | 11 | 10 | 1 | 10 active ports; both restored rtstubs assertions verified; Kotlin remains |
+| handlers/NavigateToTypeDefinitionHandlerTest | `handlers_navigate_to_type_definition_handler_test` | 7 | 7 | 0 | 7/7; restored rtstubs assertion verified |
 | handlers/OverrideMethodsActionTest | `handlers_override_methods_action_test` | 1 | 1 | 0 | 1/1 |
 | handlers/PasteEventHandlerTest | `handlers_paste_event_handler_test` | 22 | 22 | 0 | 22/22 |
 | handlers/PrepareRenameHandlerTest | `handlers_prepare_rename_handler_test` | 15 | 15 | 0 | 15/15 |
-| handlers/ReferencesHandlerTest | `handlers_references_handler_test` | 7 | 6 | 1 | pass |
+| handlers/ReferencesHandlerTest | `handlers_references_handler_test` | 7 | 7 | 0 | 7/7; restored System.out binary reference assertion verified |
 | handlers/RenameHandlerTest | `handlers_rename_handler_test` | 22 | 22 | 0 | 20/22; jdt.ls NPEs on JDK 25 (record field) and has no Lombok jar |
 | handlers/SelectionRangeHandlerTest | `handlers_selection_range_handler_test` | 5 | 5 | 0 | 5/5 |
 | handlers/SemanticTokensHandlerTest | `handlers_semantic_tokens_handler_test` | 11 | 11 | 0 | 11/11 |
@@ -114,9 +115,10 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers/TypeHierarchyHandlerTest | `handlers_type_hierarchy_handler_test` | 4 | 4 | 0 | 4/4 |
 | handlers/WorkspaceDiagnosticsHandlerTest | `handlers_workspace_diagnostics_handler_test` | 2 | 2 | 0 | 2/2 (package deletion and diagnostic filtering) |
 | handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` | 1 | 1 | 0 | 1/1 (unknown-command error) |
-| handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 16 | 3 | 16/16 |
+| handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 19 | 0 | 19/19; all three restored stub-JDK assertions verified |
+| correction/AssignToVariableRefactorTest | `correction_assign_to_variable_refactor_test` | 2 | 2 | 0 | 2/2 (advanced assignment commands) |
 | correction/AbstractMethodQuickFixTest | `correction_abstract_method_quick_fix_test` | 8 | 8 | 0 | 8/8 |
-| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 72 | 72 | 0 | 72/72 with `--test-threads=1`, including uncaught exceptions, multi-catch and resource closing; 15 upstream methods remain unported |
+| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 75 | 75 | 0 | 75/75 with `--test-threads=1`; 12 upstream methods remain unported |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -127,7 +129,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | javadoc/JavaDoc2PlainTextConverterTest | unit tests in `src/javadoc/converter.rs` | 2 | 2 | 0 | n/a (unit tests) |
 | javadoc/JavaDocImageExtractionTest | `javadoc_java_doc_image_extraction_test`, plus a unit test in `src/javadoc/path_handler.rs` | 6 | 6 | 0 | pass |
 | javadoc/JavadocContentTest | `javadoc_javadoc_content_test` | 5 | 5 | 0 | pass |
-| managers/ContentProviderManagerTest | `managers_content_provider_manager_test` | 21 | 3 | 18 | pass |
+| managers/ContentProviderManagerTest | `managers_content_provider_manager_test` | 21 | 6 | 15 | 6 active ports; three restored sourceless-provider assertions verified |
 | managers/BasicFileDetectorTest | `managers_basic_file_detector_test` | 12 | 12 | 0 | n/a (unit ports) |
 | managers/EclipseBuildSupportTest | `managers_eclipse_build_support_test` | 1 | 1 | 0 | 1/1 |
 | managers/EclipseProjectImporterTest | `managers_eclipse_project_importer_test` | 15 | 11 | 4 | 8/8 active LSP; 3 unit ports |
@@ -142,11 +144,15 @@ those duplicate runs are excluded from the upstream-port counts.
 ## Ignored tests
 
 Every ignore names its reason in the test file (`#[ignore = "..."]`), and every
-ignored test keeps its upstream assertions unchanged.
+ignored test remains counted as unfinished. The six provider-chain cases also
+need the upstream plugin log assertions, which their current LSP adapters cannot
+observe. The separate optional `javadoc::converter::corpus_diff::corpus` unit
+test needs an external `JAVADOC_CORPUS`; it is the 30th ignored test in the full
+Rust run and is excluded from the upstream-port count.
 
 | Reason | Count | Tests |
 |---|---:|---|
-| Upstream's fake test JDK (`rtstubs.jar`, no sources); we run a real JDK with `lib/src.zip` | 22 | `test_get_code_lens_symbols_for_class`, `outgoing_calls_src`; 9 ContentProviderManagerTest tests; `test_disassembled_source` and `test_source_version` (definition and type definition); `test_implementation_from_binary_type_with_class_content_support`; `test_references_in_jre`; `test_workspace_search`, `test_camel_case_fuzzy_search` and `test_workspace_search_with_class_content_support`; `test_hover_javadoc_link_plain`; completion `test_completion_import_static` and `test_snippet_interface_method` |
+| Upstream test-plugin provider injection and log assertions (throwing providers, duplicate providers, placeholder provider) | 6 | ContentProviderManagerTest: `test_throws_exception`, `test_decompile_throws_exception`, `test_default_order`, `test_decompile_default_order`, `test_prefer_non_existing_provider_class`, `test_decompile_prefer_non_existing_provider_class` |
 | Upstream test-plugin internals with no LSP equivalent (FakeContentProvider, null URIs, decompiler line mappings) | 9 | ContentProviderManagerTest |
 | Lombok not supported | 1 | `test_lombok_show_generated_code_symbols` |
 | Kotlin not supported | 1 | `test_kotlin` |
@@ -1166,3 +1172,65 @@ allocations. Pattern-variable scope expansion and broader method-reference,
 synthetic-SAM and surround-selection coverage still need porting and verification,
 alongside the remaining quick assists and refactorings. Full feature parity remains
 unfinished.
+
+## Unused allocations and expression assignments
+
+Three faithful `LocalCorrectionQuickFixTest` ports and both
+`AssignToVariableRefactorTest` methods are now active. Rust generates unused
+allocation corrections (throw, return, remove, local/field assignment and resource
+assignment) and ordinary expression assignment refactors. The approximate Java
+assignment generators are removed. Java supplies expression and method type facts;
+Rust owns proposal eligibility, ordering, names, imports and source edits.
+
+Assignment handles anonymous types, recovered semicolons, control-statement bodies,
+field placement/static/final preferences, naming affixes and collisions, and
+static nested-type field visibility. Resource assignment includes close exceptions,
+existing catches, rethrows and lambda SAM exception boundaries. Advanced clients
+receive `java.action.applyRefactoringCommand`; `java/getRefactorEdit` supports
+`assignVariable` and `assignField`, returning the complete edit and exact UTF-16
+rename position after formatting and imports. Other refactoring commands and
+parameter assignments remain unfinished.
+
+`allocation_correction_regressions` has 24 passing cases: 22 exact oracle
+comparisons and two Rust-only virtual-document cases. Together with the existing
+uncaught virtual-buffer case, the serial allocation/local/uncaught verification
+has 119 harness passes and 116 actual oracle comparisons. Evidence:
+`unused-allocation-oracle-final-1.log` (118 harness passes; 115 actual comparisons),
+`ignored-restored-oracle-final-1.log` (the added nested-type scope assertion), and
+`unused-allocation-scope-rust-green-2.log` (all 24 Rust cases).
+The original three allocation fixtures retain their upstream tabs and assertions.
+LocalCorrectionQuickFixTest now has 75 of 87 upstream methods ported; remaining
+methods cover unchecked conversions, variable hiding and duplicate methods.
+
+## Restored ignored tests
+
+Sixteen previously ignored upstream tests now run with their original assertions.
+Their setup uses the upstream sourceless `rtstubs.jar` matching each Eclipse
+fixture's JRE container (Java 8 for hello, Java 18 for java18). Maven binary tests
+retain their original dependencies and add the Java 8 stub library. Their oracle
+URI resolver selects that explicit fixture root when the public symbol search
+also reports the host JDK.
+
+Restored coverage: code lenses (1), call hierarchy (1), workspace symbols (3),
+completion (2), hover (1), definition/type definition (3), class-file providers (3),
+references (1), and implementations (1). Fixes include using the imported
+project's declared runtime for completion and symbol-search candidates, preserving
+null computed completion parameter names, matching Eclipse's line-offset arithmetic,
+and searching transitive binary type implementations in Rust over class-file facts.
+Binary method implementation expansion and broader mixed source/binary hierarchy
+coverage still require porting.
+
+`ignored-restored-oracle-final-1.log` verifies 15 restored tests plus the added
+allocation scope regression in serial, with zero failures.
+`ignored-binary-implementations-oracle-final-1.log` verifies the sixteenth restored
+test against Eclipse. `allocation-and-ignored-tests-full-suite-final-2.log` records
+the full Rust suite: 87 targets, 1,523 passes, zero failures, 30 ignores.
+The first full run exposed 63 regressions in seven existing targets because
+ECJ's standalone DOM parser still requires VM bootstrapping for Java 21
+stub projects. That bootstrap is retained; completion/type-search roots follow
+the project classpath separately. The targeted rerun passes all 157 tests in those seven targets plus completion,
+workspace symbols and implementations (`ignored-runtime-bootstrap-rust-green-1.log`).
+The fresh final full run covers that correction.
+The remaining 29 ignored upstream ports concern unsupported features, test-plugin
+internals, direct internal APIs, required VMs and Gradle model behavior; they are
+still excluded from the passing ledger. Full parity remains unfinished.

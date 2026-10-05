@@ -301,6 +301,10 @@ impl Dispatcher {
         let mut options = crate::project::jdtls_default_options();
         options.extend(cfg.compiler_options.clone());
         options.extend(project.options.clone());
+        options.insert(
+            crate::project::INCLUDE_RUNNING_VM.to_owned(),
+            project.classpath.iter().any(|entry| entry.is_jre_container()).to_string(),
+        );
         let source_level = project
             .compliance()
             .map(str::to_owned)
@@ -834,6 +838,10 @@ impl Dispatcher {
         match uri.and_then(|u| ws.project_for_uri(u)) {
             Some(project) => {
                 options.extend(project.options.clone());
+                options.insert(
+                    crate::project::INCLUDE_RUNNING_VM.to_owned(),
+                    project.classpath.iter().any(|entry| entry.is_jre_container()).to_string(),
+                );
                 let level = project
                     .compliance()
                     .map(str::to_owned)

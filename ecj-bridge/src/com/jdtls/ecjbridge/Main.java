@@ -768,12 +768,6 @@ public class Main {
             BridgeAction extractField = makeExtractFieldAction(req.uri, source, cu, req.range);
             if (extractField != null) actions.add(extractField);
 
-            BridgeAction assignVar = makeAssignToVariableAction(req.uri, source, cu, req.range);
-            if (assignVar != null) actions.add(assignVar);
-
-            BridgeAction assignField = makeAssignToFieldAction(req.uri, source, cu, req.range);
-            if (assignField != null) actions.add(assignField);
-
             BridgeAction invertBool = makeInvertBooleanAction(req.uri, source, cu, req.range);
             if (invertBool != null) actions.add(invertBool);
 
@@ -2615,95 +2609,6 @@ public class Main {
         return a;
     }
 
-    // ── Assign to variable / field ───────────────────────────────────────────
-
-    /** Wrap a standalone expression statement `expr;` → `var name = expr;`. */
-    private static BridgeAction makeAssignToVariableAction(String uri, String source,
-            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
-        if (range == null) return null;
-        int offset = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
-        StatementLocator sl = new StatementLocator(offset);
-        cu.accept(sl);
-        if (!(sl.found instanceof org.eclipse.jdt.core.dom.ExpressionStatement es)) return null;
-        if (!(es.getExpression() instanceof org.eclipse.jdt.core.dom.MethodInvocation
-              || es.getExpression() instanceof org.eclipse.jdt.core.dom.ClassInstanceCreation)) return null;
-
-        int exprStart = es.getExpression().getStartPosition();
-        int exprEnd   = exprStart + es.getExpression().getLength();
-        String exprText = source.substring(exprStart, exprEnd);
-
-        int[] startLC = CompilationService.offsetToLineCol(source, es.getStartPosition());
-        int[] endLC   = CompilationService.offsetToLineCol(source, es.getStartPosition() + es.getLength());
-
-        BridgeTextEdit edit = new BridgeTextEdit();
-        edit.startLine = startLC[0]; edit.startChar = startLC[1];
-        edit.endLine   = endLC[0];   edit.endChar   = endLC[1];
-        edit.newText   = "var result = " + exprText + ";";
-
-        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(edit);
-        BridgeAction a = new BridgeAction();
-        a.title = "Assign to new local variable";
-        a.kind  = "refactor.assign.variable";
-        a.edits = List.of(fe);
-        return a;
-    }
-
-    /** Assign expression to a new field: add `private TYPE name;` and replace with `this.name = expr;`. */
-    private static BridgeAction makeAssignToFieldAction(String uri, String source,
-            org.eclipse.jdt.core.dom.CompilationUnit cu, BridgeRange range) {
-        if (range == null) return null;
-        int offset = CompilationService.lineColToOffset(source, range.startLine, range.startChar);
-        StatementLocator sl = new StatementLocator(offset);
-        cu.accept(sl);
-        if (!(sl.found instanceof org.eclipse.jdt.core.dom.ExpressionStatement es)) return null;
-        if (!(es.getExpression() instanceof org.eclipse.jdt.core.dom.MethodInvocation
-              || es.getExpression() instanceof org.eclipse.jdt.core.dom.ClassInstanceCreation)) return null;
-
-        TypeDeclLocator tdl = new TypeDeclLocator(offset);
-        cu.accept(tdl);
-        if (tdl.found == null) return null;
-
-        int exprStart = es.getExpression().getStartPosition();
-        int exprEnd   = exprStart + es.getExpression().getLength();
-        String exprText = source.substring(exprStart, exprEnd);
-        String fieldName = "value";
-
-        // Try to get a better name from method invocation.
-        if (es.getExpression() instanceof org.eclipse.jdt.core.dom.MethodInvocation mi) {
-            fieldName = mi.getName().getIdentifier();
-            if (fieldName.startsWith("get") && fieldName.length() > 3) {
-                fieldName = Character.toLowerCase(fieldName.charAt(3)) + fieldName.substring(4);
-            }
-        }
-        fieldName = chooseFieldName(tdl.found, fieldName);
-
-        String typeIndent = indentOf(source, cu.getLineNumber(tdl.found.getStartPosition()) - 1);
-        int openBrace = source.indexOf('{', tdl.found.getStartPosition());
-        if (openBrace < 0) return null;
-
-        int[] fieldInsLC = CompilationService.offsetToLineCol(source, openBrace + 1);
-        String fieldDecl = "\n" + typeIndent + "    private Object " + fieldName + ";";
-
-        int[] stmtStartLC = CompilationService.offsetToLineCol(source, es.getStartPosition());
-        int[] stmtEndLC   = CompilationService.offsetToLineCol(source, es.getStartPosition() + es.getLength());
-
-        BridgeTextEdit replaceEdit = new BridgeTextEdit();
-        replaceEdit.startLine = stmtStartLC[0]; replaceEdit.startChar = stmtStartLC[1];
-        replaceEdit.endLine   = stmtEndLC[0];   replaceEdit.endChar   = stmtEndLC[1];
-        replaceEdit.newText   = "this." + fieldName + " = " + exprText + ";";
-
-        BridgeTextEdit fieldEdit = new BridgeTextEdit();
-        fieldEdit.startLine = fieldInsLC[0]; fieldEdit.startChar = fieldInsLC[1];
-        fieldEdit.endLine   = fieldInsLC[0]; fieldEdit.endChar   = fieldInsLC[1];
-        fieldEdit.newText   = fieldDecl;
-
-        BridgeFileEdit fe = new BridgeFileEdit(); fe.uri = uri; fe.edits = List.of(fieldEdit, replaceEdit);
-        BridgeAction a = new BridgeAction();
-        a.title = "Assign to new field '" + fieldName + "'";
-        a.kind  = "refactor.assign.field";
-        a.edits = List.of(fe);
-        return a;
-    }
 
     // ── Invert boolean ───────────────────────────────────────────────────────
 

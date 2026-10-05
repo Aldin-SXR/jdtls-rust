@@ -389,7 +389,7 @@ final class TypeIndex {
         for (String cp : classpath) {
             binaryRoots.add(root(cp));
         }
-        binaryRoots.add(jrt(BridgeOptions.version(sourceLevel).startsWith("1.")));
+        if (BridgeOptions.includeRunningVM()) binaryRoots.add(jrt(BridgeOptions.version(sourceLevel).startsWith("1.")));
         for (Map.Entry<String, String> f : files.entrySet()) {
             String uri = f.getKey();
             boolean isTest = testUris.contains(uri);

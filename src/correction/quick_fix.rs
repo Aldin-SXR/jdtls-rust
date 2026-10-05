@@ -88,6 +88,7 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
     }
     let ctx = &req.context;
     match id {
+        p::UnusedObjectAllocation => super::local_corrections::unused_allocation(env, ctx, problem, proposals).await,
         p::UnterminatedString => super::local_corrections::add_quote(ctx, problem, proposals),
         p::InvalidOperator => super::local_corrections::invalid_operator(ctx, problem, proposals),
         p::ExpressionShouldBeAVariable => super::local_corrections::expression_variable(env, ctx, problem, proposals).await,

@@ -504,9 +504,9 @@ fn test_completion_javadoc_comment_record_no_snippet() {
 }
 
 #[test]
-#[ignore = "JDK-dependent: the test JDK (11+) has TimeUnit.of(ChronoUnit), a tenth proposal; upstream runs on a Java 8 stub JRE (the oracle on JDK 25 also returns 10)"]
 fn test_completion_import_static() {
     let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
     t.caps.label_details = true;
     let unit = t.get_working_copy("src/java/Foo.java", "import static java.util.concurrent.TimeUnit. \npublic class Foo {\n\tvoid foo() {\n\t}\n}\n");
     let list = t.request_completions(&unit, "java.util.concurrent.TimeUnit.");
@@ -989,9 +989,9 @@ fn test_snippet_nested_inner_interface_nosnippet() {
 }
 
 #[test]
-#[ignore = "JDK-dependent: upstream's stub JRE yields 6 Method* type proposals before the `method` snippet (items[6]); a real JDK yields 50 (the list is identical to jdt.ls 1.58 on the same JDK)"]
 fn test_snippet_interface_method() {
     let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
     let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic interface Test {\nmethod\n}");
     let list = t.request_completions(&unit, "method");
     assert!(!list.is_null());

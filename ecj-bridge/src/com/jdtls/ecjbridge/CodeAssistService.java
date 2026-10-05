@@ -563,9 +563,7 @@ final class CodeAssistService {
                 case CompletionProposal.METHOD_REF, CompletionProposal.METHOD_REF_WITH_CASTED_RECEIVER,
                         CompletionProposal.METHOD_DECLARATION, CompletionProposal.CONSTRUCTOR_INVOCATION,
                         CompletionProposal.ANONYMOUS_CLASS_CONSTRUCTOR_INVOCATION,
-                        CompletionProposal.ANONYMOUS_CLASS_DECLARATION, CompletionProposal.LAMBDA_EXPRESSION,
-                        CompletionProposal.METHOD_NAME_REFERENCE, CompletionProposal.JAVADOC_METHOD_REF,
-                        CompletionProposal.POTENTIAL_METHOD_DECLARATION -> {
+                        CompletionProposal.ANONYMOUS_CLASS_DECLARATION, CompletionProposal.LAMBDA_EXPRESSION -> {
                     if (names == null) {
                         names = binaryParameterNames(p);
                     }
