@@ -76,6 +76,9 @@ async fn including_condition(
                         ast: ctx.ast.clone(),
                         declaration: crate::semantic_ast::resolve::find_parent_type(remove)
                             .map(|n| n.id),
+                        nullness: crate::rewrite::import_rewrite::nullness::Filter::create(
+                            &ctx.ast, Some(remove.id), &options,
+                        ),
                     };
                     let name = ir.add_import_binding(typ, &context);
                     imports = Some(ir);

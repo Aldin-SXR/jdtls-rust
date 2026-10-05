@@ -208,6 +208,7 @@ pub struct NodeData {
     pub binding: Option<BindingId>,
     pub type_binding: Option<BindingId>,
     pub method_binding: Option<BindingId>,
+    pub annotation: Option<annotation::Annotation>,
     pub flags: u32,
     pub props: Vec<(&'static str, PropValue)>,
 }
@@ -236,6 +237,8 @@ pub struct Binding {
     pub annotations: Vec<annotation::Annotation>,
     pub type_annotations: Vec<annotation::Annotation>,
     pub parameter_annotations: Vec<Vec<annotation::Annotation>>,
+    pub source_modifiers: Option<Vec<String>>,
+    pub module: Option<BindingId>,
     pub bound: Option<BindingId>,
     pub wildcard: Option<BindingId>,
     pub generic_type_of_wildcard: Option<BindingId>,
@@ -362,6 +365,7 @@ impl Ast {
                     binding: b(n.b),
                     type_binding: b(n.tb),
                     method_binding: b(n.mb),
+                    annotation: n.annotation.as_ref().and_then(|a| annotation::decode(a, &s)),
                     flags: n.f as u32,
                     props,
                 }
@@ -395,6 +399,8 @@ impl Ast {
                 parameter_annotations: o.pann.as_deref().unwrap_or_default().iter().map(|v| v.iter().filter_map(|a| annotation::decode(a, &s)).collect()).collect(),
                 bound: b(o.bound),
                 wildcard: b(o.wc),
+                source_modifiers: o.sm.as_ref().map(|v| v.iter().filter_map(|&i| s(i)).collect()),
+                module: b(o.module),
                 generic_type_of_wildcard: b(o.gt),
                 dimensions: o.dim,
                 declared_methods: bl(&o.dmeth),

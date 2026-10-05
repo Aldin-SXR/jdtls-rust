@@ -42,6 +42,7 @@ final class SemanticAstService {
         public int t, s, l, p, loc, es, el, b, tb, mb, f;
         public int[] pr;
         public int[][] ls;
+        public AnnotationOut annotation;
     }
 
     static final class BindingOut {
@@ -55,11 +56,13 @@ final class SemanticAstService {
         public int dim;
         public int[] it, ta, tp, tbs, dmeth, dfld, dtyp, ctors, assign;
         public int fim = -1;
+        public int module = -1;
         // variable
         public int type = -1, vid = -1, cv = -1, vd = -1;
         // method
         public int rt = -1, md = -1;
         public int[] pt, et, pn, ss, ov;
+        public int[] sm;
         public AnnotationOut[] ann, tann;
         public AnnotationOut[][] pann;
         public int nameOffset = -1, sourceOffset = -1;
@@ -67,7 +70,7 @@ final class SemanticAstService {
 
     static final class AnnotationOut {
         public int annotationType;
-        public MemberValueOut[] members;
+        public MemberValueOut[] members, allMembers;
     }
     static final class MemberValueOut {
         public int name;
@@ -124,7 +127,7 @@ final class SemanticAstService {
         }
     };
 
-    private record MemberSourceData(String key, int offset, int nameOffset, List<String> parameters) {}
+    private record MemberSourceData(String key, int offset, int nameOffset, List<String> parameters, List<String> modifiers) {}
     private record SourceDataKey(String unit, String source, String environment) {}
     private static final Map<SourceDataKey, List<MemberSourceData>> MEMBER_SOURCE_CACHE =
         new LinkedHashMap<>(64, 0.75f, true) {
@@ -228,6 +231,7 @@ final class SemanticAstService {
                     binding(cu.getAST().resolveWellKnownType(name));
                 }
             }
+            namespaceAnnotations();
             memberSourceData();
             if (conditional) typeRelations();
             methodRelations();
@@ -391,6 +395,7 @@ final class SemanticAstService {
             } else if (node instanceof Annotation a) {
                 IAnnotationBinding ab = a.resolveAnnotationBinding();
                 out.b = binding(ab == null ? null : ab.getAnnotationType());
+                out.annotation = ab == null ? null : annotation(ab);
             } else if (node instanceof ModuleDeclaration d) {
                 out.b = binding(d.resolveBinding());
             }
@@ -512,6 +517,7 @@ final class SemanticAstService {
                 } else if (binding instanceof IPackageBinding p) {
                     b.f = f;
                     b.qn = str(p.getName());
+                    b.module = binding(p.getModule());
                 } else {
                     b.f = f;
                 }
@@ -673,7 +679,36 @@ final class SemanticAstService {
                     BindingOut declaration = bindings.get(b.md);
                     if (declaration.sourceOffset >= 0) b.sourceOffset = declaration.sourceOffset;
                     if (declaration.pn != null) b.pn = declaration.pn;
+                    if (declaration.sm != null) b.sm = declaration.sm;
                 }
+            }
+        }
+
+        // Standalone DOM PackageBinding.getAnnotations requires a workspace
+        // SearchableEnvironment. Obtain the same compiler annotation facts
+        // directly from package-info source instead.
+        private void namespaceAnnotations() {
+            PackageDeclaration declaration = cu.getPackage();
+            if (declaration == null || request.files == null) return;
+            IPackageBinding packageBinding = declaration.resolveBinding();
+            if (packageBinding == null) return;
+            String name = declaration.getName().getFullyQualifiedName();
+            for (String uri : request.files.keySet()) {
+                if (!uri.endsWith("/package-info.java")) continue;
+                BridgeProtocol.Request other = new BridgeProtocol.Request();
+                other.uri = uri; other.files = request.files;
+                other.classpath = request.classpath; other.sourceLevel = request.sourceLevel;
+                other.options = request.options;
+                CompilationUnit unit = uri.equals(request.uri) ? cu : AstBindingsService.parse(other);
+                PackageDeclaration info = unit == null ? null : unit.getPackage();
+                if (info == null || !info.getName().getFullyQualifiedName().equals(name)) continue;
+                List<AnnotationOut> data = new ArrayList<>();
+                for (Object value : info.annotations()) {
+                    IAnnotationBinding annotation = ((Annotation) value).resolveAnnotationBinding();
+                    if (annotation != null) data.add(annotation(annotation));
+                }
+                bindings.get(binding(packageBinding)).ann = data.toArray(new AnnotationOut[0]);
+                break;
             }
         }
 
@@ -693,7 +728,14 @@ final class SemanticAstService {
                     return true;
                 }
                 private void sourceMember(IBinding binding, ASTNode node, SimpleName name, List<String> params) {
-                    if (binding != null) data.add(new MemberSourceData(binding.getKey(), node.getStartPosition(), name.getStartPosition(), params));
+                    List<String> modifiers = new ArrayList<>();
+                    if (node instanceof BodyDeclaration declaration) {
+                        for (Object modifier : declaration.modifiers()) {
+                            if (modifier instanceof Modifier keyword) modifiers.add(keyword.getKeyword().toString());
+                            else if (modifier instanceof Annotation annotation) modifiers.add("@" + annotation.getTypeName().getFullyQualifiedName());
+                        }
+                    }
+                    if (binding != null) data.add(new MemberSourceData(binding.getKey(), node.getStartPosition(), name.getStartPosition(), params, modifiers));
                 }
             });
             return data;
@@ -706,6 +748,7 @@ final class SemanticAstService {
                 BindingOut out = bindings.get(index);
                 out.sourceOffset = member.offset();
                 out.nameOffset = member.nameOffset();
+                out.sm = member.modifiers().stream().mapToInt(this::str).toArray();
                 if (member.parameters() != null) {
                     out.pn = member.parameters().stream().mapToInt(this::str).toArray();
                 }
@@ -859,13 +902,17 @@ final class SemanticAstService {
         private AnnotationOut annotation(IAnnotationBinding annotation) {
             AnnotationOut output = new AnnotationOut();
             output.annotationType = binding(annotation.getAnnotationType());
-            IMemberValuePairBinding[] pairs = annotation.getDeclaredMemberValuePairs();
-            output.members = new MemberValueOut[pairs.length];
+            output.members = memberValues(annotation.getDeclaredMemberValuePairs());
+            output.allMembers = memberValues(annotation.getAllMemberValuePairs());
+            return output;
+        }
+        private MemberValueOut[] memberValues(IMemberValuePairBinding[] pairs) {
+            MemberValueOut[] output = new MemberValueOut[pairs.length];
             for (int i = 0; i < pairs.length; i++) {
                 MemberValueOut member = new MemberValueOut();
                 member.name = str(pairs[i].getName());
                 member.value = annotationValue(pairs[i].getValue());
-                output.members[i] = member;
+                output[i] = member;
             }
             return output;
         }

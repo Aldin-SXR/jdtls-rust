@@ -5,6 +5,7 @@ use super::{wire, BindingId};
 pub struct Annotation {
     pub annotation_type: BindingId,
     pub members: Vec<(String, Value)>,
+    pub all_members: Vec<(String, Value)>,
 }
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -31,6 +32,11 @@ pub fn decode(
     Some(Annotation {
         annotation_type,
         members,
+        all_members: o
+            .all_members
+            .iter()
+            .filter_map(|m| Some((string(m.name)?, value(&m.value, string))))
+            .collect(),
     })
 }
 fn binding(id: i32) -> Option<BindingId> {

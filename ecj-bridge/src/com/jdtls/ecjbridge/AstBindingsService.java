@@ -213,6 +213,16 @@ final class AstBindingsService {
                 }
                 Matcher m = PACKAGE.matcher(stripComments(content));
                 String pkg = m.find() ? m.group(1).replaceAll("\\s", "") : "";
+                // A package-info declaration may have annotations before
+                // `package` on the same line. Resolve its package syntactically
+                // rather than placing it at the mirror root.
+                if (pkg.isEmpty() && content.contains("package")) {
+                    ASTParser syntax = ASTParser.newParser(AST.getJLSLatest());
+                    syntax.setKind(ASTParser.K_COMPILATION_UNIT);
+                    syntax.setSource(content.toCharArray());
+                    CompilationUnit unit = (CompilationUnit) syntax.createAST(null);
+                    if (unit.getPackage() != null) pkg = unit.getPackage().getName().getFullyQualifiedName();
+                }
                 Path dir = pkg.isEmpty() ? root : root.resolve(pkg.replace('.', '/'));
                 Path file = dir.resolve(name);
                 String stamp = file + "\u0000" + content.hashCode() + ":" + content.length();

@@ -277,6 +277,9 @@ pub(super) async fn create(
         context: ConstructorImportContext {
             ast: ast.clone(),
             declaration: Some(selected.declaration),
+            nullness: crate::rewrite::import_rewrite::nullness::Filter::create(
+                &ast, Some(selected.declaration), &options,
+            ),
         },
         double_count: 0,
     };

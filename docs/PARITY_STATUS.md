@@ -21,8 +21,8 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 | Ported but `#[ignore]`d | 45 | 2.2% |
 | Not ported yet | 1,276 | 61.1% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,401 passed,
-0 failed and 46 ignored across 83 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,440 passed,
+0 failed and 46 ignored across 84 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -41,7 +41,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,401 passed
 `tests/unused_code_regressions.rs`, 32 tests;
 `tests/exception_correction_regressions.rs`, 22 tests;
 `tests/expression_correction_regressions.rs`, 35 tests;
-`tests/type_import_regressions.rs`, 37 tests) and unit
+`tests/type_import_regressions.rs`, 37 tests;
+`tests/nullness_generation_regressions.rs`, 39 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -349,10 +350,10 @@ assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matche
   `${enclosing_type}` names still need parity work. Project templates and ordinary
   named nested types are covered.
 * **Constructor generation dependencies:** inherited and external-package scope
-  conflicts, inherited declaration/nullness annotations and redundant-nullness
-  filtering still need the complete ScopeAnalyzer/StubUtility2Core dependency
-  ports. Ordinary type-use annotations, annotated array dimensions and varargs
-  now use the shared AST import builder. Constructor comments share the template
+  conflicts still need the complete ScopeAnalyzer dependency port. Inherited
+  nullness annotations, redundant-nullness filtering, ordinary type-use
+  annotations, annotated array dimensions and varargs now use the shared Rust
+  import builder and stub policy. Constructor comments share the template
   resolver/global preference limitations above.
 * **toString dependencies:** complete cross-unit source-range ordering, external
   scope/import conflicts and global/date/time/user template resolvers remain
@@ -363,15 +364,16 @@ assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matche
   conflicts, inherited nullness and type-use annotation rendering still require
   the full ScopeAnalyzer/import-rewrite dependency ports. Comments share the
   global/date/time/user template limitations above.
-* **Delegate generation dependencies:** inherited declaration/nullness annotations,
-  redundant-nullness filtering, inherited/external import-scope conflicts and
-  global/date/time/user template resolvers still require the shared StubUtility2Core and ScopeAnalyzer
-  dependency ports. Available source ranges and parameter names now cover current
-  and referenced source units and binary source attachments. Ordinary type-use
+* **Delegate generation dependencies:** inherited/external import-scope conflicts
+  and global/date/time/user template resolvers still require shared dependency
+  ports. Inherited parameter nullness annotations and redundant-nullness filtering
+  now follow the shared Rust stub policy. Available source ranges and parameter
+  names now cover current and referenced source units and binary source attachments. Ordinary type-use
   annotations, annotated dimensions and varargs use the shared AST import builder.
-* **Override/implementation dependencies:** inherited declaration/nullness annotations,
-  redundant-nullness filtering, complete inherited/external scope conflicts and
-  global date/time/user body-template resolvers still need the shared dependency ports.
+* **Override/implementation dependencies:** complete inherited/external scope
+  conflicts and global date/time/user body-template resolvers still need shared
+  dependency ports. Inherited nullness annotations, source modifier order and
+  redundant-nullness filtering now follow the Rust stub policy.
   Existing unqualified source-type references now prevent conflicting imports;
   ordinary type-use annotations, annotated dimensions and varargs use the shared
   AST import builder. Exact custom-JDK binding contents retain the
@@ -1046,8 +1048,62 @@ issue described above.
 
 This shared dependency port adds no upstream test methods to the ledger: 811
 ports, 766 passing and 45 ignored remain, with 1,276 upstream methods unported.
-`TypeLocation` and the annotation-filter context hook are available, but the
-redundant-nullness filter and inherited declaration/nullness annotation policy
-remain unported. Other generation callers still need to adopt the AST overload;
+At this point `TypeLocation` and the annotation-filter context hook were available;
+the redundant-nullness filter and inherited declaration/nullness annotation policy
+were the next dependencies to port (see the following batch). Other generation
+callers still need to adopt the AST overload;
 full ScopeAnalyzer, NamingConventions and template dependencies remain unfinished.
 Full feature parity is not yet achieved.
+
+
+## Nullness filtering and inherited stub annotations (2026-10-05)
+
+Rust now ports `RedundantNullnessTypeAnnotationsFilter` and
+`StubUtility2Core.isCopyOnInherit` for constructors, delegates, overrides and
+unimplemented-method quick fixes. Java exports resolved annotation values,
+including defaults, source modifier tokens and package/module binding links;
+Rust chooses what to retain and writes the edits.
+
+* The nearest explicit nonnull default wins, including false or empty defaults
+  that cancel an outer default. Boolean, enum-array, marker and
+  `TypeQualifierDefault` annotations follow Eclipse's location rules. Configured
+  secondary default names are recognized. Source package-info annotations are
+  exported directly because standalone JDT package bindings require a workspace
+  search environment to expose them.
+* Redundant primary nonnull type annotations are removed only at locations
+  covered by the default. Nullable and unrelated annotations remain. Exception,
+  local, cast, new, receiver and instanceof locations strip primary nullness
+  annotations; type variables and wildcards preserve their annotations. The
+  upstream OTHER location removes all annotations. Varargs dimension annotations
+  follow the existing JDT bypass and unknown-location rules.
+* Only configured primary declaration nullness annotations are inherited.
+  `inheritNullAnnotations=enabled` suppresses this copying. Override return and
+  parameter declarations honor the target defaults; constructor and delegate
+  declaration parameters use Eclipse's separate copying rule. Overridden source
+  methods preserve the relative order of retained keywords and annotations.
+* Interactive null-analysis configuration now preserves explicit project compiler
+  options, matching `Preferences.updateAnnotationNullAnalysisOptions`. The client
+  prompt/notification remains unported.
+* Thirty-nine own regressions cover the public generation and correction paths,
+  package/class/method defaults and cancellation, custom and secondary names,
+  generic/wildcard/owner/array locations, declared annotations, external source
+  modifier order, inheritance preferences, varargs and virtual documents. The
+  virtual-document case runs on Rust only and checks untitled, in-memory and
+  nonexistent-file documents without writing sources to disk.
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 84 targets (1,440 passing, zero failures, 46 ignored).
+`nullness-generation-oracle-final-1.log` passes all 168 harness cases: 92 affected
+upstream ports, 37 earlier type-import regressions and 39 nullness regressions.
+Two virtual-document cases return early on the oracle, leaving 166 actual oracle
+cases. The same fixtures and assertions are used on both servers. The Rust log is
+`nullness-generation-full-suite-final-1.log`; a final compile check after formatting
+is `nullness-generation-format-check-final-1.log`. All logs are under
+`target/parity-evidence/` (gitignored).
+
+This dependency batch adds no upstream test methods to the ledger: 811 ports,
+766 passing, 45 ignored and 1,276 unported remain. Source-module annotations and
+binary package annotation discovery still need compiler-environment support;
+other generation callers still need the AST import overload. Full ScopeAnalyzer,
+NamingConventions and template dependencies remain unfinished. Full feature
+parity is not yet achieved.

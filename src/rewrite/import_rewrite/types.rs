@@ -11,7 +11,7 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TypeLocation {
     Parameter,
     ReturnType,
@@ -31,6 +31,15 @@ pub enum TypeLocation {
 }
 
 impl ImportRewrite {
+    pub fn add_annotation_string(
+        &mut self,
+        annotation: &Annotation,
+        context: &dyn ImportRewriteContext,
+    ) -> String {
+        let mut rw = ASTRewrite::new(self.ast.clone());
+        let node = self.add_annotation(annotation, &mut rw, context);
+        Flattener::as_string(&rw, node)
+    }
     /// `addImport(ITypeBinding, AST, context, TypeLocation)`. Unlike the string
     /// overload this retains owner types, generic arguments and annotations.
     pub fn add_import_type(

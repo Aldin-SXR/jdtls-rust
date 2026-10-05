@@ -19,6 +19,7 @@ pub struct NodeOut {
     pub tb: i32,
     pub mb: i32,
     pub f: i32,
+    pub annotation: Option<AnnotationOut>,
     #[serde(default)]
     pub pr: Vec<i32>,
     #[serde(default)]
@@ -66,11 +67,14 @@ pub struct BindingOut {
     pub pt: Option<Vec<i32>>,
     pub et: Option<Vec<i32>>,
     pub pn: Option<Vec<i32>>,
+    pub sm: Option<Vec<i32>>,
     pub ss: Option<Vec<i32>>,
     pub ov: Option<Vec<i32>>,
     pub assign: Option<Vec<i32>>,
     #[serde(default = "minus_one")]
     pub fim: i32,
+    #[serde(default = "minus_one")]
+    pub module: i32,
     pub ann: Option<Vec<AnnotationOut>>,
     pub tann: Option<Vec<AnnotationOut>>,
     pub pann: Option<Vec<Vec<AnnotationOut>>>,
@@ -86,6 +90,8 @@ pub struct AnnotationOut {
     #[serde(rename = "annotationType")]
     pub annotation_type: i32,
     pub members: Vec<MemberValueOut>,
+    #[serde(rename = "allMembers")]
+    pub all_members: Vec<MemberValueOut>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]

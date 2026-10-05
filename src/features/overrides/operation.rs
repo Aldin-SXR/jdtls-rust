@@ -46,6 +46,85 @@ fn immediate<'a>(
                 .find(|p| immediate(*p, qualified, seen).is_some())
         })
 }
+fn implementation_modifiers(
+    m: BindingRef<'_>,
+    in_interface: bool,
+    imports: &mut ImportRewrite,
+    context: &ConstructorImportContext,
+    options: &BTreeMap<String, String>,
+) -> String {
+    let mut mods = m.modifiers();
+    if in_interface {
+        mods &= !(modifier::PROTECTED | modifier::PUBLIC);
+        if mods & modifier::ABSTRACT != 0 {
+            mods |= modifier::DEFAULT;
+        }
+    } else {
+        mods &= !modifier::DEFAULT;
+    }
+    mods &= !(modifier::ABSTRACT | modifier::NATIVE | modifier::PRIVATE);
+    let keywords = [
+        (modifier::PUBLIC, "public"),
+        (modifier::PROTECTED, "protected"),
+        (modifier::DEFAULT, "default"),
+        (modifier::STATIC, "static"),
+        (modifier::FINAL, "final"),
+        (modifier::SYNCHRONIZED, "synchronized"),
+        (modifier::STRICTFP, "strictfp"),
+    ];
+
+    let mut source = String::new();
+    let defaults = context.nullness.as_ref().map(|f| &f.defaults);
+    let copy = |a: &crate::semantic_ast::annotation::Annotation| {
+        crate::rewrite::import_rewrite::nullness::copy_on_inherit(
+            a,
+            m.ast,
+            options,
+            defaults,
+            TypeLocation::ReturnType,
+        )
+    };
+    if mods != 0 && !m.data().annotations.is_empty() && m.data().source_modifiers.is_some() {
+        for modifier in m.data().source_modifiers.as_ref().unwrap() {
+            if let Some(name) = modifier.strip_prefix('@') {
+                if let Some(annotation) = m
+                    .data()
+                    .annotations
+                    .iter()
+                    .find(|a| {
+                        let qualified = m.ast.binding(a.annotation_type).qualified_name();
+                        qualified == name
+                            || qualified
+                                .strip_suffix(name)
+                                .is_some_and(|prefix| prefix.ends_with('.'))
+                    })
+                    .filter(|a| copy(a))
+                {
+                    source.push_str(&imports.add_annotation_string(annotation, context));
+                    source.push(' ');
+                }
+            } else if let Some((flag, name)) = keywords.iter().find(|(_, name)| *name == modifier) {
+                if mods & flag != 0 {
+                    source.push_str(name);
+                    source.push(' ');
+                    mods &= !flag;
+                }
+            }
+        }
+    } else {
+        for annotation in m.data().annotations.iter().filter(|a| copy(a)) {
+            source.push_str(&imports.add_annotation_string(annotation, context));
+            source.push(' ');
+        }
+    }
+    for (flag, name) in keywords {
+        if mods & flag != 0 {
+            source.push_str(name);
+            source.push(' ');
+        }
+    }
+    source
+}
 fn stub(
     m: BindingRef<'_>,
     owner: BindingRef<'_>,
@@ -69,30 +148,9 @@ fn stub(
             imports.add_import("java.lang.Override", &DefaultContext)
         ));
     }
-    let mut mods = m.modifiers();
-    if in_interface {
-        mods &= !(modifier::PROTECTED | modifier::PUBLIC);
-        if mods & modifier::ABSTRACT != 0 {
-            mods |= modifier::DEFAULT;
-        }
-    } else {
-        mods &= !modifier::DEFAULT;
-    }
-    mods &= !(modifier::ABSTRACT | modifier::NATIVE | modifier::PRIVATE);
-    for (flag, name) in [
-        (modifier::PUBLIC, "public"),
-        (modifier::PROTECTED, "protected"),
-        (modifier::DEFAULT, "default"),
-        (modifier::STATIC, "static"),
-        (modifier::FINAL, "final"),
-        (modifier::SYNCHRONIZED, "synchronized"),
-        (modifier::STRICTFP, "strictfp"),
-    ] {
-        if mods & flag != 0 {
-            source.push_str(name);
-            source.push(' ');
-        }
-    }
+    source.push_str(&implementation_modifiers(
+        m, in_interface, imports, context, options,
+    ));
     let generic: Vec<_> = m
         .type_parameters()
         .iter()
@@ -134,10 +192,20 @@ fn stub(
         names.push(name.clone());
         let t = replace(*p);
         let varargs = m.is_varargs() && i == params.len() - 1 && t.is_array();
-        parameters.push(format!(
-            "{} {name}",
-            imports.add_import_parameter_type_string(t, context, varargs),
-        ));
+        let annotations =
+            crate::rewrite::import_rewrite::nullness::inherited_parameter_annotations(
+                m,
+                i,
+                options,
+                context.nullness.as_ref().map(|f| &f.defaults),
+            );
+        let mut parameter = String::new();
+        for annotation in annotations {
+            parameter.push_str(&imports.add_annotation_string(annotation, context));
+            parameter.push(' ');
+        }
+        parameter.push_str(&imports.add_import_parameter_type_string(t, context, varargs));
+        parameters.push(format!("{parameter} {name}"));
     }
     source.push_str(&format!("{result} {}({})", m.name(), parameters.join(", ")));
     let throws: Vec<_> = m
@@ -330,6 +398,9 @@ async fn create_impl(
     let context = ConstructorImportContext {
         ast: ast.clone(),
         declaration: Some(declaration),
+        nullness: crate::rewrite::import_rewrite::nullness::Filter::create(
+            &ast, Some(declaration), &options,
+        ),
     };
     let mut rewrite = ASTRewrite::new(ast.clone());
     let parent = if ast.node(declaration).is(NodeKind::EnumConstantDeclaration) {

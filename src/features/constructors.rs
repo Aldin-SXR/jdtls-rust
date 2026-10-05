@@ -330,8 +330,20 @@ fn imported_type(
 pub(crate) struct ConstructorImportContext {
     pub(crate) ast: Arc<Ast>,
     pub(crate) declaration: Option<NodeId>,
+    pub(crate) nullness: Option<crate::rewrite::import_rewrite::nullness::Filter>,
 }
 impl ImportRewriteContext for ConstructorImportContext {
+    fn remove_redundant_type_annotations<'a>(
+        &self,
+        annotations: &'a [crate::semantic_ast::annotation::Annotation],
+        location: TypeLocation,
+        binding: BindingRef<'_>,
+    ) -> Vec<&'a crate::semantic_ast::annotation::Annotation> {
+        self.nullness.as_ref().map_or_else(
+            || annotations.iter().collect(),
+            |filter| filter.remove(annotations, location, binding),
+        )
+    }
     fn find_in_context(
         &self,
         imports: &ImportRewrite,
@@ -419,6 +431,9 @@ fn constructor_stub(
     let context = ConstructorImportContext {
         ast: rewrite.ast.clone(),
         declaration: Some(selected.declaration),
+        nullness: crate::rewrite::import_rewrite::nullness::Filter::create(
+            &rewrite.ast, Some(selected.declaration), options,
+        ),
     };
     let method = rewrite.new_node(NodeKind::MethodDeclaration);
     rewrite.put_simple(method, "constructor", "true");
@@ -467,6 +482,14 @@ fn constructor_stub(
             let (typ, annotations) = imports.add_import_parameter_type(*typ, rewrite, &context, varargs);
             let declaration = parameter(rewrite, typ, &name, varargs);
             rewrite.put_list(declaration, "varargsAnnotations", annotations);
+            let modifiers =
+                crate::rewrite::import_rewrite::nullness::inherited_parameter_annotations(
+                    super_constructor, i, options, None,
+                )
+                .into_iter()
+                .map(|a| imports.add_annotation(a, rewrite, &context))
+                .collect();
+            rewrite.put_list(declaration, "modifiers", modifiers);
             parameters.push(declaration);
         }
         thrown = super_constructor

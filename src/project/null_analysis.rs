@@ -235,6 +235,11 @@ pub fn update_project(
     if project.kind == ProjectKind::Default || !project.is_java() {
         return false;
     }
+    // Preferences.updateAnnotationNullAnalysisOptions leaves the project's
+    // explicit options intact while interactive mode awaits the user's choice.
+    if settings.mode == "interactive" {
+        return false;
+    }
     let enabled = settings.mode == "automatic";
     let wanted = if enabled
         && !(settings.nonnull.is_empty()

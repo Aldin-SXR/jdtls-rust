@@ -137,10 +137,17 @@ fn stub(
         names.push(name.clone());
         let t = replace(*p);
         let varargs = m.is_varargs() && i == params.len() - 1 && t.is_array();
-        parameters.push(format!(
-            "{} {name}",
-            imports.add_import_parameter_type_string(t, context, varargs),
-        ));
+        let annotations =
+            crate::rewrite::import_rewrite::nullness::inherited_parameter_annotations(
+                m, i, options, None,
+            );
+        let mut parameter = String::new();
+        for annotation in annotations {
+            parameter.push_str(&imports.add_annotation_string(annotation, context));
+            parameter.push(' ');
+        }
+        parameter.push_str(&imports.add_import_parameter_type_string(t, context, varargs));
+        parameters.push(format!("{parameter} {name}"));
     }
     let throws: Vec<_> = m
         .exception_types()
@@ -241,6 +248,9 @@ pub(super) async fn create(
     let context = ConstructorImportContext {
         ast: ast.clone(),
         declaration: Some(selected.declaration),
+        nullness: crate::rewrite::import_rewrite::nullness::Filter::create(
+            &ast, Some(selected.declaration), &options,
+        ),
     };
     let mut rewrite = ASTRewrite::new(ast.clone());
     let eol = if ast.source.windows(2).any(|w| w == [13, 10]) {
