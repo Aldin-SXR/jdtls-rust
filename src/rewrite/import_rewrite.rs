@@ -14,6 +14,8 @@ use std::sync::Arc;
 use super::indent;
 use super::text_edit::{EditKind, EditTree, MalformedTree};
 use crate::semantic_ast::{Ast, BindingRef, NodeId, NodeKind};
+mod types;
+pub use types::TypeLocation;
 
 /// `ImportRewriteContext` results.
 pub const RES_NAME_FOUND: i32 = 1;
@@ -30,6 +32,11 @@ pub trait ImportRewriteContext {
     /// `findInContext(qualifier, name, kind)`; `None` defers to the import
     /// rewrite's own imports (`findInImports`).
     fn find_in_context(&self, imports: &ImportRewrite, qualifier: &str, name: &str, kind: i32) -> i32;
+    /// Default ImportRewriteContext preserves type annotations. Scope-aware
+    /// contexts may remove redundant nullness annotations for this location.
+    fn remove_redundant_type_annotations<'a>(&self, annotations: &'a [crate::semantic_ast::annotation::Annotation], _location: TypeLocation, _binding: BindingRef<'_>) -> Vec<&'a crate::semantic_ast::annotation::Annotation> {
+        annotations.iter().collect()
+    }
 }
 
 /// The default context (`ImportRewrite.defaultContext`).
@@ -555,6 +562,9 @@ fn normalize_type_binding(b: BindingRef<'_>) -> Option<BindingRef<'_>> {
         let ifs = b.interfaces();
         return if let Some(f) = ifs.first() { Some(*f) } else { b.superclass() };
     }
+    if b.is_capture() {
+        return b.wildcard();
+    }
     Some(b)
 }
 
@@ -571,7 +581,7 @@ fn contains_nested_capture(b: BindingRef<'_>, nested: bool) -> bool {
         return false;
     }
     if b.is_capture() {
-        return nested || true;
+        return nested || b.wildcard().is_some_and(|w| contains_nested_capture(w, true));
     }
     if b.is_wildcard_type() {
         return b.bound().is_some_and(|x| contains_nested_capture(x, true));

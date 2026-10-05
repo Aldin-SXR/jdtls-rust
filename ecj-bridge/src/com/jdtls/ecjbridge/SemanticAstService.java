@@ -51,7 +51,7 @@ final class SemanticAstService {
         public long f;         // flags (see constants)
         // type
         public int qn = -1, bn = -1, pkg = -1;
-        public int er = -1, td = -1, dc = -1, dm = -1, sc = -1, el = -1, cmp = -1, bound = -1, gt = -1;
+        public int er = -1, td = -1, dc = -1, dm = -1, sc = -1, el = -1, cmp = -1, bound = -1, gt = -1, wc = -1;
         public int dim;
         public int[] it, ta, tp, tbs, dmeth, dfld, dtyp, ctors, assign;
         public int fim = -1;
@@ -60,7 +60,24 @@ final class SemanticAstService {
         // method
         public int rt = -1, md = -1;
         public int[] pt, et, pn, ss, ov;
+        public AnnotationOut[] ann, tann;
+        public AnnotationOut[][] pann;
         public int nameOffset = -1, sourceOffset = -1;
+    }
+
+    static final class AnnotationOut {
+        public int annotationType;
+        public MemberValueOut[] members;
+    }
+    static final class MemberValueOut {
+        public int name;
+        public AnnotationValueOut value;
+    }
+    static final class AnnotationValueOut {
+        public int kind;
+        public int text = -1, binding = -1;
+        public AnnotationOut annotation;
+        public AnnotationValueOut[] values;
     }
 
     static final class ProblemOut {
@@ -404,8 +421,9 @@ final class SemanticAstService {
             } catch (RuntimeException e) {
                 // no key
             }
-            if (key != null) {
-                known = bindingIndex.get(key);
+            String lookup = key == null ? null : binding instanceof ITypeBinding type ? typeKey(type, key) : key;
+            if (lookup != null) {
+                known = bindingIndex.get(lookup);
                 if (known != null) {
                     bindingIdentity.put(binding, known);
                     return known;
@@ -415,14 +433,15 @@ final class SemanticAstService {
             int idx = bindings.size();
             bindings.add(b);
             bindingIdentity.put(binding, idx);
-            if (key != null) {
-                bindingIndex.put(key, idx);
+            if (lookup != null) {
+                bindingIndex.put(lookup, idx);
             }
             b.k = binding.getKind();
             b.key = str(key);
             try {
                 b.n = str(binding.getName());
                 b.m = binding.getModifiers();
+                b.ann = annotations(binding.getAnnotations());
                 try {
                     if (binding.getJavaElement() instanceof org.eclipse.jdt.core.IMember member) {
                         org.eclipse.jdt.core.ISourceRange nameRange = member.getNameRange();
@@ -476,6 +495,8 @@ final class SemanticAstService {
                     b.et = bindings(mb.getExceptionTypes());
                     b.tp = bindings(mb.getTypeParameters());
                     b.ta = bindings(mb.getTypeArguments());
+                    b.pann = new AnnotationOut[mb.getParameterTypes().length][];
+                    for (int i = 0; i < b.pann.length; i++) b.pann[i] = annotations(mb.getParameterAnnotations(i));
                     IMethodBinding decl = mb.getMethodDeclaration();
                     b.md = decl == mb ? idx : binding(decl);
                     // Substituted bindings can expose arg0/arg1 even when the
@@ -738,6 +759,7 @@ final class SemanticAstService {
         }
 
         private void type(ITypeBinding t, BindingOut b) {
+            b.tann = annotations(t.getTypeAnnotations());
             b.qn = str(t.getQualifiedName());
             b.bn = str(t.getBinaryName());
             IPackageBinding pkg = t.getPackage();
@@ -755,6 +777,7 @@ final class SemanticAstService {
             b.el = binding(t.getElementType());
             b.cmp = binding(t.getComponentType());
             b.bound = binding(t.getBound());
+            b.wc = binding(t.getWildcard());
             b.gt = binding(t.getGenericTypeOfWildcardType());
             if (t.isFromSource() && !t.isParameterizedType() && !t.isRawType() && !t.isCapture()
                     && !t.isWildcardType() && !t.isTypeVariable() && !t.isArray()) {
@@ -762,6 +785,105 @@ final class SemanticAstService {
                 b.dfld = bindings(t.getDeclaredFields());
                 b.dtyp = bindings(t.getDeclaredTypes());
             }
+        }
+
+        // Type keys deliberately ignore type annotations. Preserve annotated
+        // variants, including annotations on arguments, owners and dimensions,
+        // while retaining the original compiler key for Rust binding equality.
+        private String typeKey(ITypeBinding type, String key) {
+            StringBuilder shape = new StringBuilder();
+            typeAnnotations(type, shape, new java.util.HashSet<>());
+            return shape.length() == 0 ? key : key + '\0' + shape;
+        }
+        private void typeAnnotations(ITypeBinding type, StringBuilder shape, java.util.Set<String> path) {
+            if (type == null) return;
+            String key = type.getKey();
+            if (!path.add(key)) return;
+            StringBuilder own = new StringBuilder();
+            for (IAnnotationBinding annotation : type.getTypeAnnotations()) {
+                annotationShape(annotation, own);
+            }
+            if (own.length() > 0) shape.append(key).append('{').append(own).append('}');
+            StringBuilder child = new StringBuilder();
+            typeAnnotations(type.getComponentType(), child, path);
+            if (child.length() > 0) shape.append("array(").append(child).append(')');
+            ITypeBinding[] arguments = type.getTypeArguments();
+            for (int i = 0; i < arguments.length; i++) {
+                child.setLength(0);
+                typeAnnotations(arguments[i], child, path);
+                if (child.length() > 0) shape.append("arg").append(i).append('(').append(child).append(')');
+            }
+            child.setLength(0);
+            typeAnnotations(type.getBound(), child, path);
+            if (child.length() > 0) shape.append("bound(").append(child).append(')');
+            child.setLength(0);
+            typeAnnotations(type.getDeclaringClass(), child, path);
+            if (child.length() > 0) shape.append("owner(").append(child).append(')');
+            path.remove(key);
+        }
+        private void shapeText(StringBuilder shape, String text) {
+            if (text == null) shape.append("-1:");
+            else shape.append(text.length()).append(':').append(text);
+        }
+        // AnnotationBinding.toString uses a simple name, so it cannot identify
+        // equally named annotations (or values) from different packages.
+        private void annotationShape(IAnnotationBinding annotation, StringBuilder shape) {
+            shape.append('@');
+            shapeText(shape, annotation.getAnnotationType().getKey());
+            IMemberValuePairBinding[] pairs = annotation.getDeclaredMemberValuePairs();
+            shape.append(pairs.length).append('(');
+            for (IMemberValuePairBinding pair : pairs) {
+                shapeText(shape, pair.getName());
+                annotationValueShape(pair.getValue(), shape);
+            }
+            shape.append(')');
+        }
+        private void annotationValueShape(Object value, StringBuilder shape) {
+            if (value instanceof IAnnotationBinding annotation) annotationShape(annotation, shape);
+            else if (value instanceof IBinding binding) {
+                shape.append('K'); shapeText(shape, binding.getKey());
+            } else if (value instanceof Object[] values) {
+                shape.append(values.length).append('[');
+                for (Object element : values) annotationValueShape(element, shape);
+                shape.append(']');
+            } else {
+                shapeText(shape, value == null ? null : value.getClass().getName());
+                shapeText(shape, value == null ? null : value.toString());
+            }
+        }
+        private AnnotationOut[] annotations(IAnnotationBinding[] input) {
+            AnnotationOut[] output = new AnnotationOut[input.length];
+            for (int i = 0; i < input.length; i++) output[i] = annotation(input[i]);
+            return output;
+        }
+        private AnnotationOut annotation(IAnnotationBinding annotation) {
+            AnnotationOut output = new AnnotationOut();
+            output.annotationType = binding(annotation.getAnnotationType());
+            IMemberValuePairBinding[] pairs = annotation.getDeclaredMemberValuePairs();
+            output.members = new MemberValueOut[pairs.length];
+            for (int i = 0; i < pairs.length; i++) {
+                MemberValueOut member = new MemberValueOut();
+                member.name = str(pairs[i].getName());
+                member.value = annotationValue(pairs[i].getValue());
+                output.members[i] = member;
+            }
+            return output;
+        }
+        private AnnotationValueOut annotationValue(Object value) {
+            AnnotationValueOut output = new AnnotationValueOut();
+            if (value instanceof Boolean) { output.kind = 1; output.text = str(value.toString()); }
+            else if (value instanceof Number) { output.kind = 2; output.text = str(value.toString()); }
+            else if (value instanceof Character character) { output.kind = 3; output.text = str(Integer.toString(character)); }
+            else if (value instanceof String text) { output.kind = 4; output.text = str(text); }
+            else if (value instanceof ITypeBinding type) { output.kind = 5; output.binding = binding(type); }
+            else if (value instanceof IVariableBinding variable) { output.kind = 6; output.binding = binding(variable); }
+            else if (value instanceof IAnnotationBinding annotation) { output.kind = 7; output.annotation = annotation(annotation); }
+            else if (value instanceof Object[] values) {
+                output.kind = 8;
+                output.values = new AnnotationValueOut[values.length];
+                for (int i = 0; i < values.length; i++) output.values[i] = annotationValue(values[i]);
+            }
+            return output;
         }
     }
 }

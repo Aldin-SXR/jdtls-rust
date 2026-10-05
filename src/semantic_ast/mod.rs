@@ -20,6 +20,7 @@
 //! [`Ast::source`].
 
 pub mod finder;
+pub mod annotation;
 pub mod irritants;
 pub mod node_kind;
 pub mod problem;
@@ -232,7 +233,11 @@ pub struct Binding {
     pub type_bounds: Vec<BindingId>,
     pub element_type: Option<BindingId>,
     pub component_type: Option<BindingId>,
+    pub annotations: Vec<annotation::Annotation>,
+    pub type_annotations: Vec<annotation::Annotation>,
+    pub parameter_annotations: Vec<Vec<annotation::Annotation>>,
     pub bound: Option<BindingId>,
+    pub wildcard: Option<BindingId>,
     pub generic_type_of_wildcard: Option<BindingId>,
     pub dimensions: i32,
     /// Declared members of source types and their superclass hierarchy.
@@ -385,7 +390,11 @@ impl Ast {
                 type_bounds: bl(&o.tbs).unwrap_or_default(),
                 element_type: b(o.el),
                 component_type: b(o.cmp),
+                annotations: o.ann.as_deref().unwrap_or_default().iter().filter_map(|a| annotation::decode(a, &s)).collect(),
+                type_annotations: o.tann.as_deref().unwrap_or_default().iter().filter_map(|a| annotation::decode(a, &s)).collect(),
+                parameter_annotations: o.pann.as_deref().unwrap_or_default().iter().map(|v| v.iter().filter_map(|a| annotation::decode(a, &s)).collect()).collect(),
                 bound: b(o.bound),
+                wildcard: b(o.wc),
                 generic_type_of_wildcard: b(o.gt),
                 dimensions: o.dim,
                 declared_methods: bl(&o.dmeth),
@@ -978,6 +987,9 @@ impl<'a> BindingRef<'a> {
     }
     pub fn bound(&self) -> Option<BindingRef<'a>> {
         self.opt(self.data().bound)
+    }
+    pub fn wildcard(&self) -> Option<BindingRef<'a>> {
+        self.opt(self.data().wildcard)
     }
     pub fn dimensions(&self) -> i32 {
         self.data().dimensions

@@ -7,7 +7,7 @@ use crate::{
         constructors::ConstructorImportContext,
         preferences,
     },
-    rewrite::{import_rewrite::ImportRewrite, ASTRewrite, RNode},
+    rewrite::{import_rewrite::{ImportRewrite, TypeLocation}, ASTRewrite, RNode},
     semantic_ast::{modifier, Ast, BindingRef, NodeId, NodeKind},
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -117,10 +117,11 @@ fn stub(
 ) -> anyhow::Result<String> {
     let m = e.method;
     let mut source = String::new();
-    let result = imports.add_import_binding(
+    let result = imports.add_import_type_string(
         m.return_type()
             .ok_or_else(|| anyhow::anyhow!("Missing delegate return type"))?,
         context,
+        TypeLocation::ReturnType,
     );
     let mut names = Vec::new();
     let params = m.parameter_types();
@@ -134,21 +135,17 @@ fn stub(
             .unwrap_or_else(|| format!("arg{i}"));
         let name = accessors::naming::method_argument(&raw, options, &names);
         names.push(name.clone());
-        let mut t = replace(*p);
+        let t = replace(*p);
         let varargs = m.is_varargs() && i == params.len() - 1 && t.is_array();
-        if varargs {
-            t = t.component_type().unwrap_or(t);
-        }
         parameters.push(format!(
-            "{}{} {name}",
-            imports.add_import_binding(t, context),
-            if varargs { "..." } else { "" }
+            "{} {name}",
+            imports.add_import_parameter_type_string(t, context, varargs),
         ));
     }
     let throws: Vec<_> = m
         .exception_types()
         .iter()
-        .map(|t| imports.add_import_binding(*t, context))
+        .map(|t| imports.add_import_type_string(*t, context, TypeLocation::Exception))
         .collect();
     if preferences::generate_comments() {
         let owner = e
@@ -207,7 +204,7 @@ fn stub(
                     t.name(),
                     bounds
                         .iter()
-                        .map(|b| imports.add_import_binding(*b, context))
+                        .map(|b| imports.add_import_type_string(*b, context, TypeLocation::TypeBound))
                         .collect::<Vec<_>>()
                         .join(" & ")
                 )

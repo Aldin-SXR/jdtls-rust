@@ -21,8 +21,8 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 | Ported but `#[ignore]`d | 45 | 2.2% |
 | Not ported yet | 1,276 | 61.1% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,364 passed,
-0 failed and 46 ignored across 82 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,401 passed,
+0 failed and 46 ignored across 83 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
 `tests/binary_editor_regressions.rs`, 5 tests;
 `tests/correction_regressions.rs`, 3 tests;
@@ -40,7 +40,8 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,364 passed
 `tests/dead_code_regressions.rs`, 26 tests;
 `tests/unused_code_regressions.rs`, 32 tests;
 `tests/exception_correction_regressions.rs`, 22 tests;
-`tests/expression_correction_regressions.rs`, 35 tests) and unit
+`tests/expression_correction_regressions.rs`, 35 tests;
+`tests/type_import_regressions.rs`, 37 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
 module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
 those duplicate runs are excluded from the upstream-port counts.
@@ -348,9 +349,11 @@ assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matche
   `${enclosing_type}` names still need parity work. Project templates and ordinary
   named nested types are covered.
 * **Constructor generation dependencies:** inherited and external-package scope
-  conflicts, inherited nullness annotations and annotated array dimensions still
-  need the complete ScopeAnalyzer/StubUtility2Core dependency ports. Constructor
-  comments share the template resolver/global preference limitations above.
+  conflicts, inherited declaration/nullness annotations and redundant-nullness
+  filtering still need the complete ScopeAnalyzer/StubUtility2Core dependency
+  ports. Ordinary type-use annotations, annotated array dimensions and varargs
+  now use the shared AST import builder. Constructor comments share the template
+  resolver/global preference limitations above.
 * **toString dependencies:** complete cross-unit source-range ordering, external
   scope/import conflicts and global/date/time/user template resolvers remain
   unfinished. Standalone ASTParser still requires the running VM system library;
@@ -360,16 +363,19 @@ assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matche
   conflicts, inherited nullness and type-use annotation rendering still require
   the full ScopeAnalyzer/import-rewrite dependency ports. Comments share the
   global/date/time/user template limitations above.
-* **Delegate generation dependencies:** parameter, nullness and type-use annotation
-  rendering, inherited/external import-scope conflicts and global/date/time/user
-  template resolvers still require the shared StubUtility2Core and ScopeAnalyzer
+* **Delegate generation dependencies:** inherited declaration/nullness annotations,
+  redundant-nullness filtering, inherited/external import-scope conflicts and
+  global/date/time/user template resolvers still require the shared StubUtility2Core and ScopeAnalyzer
   dependency ports. Available source ranges and parameter names now cover current
-  and referenced source units and binary source attachments.
-* **Override/implementation dependencies:** inherited nullness, parameter and
-  type-use annotations, complete inherited/external scope conflicts and global
-  date/time/user body-template resolvers still need the shared dependency ports.
+  and referenced source units and binary source attachments. Ordinary type-use
+  annotations, annotated dimensions and varargs use the shared AST import builder.
+* **Override/implementation dependencies:** inherited declaration/nullness annotations,
+  redundant-nullness filtering, complete inherited/external scope conflicts and
+  global date/time/user body-template resolvers still need the shared dependency ports.
   Existing unqualified source-type references now prevent conflicting imports;
-  exact custom-JDK binding contents retain the standalone-parser limitation above.
+  ordinary type-use annotations, annotated dimensions and varargs use the shared
+  AST import builder. Exact custom-JDK binding contents retain the
+  standalone-parser limitation above.
 * **Lombok** is not supported in any feature.
 
 ## Saved work branches
@@ -987,3 +993,61 @@ tests remain unported. Full annotation-aware import/type-node construction,
 general ScopeAnalyzer/NamingConventions, string cleanup and suppression processors
 remain unfinished, alongside the earlier conversion, scope and template gaps.
 This batch does not claim full feature parity.
+
+## Annotation-aware type imports and generation evidence
+
+The AST overload of JDT `ImportRewrite.addImport`, its annotation/value builders,
+owner-type construction and array dimensions are now ported to Rust. Constructors,
+overrides, delegates, unimplemented-method corrections and expression-local
+corrections use this builder. The string overload remains available for binding
+DTOs and annotation-free names.
+
+* Java exports annotation type bindings, explicitly declared member values,
+  declaration/parameter/type annotations and capture wildcards as compiler facts.
+  It exports distinct type variants when annotations differ on the type, arguments,
+  owner or array dimensions, while preserving original compiler keys for semantic
+  equality. Annotation fingerprints use qualified compiler identities and
+  structured values, rather than JDT's simple-name display text.
+* Rust creates marker, single-member and normal annotations; nested annotations;
+  boolean, numeric, UTF-16 character and escaped string values; enum accesses;
+  class literals; and singleton/empty/multiple-value annotation arrays. Defaults
+  remain implicit and constant expressions use the compiler's resolved values.
+  Annotation types, enum owners and class literal types participate in import
+  conflict handling. An annotated qualified type retains its annotation after
+  the final qualifier, as required by Java syntax.
+* Rust retains annotated primitives, type variables, wildcard bounds, generic
+  arguments, parameterized owners and every array dimension. The parameter helper
+  ports `StubUtility2Core.createParameters`' special varargs handling: annotations
+  on the innermost dimension move to `...`, with other dimensions kept in order.
+  Capture normalization and the nested-capture check now follow JDT's wildcard
+  rules instead of discarding every captured type argument.
+* Thirty-seven own regressions exercise these paths through the public generation
+  and correction endpoints, including differently annotated variants of the same
+  type, equally named annotations in different packages, repeated annotations,
+  import conflicts, negative/numeric/escaped values, unsaved buffers, inherited
+  signatures and constructor/delegate/override varargs. Thirty-six file-backed
+  cases pass on jdt.ls 1.58.0; one Rust-only case covers untitled, in-memory and
+  nonexistent-file documents without writing sources to disk.
+* The first full run exposed an existing harness defect: quick-fix problem
+  positions were round-tripped through disk text, relocating selections when
+  an unsaved buffer had different lines. The harness now retains the diagnostic's
+  working-copy position. Fixtures and expected edits are unchanged. The isolated
+  open-buffer dead-code case passes after this correction.
+
+Verification: `CARGO_INCREMENTAL=0 cargo test --no-fail-fast --bins --tests`
+passes all 83 targets (1,401 passing, zero failures, 46 ignored).
+`type-import-oracle-final-1.log` verifies all 92 affected upstream ports across
+constructor, delegate, override and abstract/local-correction classes, plus the
+37-case harness run (36 actual oracle cases and one virtual-document early return).
+`type-import-full-suite-final-2.log` and the oracle log are under
+`target/parity-evidence/` (gitignored). The preceding full run is retained as
+`type-import-full-suite-final-1.log`; its only failure was the harness selection
+issue described above.
+
+This shared dependency port adds no upstream test methods to the ledger: 811
+ports, 766 passing and 45 ignored remain, with 1,276 upstream methods unported.
+`TypeLocation` and the annotation-filter context hook are available, but the
+redundant-nullness filter and inherited declaration/nullness annotation policy
+remain unported. Other generation callers still need to adopt the AST overload;
+full ScopeAnalyzer, NamingConventions and template dependencies remain unfinished.
+Full feature parity is not yet achieved.

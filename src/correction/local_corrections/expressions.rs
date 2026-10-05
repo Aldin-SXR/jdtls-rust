@@ -4,7 +4,7 @@ use crate::{
         edit::Env, kind, messages, relevance, Change, Context, CuChange, ProblemLocation, Proposal,
     },
     rewrite::{
-        import_rewrite::{DefaultContext, ImportRewrite},
+        import_rewrite::{DefaultContext, ImportRewrite, TypeLocation},
         text_edit::{EditKind, EditTree},
         ASTRewrite, RNode,
     },
@@ -175,9 +175,8 @@ pub async fn expression_variable(
     let mut rw = ASTRewrite::new(ctx.ast.clone());
     let mut imports = ImportRewrite::create_for_corrections(ctx.ast.clone(), &options);
     let (typ, type_name) = if let Some(binding) = binding {
-        let name = imports.add_import_binding(binding, &DefaultContext);
         (
-            rw.create_string_placeholder(&name, NodeKind::SimpleType),
+            imports.add_import_type(binding, &mut rw, &DefaultContext, TypeLocation::Unknown),
             binding.name().to_owned(),
         )
     } else if let Some(typ) = expression.child("type") {

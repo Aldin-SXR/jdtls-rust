@@ -44,6 +44,8 @@ pub struct BindingOut {
     pub el: i32,
     pub cmp: i32,
     pub bound: i32,
+    #[serde(default = "minus_one")]
+    pub wc: i32,
     pub gt: i32,
     pub dim: i32,
     pub it: Option<Vec<i32>>,
@@ -69,10 +71,36 @@ pub struct BindingOut {
     pub assign: Option<Vec<i32>>,
     #[serde(default = "minus_one")]
     pub fim: i32,
+    pub ann: Option<Vec<AnnotationOut>>,
+    pub tann: Option<Vec<AnnotationOut>>,
+    pub pann: Option<Vec<Vec<AnnotationOut>>>,
     #[serde(default = "minus_one", rename = "nameOffset")]
     pub name_offset: i32,
     #[serde(default = "minus_one", rename = "sourceOffset")]
     pub source_offset: i32,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct AnnotationOut {
+    #[serde(rename = "annotationType")]
+    pub annotation_type: i32,
+    pub members: Vec<MemberValueOut>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct MemberValueOut {
+    pub name: i32,
+    pub value: AnnotationValueOut,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct AnnotationValueOut {
+    pub kind: i32,
+    pub text: i32,
+    pub binding: i32,
+    pub annotation: Option<AnnotationOut>,
+    pub values: Option<Vec<AnnotationValueOut>>,
 }
 
 #[derive(Debug, Default, Deserialize)]

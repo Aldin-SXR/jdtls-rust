@@ -7,7 +7,7 @@ use crate::{
         delegates::erasure,
     },
     rewrite::{
-        import_rewrite::{DefaultContext, ImportRewrite},
+        import_rewrite::{DefaultContext, ImportRewrite, TypeLocation},
         ASTRewrite, RNode,
     },
     semantic_ast::{modifier, Ast, BindingRef, NodeId, NodeKind},
@@ -105,7 +105,7 @@ fn stub(
                     "{} extends {}",
                     t.name(),
                     bs.iter()
-                        .map(|b| imports.add_import_binding(*b, context))
+                        .map(|b| imports.add_import_type_string(*b, context, TypeLocation::TypeBound))
                         .collect::<Vec<_>>()
                         .join(" & ")
                 )
@@ -119,7 +119,7 @@ fn stub(
         m.return_type()
             .ok_or_else(|| anyhow::anyhow!("No overridden return type"))?,
     );
-    let result = imports.add_import_binding(ret, context);
+    let result = imports.add_import_type_string(ret, context, TypeLocation::ReturnType);
     let mut names = Vec::new();
     let params = m.parameter_types();
     let mut parameters = Vec::new();
@@ -132,22 +132,18 @@ fn stub(
             .unwrap_or_else(|| format!("arg{i}"));
         let name = accessors::naming::method_argument(&raw, options, &names);
         names.push(name.clone());
-        let mut t = replace(*p);
+        let t = replace(*p);
         let varargs = m.is_varargs() && i == params.len() - 1 && t.is_array();
-        if varargs {
-            t = t.component_type().unwrap_or(t);
-        }
         parameters.push(format!(
-            "{}{} {name}",
-            imports.add_import_binding(t, context),
-            if varargs { "..." } else { "" }
+            "{} {name}",
+            imports.add_import_parameter_type_string(t, context, varargs),
         ));
     }
     source.push_str(&format!("{result} {}({})", m.name(), parameters.join(", ")));
     let throws: Vec<_> = m
         .exception_types()
         .iter()
-        .map(|t| imports.add_import_binding(*t, context))
+        .map(|t| imports.add_import_type_string(*t, context, TypeLocation::Exception))
         .collect();
     if !throws.is_empty() {
         source.push_str(&format!(" throws {}", throws.join(", ")));

@@ -329,8 +329,10 @@ fn problem_range(text: &str, d: &Value) -> Value {
             }
         }
     }
-    let offset = to_offset(text, &start);
-    to_range(text, offset as i64, 0)
+    // Diagnostics already carry positions in the current working copy. A
+    // round-trip through disk text moves the cursor when an unsaved buffer has
+    // different lines (AbstractQuickFixTest.getRange uses that working copy).
+    json!({ "start": start, "end": start })
 }
 
 fn line_starts(text: &str) -> Vec<usize> {

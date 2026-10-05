@@ -6,7 +6,7 @@ use super::java_model::{FieldDecl, Member};
 use crate::analysis::dispatcher::Dispatcher;
 use crate::correction::{edit::Env, Context, CuChange};
 use crate::rewrite::import_rewrite::{
-    ImportRewrite, ImportRewriteContext, KIND_TYPE, RES_NAME_CONFLICT, RES_NAME_FOUND,
+    ImportRewrite, ImportRewriteContext, TypeLocation, KIND_TYPE, RES_NAME_CONFLICT, RES_NAME_FOUND,
 };
 use crate::rewrite::text_edit::EditTree;
 use crate::rewrite::{ASTRewrite, RNode};
@@ -321,9 +321,9 @@ fn imported_type(
     imports: &mut ImportRewrite,
     binding: BindingRef<'_>,
     context: &ConstructorImportContext,
+    location: TypeLocation,
 ) -> RNode {
-    let label = imports.add_import_binding(binding, context);
-    rewrite.create_string_placeholder(&label, NodeKind::SimpleType)
+    imports.add_import_type(binding, rewrite, context, location)
 }
 /// ContextSensitiveImportRewriteContext's source type scope. Bindings remain
 /// data; Rust determines whether a simple imported name is shadowed.
@@ -449,7 +449,7 @@ fn constructor_stub(
             let bounds = type_bounds
                 .into_iter()
                 .filter(|_| !implicit_object)
-                .map(|b| imported_type(rewrite, imports, b, &context))
+                .map(|b| imported_type(rewrite, imports, b, &context, TypeLocation::TypeBound))
                 .collect();
             rewrite.put_list(node, "typeBounds", bounds);
             type_parameters.push(node);
@@ -464,18 +464,15 @@ fn constructor_stub(
             let name = accessors::naming::method_argument(&raw, options, &names);
             names.push(name.clone());
             let varargs = super_constructor.is_varargs() && i == types.len() - 1 && typ.is_array();
-            let typ = if varargs {
-                typ.component_type().unwrap_or(*typ)
-            } else {
-                *typ
-            };
-            let typ = imported_type(rewrite, imports, typ, &context);
-            parameters.push(parameter(rewrite, typ, &name, varargs));
+            let (typ, annotations) = imports.add_import_parameter_type(*typ, rewrite, &context, varargs);
+            let declaration = parameter(rewrite, typ, &name, varargs);
+            rewrite.put_list(declaration, "varargsAnnotations", annotations);
+            parameters.push(declaration);
         }
         thrown = super_constructor
             .exception_types()
             .into_iter()
-            .map(|t| imported_type(rewrite, imports, t, &context))
+            .map(|t| imported_type(rewrite, imports, t, &context, TypeLocation::Exception))
             .collect();
         let invocation = rewrite.new_node(NodeKind::SuperConstructorInvocation);
         let arguments = names.iter().map(|n| rewrite.new_simple_name(n)).collect();
@@ -507,7 +504,7 @@ fn constructor_stub(
         let typ = binding
             .var_type()
             .ok_or_else(|| anyhow::anyhow!("No field type"))?;
-        let typ = imported_type(rewrite, imports, typ, &context);
+        let typ = imported_type(rewrite, imports, typ, &context, TypeLocation::Parameter);
         parameters.push(parameter(rewrite, typ, &name, false));
         let field_name = rewrite.new_simple_name(binding.name());
         let lhs = if binding.name() == name {
