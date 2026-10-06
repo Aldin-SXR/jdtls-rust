@@ -157,7 +157,8 @@ pub fn class_file_uri(ws: &Workspace, project: &str, desc: &ClassFileDesc) -> St
         classfile::memento_root_path(&root, proj.map(|p| p.root.as_path()), &project_roots(ws))
     };
     let attributes = match proj {
-        Some(p) if desc.module.is_some() => {
+        Some(p) if desc.module.is_some() || p.runtime.as_ref()
+            .is_some_and(|vm| vm.libraries.iter().any(|lib| lib.path == root)) => {
             // JRE container library: JDT adds the javadoc location, then the
             // container entry's own attributes.
             let mut a = Vec::new();
@@ -173,7 +174,8 @@ pub fn class_file_uri(ws: &Workspace, project: &str, desc: &ClassFileDesc) -> St
             });
             a
         }
-        None if desc.module.is_some() => ws.runtime_registry.as_ref().and_then(|r| r.default_install())
+        None if desc.module.is_some() || ws.runtime_registry.as_ref().and_then(|r| r.default_install())
+            .is_some_and(|vm| vm.libraries.iter().any(|lib| lib.path == root)) => ws.runtime_registry.as_ref().and_then(|r| r.default_install())
             .and_then(|vm| vm.libraries.iter().find(|l| l.path == root).and_then(|l| l.javadoc.clone()))
             .or_else(|| classfile::jdk_javadoc_location(&root))
             .map(|url| vec![("javadoc_location".to_owned(), url)])

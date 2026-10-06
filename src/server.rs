@@ -871,6 +871,7 @@ impl LanguageServer for JavaLanguageServer {
                         "java.project.resolveSourceAttachment".to_owned(),
                         "java.project.changeImportedProjects".to_owned(),
                         "java.project.import".to_owned(),
+                        "java.edit.organizeImports".to_owned(),
                         "java.edit.stringFormatting".to_owned(),
                         "java.navigate.openTypeHierarchy".to_owned(),
                         "java.navigate.resolveTypeHierarchy".to_owned(),
@@ -2216,6 +2217,17 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<Value>> {
         match params.command.as_str() {
+            "java.edit.organizeImports" => {
+                let env = self.format_env().await;
+                let edit = crate::features::organize_imports::command(&env, &params.arguments)
+                    .await.map_err(|error| internal_error(error.to_string()))?;
+                if self.client_prefs().is_workspace_apply_edit_supported() {
+                    let _ = self.client.apply_edit(edit).await;
+                    Ok(Some(serde_json::json!({})))
+                } else {
+                    Ok(Some(serde_json::to_value(edit).expect("serializable import edits")))
+                }
+            }
             "java.edit.smartSemicolonDetection" => {
                 if !crate::features::preferences::get_bool("java.edit.smartSemicolonDetection.enabled")
                     .unwrap_or(false)

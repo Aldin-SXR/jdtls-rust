@@ -3,8 +3,6 @@
 use super::edit::Env;
 use super::handler::{Entry, Request};
 use super::{kind, messages, Change, CuChange, LazyChange, Proposal};
-use crate::analysis::semantic::BridgeResponse;
-use crate::rewrite::text_edit::EditTree;
 use crate::semantic_ast::NodeKind;
 use tower_lsp::lsp_types::{CodeActionOrCommand, Url};
 
@@ -82,95 +80,12 @@ struct OrganizeImports {
 
 #[tower_lsp::async_trait]
 impl LazyChange for OrganizeImports {
+    fn changes_only(&self) -> bool { true }
+
     async fn compute(&self, env: &Env<'_>) -> anyhow::Result<Vec<CuChange>> {
-        // Unused imports must be removable even when their compiler warning
-        // is disabled or absent from the request's diagnostic context.
-        let mut context = env.dispatcher.context_for(Some(&self.uri)).await;
-        context.options.insert(
-            "org.eclipse.jdt.core.compiler.problem.unusedImport".into(),
-            "warning".into(),
-        );
-        let ast =
-            crate::semantic_ast::fetch_with(env.dispatcher, self.uri.as_str(), context).await?;
         let options = env.options(self.uri.as_str()).await;
-        let mut imports = crate::rewrite::import_rewrite::ImportRewrite::create_for_corrections(
-            ast.clone(),
-            &options,
-        );
-        for import in ast.root().list("imports") {
-            let name = import
-                .child("name")
-                .map(|n| n.identifier())
-                .unwrap_or_default();
-            let compiler_unused = ast.problems.iter().any(|p| {
-                p.id == crate::semantic_ast::problem::UnusedImport
-                    && p.source_start >= import.start() as i32
-                    && p.source_end < import.end() as i32
-            });
-            // ECJ can suppress unused-import warnings when another type is
-            // unresolved. For a resolved single-type import, inspect its
-            // references directly so removals and missing imports still combine.
-            let unreferenced_type = !import.flag("static")
-                && !import.flag("onDemand")
-                && import
-                    .binding()
-                    .is_some_and(|binding| binding.is_type() && !binding.is_recovered())
-                && !ast.all_nodes().any(|node| {
-                    if !node.is(NodeKind::SimpleName) {
-                        return false;
-                    }
-                    let mut parent = node.parent();
-                    while let Some(p) = parent {
-                        if p.is(NodeKind::ImportDeclaration) || p.is(NodeKind::PackageDeclaration) {
-                            return false;
-                        }
-                        parent = p.parent();
-                    }
-                    if node.parent().is_some_and(|p| {
-                        p.is(NodeKind::QualifiedName)
-                            && p.child("name").is_some_and(|n| n.id == node.id)
-                    }) {
-                        return false;
-                    }
-                    node.binding().is_some_and(|b| {
-                        b.is_type()
-                            && (b.erasure().unwrap_or(b).qualified_name() == name
-                                || b.is_recovered()
-                                    && node.identifier() == name.rsplit('.').next().unwrap_or(""))
-                    })
-                });
-            if compiler_unused || unreferenced_type {
-                let qualified = if import.flag("onDemand") {
-                    format!("{name}.*")
-                } else {
-                    name
-                };
-                if import.flag("static") {
-                    imports.remove_static_import(&qualified);
-                } else {
-                    imports.remove_import(&qualified);
-                }
-            }
-        }
-        // Type-search import selection still comes from the bridge. Rust
-        // merges its candidates with removals in one ImportRewrite, preserving
-        // the existing whitespace and avoiding overlapping import-block edits.
-        if let BridgeResponse::TextEdits { edits, .. } =
-            env.dispatcher.organize_imports(&self.uri).await?
-        {
-            for edit in edits {
-                for line in edit.new_text.lines() {
-                    if let Some(name) = line
-                        .strip_prefix("import ")
-                        .and_then(|s| s.strip_suffix(';'))
-                    {
-                        imports.add_import(name, &crate::rewrite::import_rewrite::DefaultContext);
-                    }
-                }
-            }
-        }
-        Ok(vec![
-            CuChange::edits(ast, EditTree::new()).with_imports(imports)
-        ])
+        Ok(crate::features::organize_imports::operation::organize(
+            env.dispatcher, &self.uri, &options,
+        ).await?.into_iter().collect())
     }
 }

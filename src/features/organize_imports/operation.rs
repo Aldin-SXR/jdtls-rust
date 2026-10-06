@@ -1,4 +1,4 @@
-//! The restore-existing-imports path of JDT's OrganizeImportsOperation.
+//! Rust port of JDT's OrganizeImportsOperation reference and import selection.
 //! JDT supplies the resolved DOM and binary type names; reference collection,
 //! search scope, ambiguity selection and ImportRewrite run in Rust.
 
@@ -11,12 +11,14 @@ use crate::features::{
     preferences,
 };
 use crate::index::type_index::{self, TypeEntry, ACC_ANNOTATION, ACC_ENUM, ACC_INTERFACE};
-use crate::rewrite::import_rewrite::{DefaultContext, ImportRewrite, TypeLookup};
+use crate::rewrite::import_rewrite::{
+    DefaultContext, ImportRewrite, ImportRewriteContext, TypeLookup, RES_NAME_UNKNOWN,
+};
 use crate::semantic_ast::{self, modifier, BindingRef, Node, NodeKind};
 use std::collections::{BTreeMap, HashSet};
 use tower_lsp::lsp_types::{Url, WorkspaceEdit};
 
-pub(super) fn import_names(text: &str) -> HashSet<String> {
+pub(crate) fn import_names(text: &str) -> HashSet<String> {
     crate::features::java_model::parse(text)
         .imports
         .iter()
@@ -42,16 +44,113 @@ impl TypeLookup for SearchTypes {
     }
 }
 
-pub(super) async fn missing_imports(
+/// ImportNotFound declarations are retained only when an unresolved reference
+/// needs them. An exact simple-name import takes precedence over on-demand ones.
+struct UnresolvableImports {
+    types: BTreeMap<String, Vec<String>>,
+    statics: BTreeMap<String, Vec<String>>,
+}
+impl UnresolvableImports {
+    fn new(ast: &semantic_ast::Ast) -> Self {
+        let mut imports = Self {
+            types: BTreeMap::new(),
+            statics: BTreeMap::new(),
+        };
+        for import in ast.root().list("imports") {
+            if !ast.problems.iter().any(|problem| {
+                problem.id == semantic_ast::problem::ImportNotFound
+                    && problem.source_start >= import.start() as i32
+                    && problem.source_end < import.end() as i32
+            }) {
+                continue;
+            }
+            let Some(name) = import.child("name") else {
+                continue;
+            };
+            let qualified = if import.flag("onDemand") {
+                format!("{}.*", name.identifier())
+            } else {
+                name.identifier()
+            };
+            let simple = qualified.rsplit('.').next().unwrap_or("").to_owned();
+            let map = if import.flag("static") {
+                &mut imports.statics
+            } else {
+                &mut imports.types
+            };
+            map.entry(simple).or_default().push(qualified);
+        }
+        imports
+    }
+    fn matching(&self, name: &str, is_static: bool) -> &[String] {
+        let map = if is_static {
+            &self.statics
+        } else {
+            &self.types
+        };
+        map.get(name)
+            .or_else(|| map.get("*"))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+}
+
+struct UnresolvableContext;
+impl ImportRewriteContext for UnresolvableContext {
+    fn find_in_context(&self, _: &ImportRewrite, _: &str, _: &str, _: i32) -> i32 {
+        RES_NAME_UNKNOWN
+    }
+}
+
+pub(crate) async fn missing_imports(
     d: &Dispatcher,
     uri: &Url,
     ctx: RequestContext,
     copied: &HashSet<String>,
 ) -> anyhow::Result<Option<WorkspaceEdit>> {
-    let ast = semantic_ast::fetch_with(d, uri.as_str(), ctx.clone()).await?;
     let (options, _) = d.options_for(Some(uri)).await;
-    let mut imports = ImportRewrite::create_for_corrections(ast.clone(), &options);
+    let Some(change) = rewrite_imports(d, uri, ctx, copied, true, &options).await? else {
+        return Ok(None);
+    };
+    let edits = crate::correction::edit::tree_to_text_edits(
+        &change.ast.source,
+        change.edits.as_ref().expect("import edits"),
+    );
+    Ok(Some(WorkspaceEdit {
+        changes: Some([(uri.clone(), edits)].into()),
+        ..Default::default()
+    }))
+}
+
+/// Organize without restoring imports (the command and source action). Paste
+/// uses the same reference collection with restoreExistingImports=true.
+pub(crate) async fn organize(
+    d: &Dispatcher,
+    uri: &Url,
+    options: &BTreeMap<String, String>,
+) -> anyhow::Result<Option<crate::correction::CuChange>> {
+    let ctx = d.context_for(Some(uri)).await;
+    rewrite_imports(d, uri, ctx, &HashSet::new(), false, options).await
+}
+
+async fn rewrite_imports(
+    d: &Dispatcher,
+    uri: &Url,
+    ctx: RequestContext,
+    copied: &HashSet<String>,
+    restore: bool,
+    options: &BTreeMap<String, String>,
+) -> anyhow::Result<Option<crate::correction::CuChange>> {
+    let ast = semantic_ast::fetch_with(d, uri.as_str(), ctx.clone()).await?;
+    let (threshold, static_threshold) = preferences::import_thresholds();
+    let mut imports = ImportRewrite::create(ast.clone(), restore).configure(
+        &preferences::import_order(),
+        threshold,
+        static_threshold,
+        options,
+    );
     let package = imports.package_name().to_owned();
+    let unresolvable = UnresolvableImports::new(&ast);
     let mut old_single = HashSet::new();
     let mut old_demand = HashSet::new();
     for imp in ast.root().list("imports") {
@@ -171,6 +270,10 @@ pub(super) async fn missing_imports(
         };
         if let Some(t) = selected {
             imports.add_import(&full_name(t), &DefaultContext);
+        } else {
+            for name in unresolvable.matching(&name, false) {
+                imports.add_import(name, &UnresolvableContext);
+            }
         }
     }
     let mut statics_seen = HashSet::new();
@@ -190,6 +293,15 @@ pub(super) async fn missing_imports(
                 );
             }
         } else if statics_seen.insert(name.identifier()) {
+            let existing = unresolvable.matching(&name.identifier(), true);
+            if !existing.is_empty() {
+                for qualified in existing {
+                    if let Some((owner, member)) = qualified.rsplit_once('.') {
+                        imports.add_static_import(owner, member, false, &UnresolvableContext);
+                    }
+                }
+                continue;
+            }
             // JDT searches completion favorites for an unresolved static
             // selector. Use raw ECJ proposals, not LSP completion items.
             let favorites = preferences::organize_import_favorites();
@@ -279,14 +391,10 @@ pub(super) async fn missing_imports(
     let tree = imports
         .rewrite_imports(&types)
         .map_err(|e| anyhow::anyhow!(e.0))?;
-    let edits = crate::correction::edit::tree_to_text_edits(&ast.source, &tree);
-    if edits.is_empty() {
+    if tree.apply(&ast.source) == ast.source {
         return Ok(None);
     }
-    Ok(Some(WorkspaceEdit {
-        changes: Some([(uri.clone(), edits)].into()),
-        ..Default::default()
-    }))
+    Ok(Some(crate::correction::CuChange::edits(ast, tree)))
 }
 
 fn full_name(t: &TypeEntry) -> String {
@@ -394,15 +502,13 @@ async fn search_types(d: &Dispatcher, uri: &Url, ctx: &RequestContext) -> Search
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     let include_tests = crate::features::code_lens::is_test_source(&ws, uri.as_str());
-    let project = ws.project_for_uri(uri);
-    let uses_jdk = project.map_or(true, |p| {
-        ws.project_closure(p).iter().any(|p| {
-            p.classpath.iter().any(|e| {
-                e.path
-                    .starts_with("org.eclipse.jdt.launching.JRE_CONTAINER")
-            })
-        })
-    });
+    // Dispatcher already resolves the owning project's VM, including the
+    // default project's VM for virtual buffers. Explicit runtimes are searched
+    // through their libraries, never supplemented with the running VM.
+    let uses_jdk = ctx
+        .options
+        .get(crate::project::INCLUDE_RUNNING_VM)
+        .map_or(true, |value| value == "true");
     let mut types = Vec::new();
     let mut files: Vec<_> = ctx.files.iter().collect();
     files.sort_by_key(|(u, _)| *u);

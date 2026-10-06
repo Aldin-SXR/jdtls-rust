@@ -1633,7 +1633,33 @@ final class SemanticIndexService {
             }
         }
         List<List<Object>> types = new ArrayList<>();
-        if (Files.isRegularFile(p)) {
+        if (RuntimeImage.isImage(archive)) {
+            // A selected VM contributes its module image, not the classes in
+            // the jrt-fs provider jar. Return only class-file facts to Rust.
+            try {
+                FileSystem image = RuntimeImage.open(archive);
+                try (Stream<Path> modules = Files.list(image.getPath("/modules"))) {
+                    for (Path module : (Iterable<Path>) modules::iterator) {
+                        try (Stream<Path> walk = Files.walk(module)) {
+                            for (Path file : (Iterable<Path>) walk::iterator) {
+                                String name = module.relativize(file).toString();
+                                if (!name.endsWith(".class")) continue;
+                                try {
+                                    List<Object> type = readType(Files.readAllBytes(file), name);
+                                    if (type != null) {
+                                        type.set(5, module.getFileName().toString());
+                                        types.add(type);
+                                    }
+                                } catch (Exception ignored) {
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (IOException e) {
+                LOG.warning("listTypes: cannot read VM image " + archive + ": " + e);
+            }
+        } else if (Files.isRegularFile(p)) {
             try (ZipFile z = new ZipFile(p.toFile())) {
                 Enumeration<? extends ZipEntry> en = z.entries();
                 while (en.hasMoreElements()) {
@@ -1698,7 +1724,7 @@ final class SemanticIndexService {
         return byModule;
     }
 
-    /** Reads a class file header the way JDT's {@code BinaryIndexer} does; null for local/anonymous/synthetic. */
+    /** Class header, module (filled by VM image listings), and SourceFile attribute. */
     private static List<Object> readType(byte[] bytes, String entryName) throws Exception {
         if (entryName.endsWith("module-info.class") || entryName.endsWith("package-info.class")) return null;
         ClassFileReader r = new ClassFileReader(bytes, entryName.toCharArray());
@@ -1707,7 +1733,7 @@ final class SemanticIndexService {
         int slash = name.lastIndexOf('/');
         String pkg = slash < 0 ? "" : name.substring(0, slash).replace('/', '.');
         String simple = name.substring(slash + 1);
-        List<Object> t = new ArrayList<>(5);
+        List<Object> t = new ArrayList<>(7);
         t.add(pkg);
         t.add(simple);
         t.add(r.getModifiers());
@@ -1716,6 +1742,8 @@ final class SemanticIndexService {
         char[][] interfaces = r.getInterfaceNames();
         if (interfaces != null) for (char[] i : interfaces) ifs.add(new String(i).replace('/', '.'));
         t.add(ifs);
+        t.add(null);
+        t.add(ClassFileService.sourceFileName(bytes));
         return t;
     }
 
@@ -1762,7 +1790,7 @@ final class SemanticIndexService {
         e.typeChain = Arrays.asList(simple.split("\\$"));
         e.classFile = simple + ".class";
         e.archive = archive;
-        e.module = module;
+        e.module = module != null ? module : t.size() > 5 ? (String) t.get(5) : null;
         e.superclassKey = sup == null ? null : "L" + sup.replace('.', '/') + ";";
         List<String> ik = new ArrayList<>();
         for (String i : ifs) ik.add("L" + i.replace('.', '/') + ";");

@@ -98,6 +98,7 @@ pub(super) async fn append(
             archive,
             module,
             class_file,
+            source_file_name,
         } = t.origin
         else {
             continue;
@@ -107,7 +108,7 @@ pub(super) async fn append(
             module,
             package_name: t.package,
             class_file_name: class_file,
-            source_file_name: None,
+            source_file_name,
         };
         let Ok(uri) = Url::parse(&class_file_uri(&ws, project, &desc)) else {
             continue;

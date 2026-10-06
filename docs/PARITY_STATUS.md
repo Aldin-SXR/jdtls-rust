@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 849 | 40.7% |
-| Passing | 838 | 40.2% |
+| Ported | 861 | 41.3% |
+| Passing | 850 | 40.7% |
 | Ported but `#[ignore]`d | 11 | 0.5% |
-| Not ported yet | 1,238 | 59.3% |
+| Not ported yet | 1,226 | 58.7% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,625 passed,
-0 failed and 12 ignored across 93 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,655 passed,
+0 failed and 12 ignored across 95 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 3 tests;
 `tests/binary_editor_regressions.rs`, 6 tests;
 `tests/content_provider_regressions.rs`, 4 tests;
@@ -32,6 +32,7 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,625 passed
 `tests/projects_manager_regressions.rs`, 14 tests;
 `tests/jvm_configuration_regressions.rs`, 5 tests;
 `tests/build_path_regressions.rs`, 9 tests;
+`tests/organize_imports_regressions.rs`, 18 tests;
 `tests/paste_regressions.rs`, 9 tests;
 `tests/smart_detection_regressions.rs`, 13 tests;
 `tests/accessor_regressions.rs`, 18 tests;
@@ -62,7 +63,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 |---|---:|---:|---:|---:|
 | handlers | 871 | 562 | 558 | 64% |
 | javadoc | 32 | 32 | 32 | 100% |
-| commands | 60 | 11 | 11 | 18% |
+| commands | 60 | 23 | 23 | 38% |
 | managers | 211 | 134 | 127 | 60% |
 | correction | 604 | 93 | 93 | 15% |
 | refactoring | 119 | 0 | 0 | 0% |
@@ -133,6 +134,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | JVMConfiguratorTest | `jvm_configurator_test` | 7 | 7 | 0 | 7/7 direct calls to the actual JVM/runtime APIs and unchanged upstream VM extension |
 | commands/BuildPathCommandTest | `commands_build_path_command_test` | 4 | 4 | 0 | 4/4; unchanged Gradle 8.5 fixture runs on Java 21 |
 | commands/DiagnosticsCommandTest | `commands_diagnostics_command_test` | 2 | 2 | 0 | 2/2 |
+| commands/OrganizeImportsCommandTest | `commands_organize_imports_command_test` | 12 | 12 | 0 | 12/12; direct package collector plus per-CU wire operation, see below |
 | commands/TypeHierarchyCommandTest | `commands_type_hierarchy_command_test` | 5 | 5 | 0 | 5/5 |
 | javadoc/JavaDoc2MarkdownConverterTest | unit tests in `src/javadoc/converter.rs` | 19 | 19 | 0 | n/a (unit tests) |
 | javadoc/JavaDoc2PlainTextConverterTest | unit tests in `src/javadoc/converter.rs` | 2 | 2 | 0 | n/a (unit tests) |
@@ -1552,5 +1554,84 @@ probe observed only the initial update message, so verifying the original
 direct-manager assertion also requires the proper Gradle/job setup. This is
 recorded as missing model parity, not a passing test or a complete Gradle port.
 
-The current ledger is 849 ports, 838 passing, 11 ignored and 1,238 unported.
+At the Gradle restoration, the ledger was 849 ports, 838 passing, 11 ignored and 1,238 unported.
 Full feature parity remains unfinished.
+
+
+## Organize-imports command and shared Rust operation
+
+All 12 original `OrganizeImportsCommandTest` methods are ported with unchanged
+source strings, imported projects, expected text, edit-range assertions and
+settings. The new `java.edit.organizeImports` handler returns
+`WorkspaceEdit.changes` for clients without `workspace.applyEdit`; clients that
+advertise it receive the same edit through `workspace/applyEdit`, and the
+command returns `{}`. Empty edits follow that branch too. Client acknowledgement
+does not mutate the server buffer or disk.
+
+The command and source action now use the Rust reference collector, scoped type
+search and `ImportRewrite` previously used by paste. Organize imports rebuilds
+the import list; paste retains existing imports. This removes the source
+assistant's dependence on the approximate Java organizer. Rust owns unused-import
+removal, sorting, normal/static wildcard thresholds, filtered type selection,
+noninteractive ambiguity handling, module descriptors, lexical scope, Javadoc
+and static favorite selection. Compiler `ImportNotFound` facts preserve existing
+unresolvable imports only for references that still need them, preferring exact
+imports over wildcard matches.
+
+The pinned public Eclipse command has a directory-routing quirk:
+`getFileForLocation` returns an `IFile` handle for a descendant directory, so the
+command tries to organize it as a file and produces no edits. The original
+package test invokes `organizeImportsInPackageFragment` directly instead. Its
+Rust port uses the production package collector followed by the same per-unit
+wire operation, preserving both original output assertions. The collector keeps
+Eclipse's substring match for package names. A separate wire regression verifies
+the directory command's no-op behavior, including source roots and packages.
+Project commands collect all source roots and tests, excluding non-source and
+unchanged units.
+
+Eighteen additional regressions cover negotiated/rejected client edits, raw and
+invalid arguments, ambiguity without a chooser, filters, unresolved normal/static
+imports, wildcard expansion, recovered syntax, deferred source-action edits,
+project scopes, CRLF/Unicode comments and unsaved text. Sixteen resource-backed
+cases pass against Eclipse; the direct Rust package-collector regression and the
+virtual-buffer requirement are recorded separately. `untitled:`, `inmemory:` and
+absent-file buffers organize without creating source files.
+
+Type listings now read each selected VM's module image rather than treating
+`jrt-fs.jar` as an ordinary archive or adding the running VM's classes. Module
+names and the `SourceFile` attribute remain compiler facts. Binary symbol
+locations reuse the existing Rust URI builder, retaining the module, original
+source filename and classpath attributes while the handle names the class file.
+The same indexed source-filename facts now reach binary implementation links.
+Per-project symbol searches omit referenced projects' runtime libraries and
+avoid adding a second running-VM copy. The runtime regression verifies Java
+21/25 import-search isolation and symbol uniqueness when Java 21 is available
+through `JAVA21_HOME` or the local `.oracle/jdks/` installation; the native-image
+assertions always run. The JVM notification regression waits for its
+asynchronous warning before checking the unchanged notification count and payload; a request round trip
+does not guarantee notification completion.
+
+Evidence in `target/parity-evidence/`:
+
+* `organize-command-oracle-3.log`: all 12 original methods, including the direct
+  package collector with per-CU Eclipse edits.
+* `organize-regressions-oracle-4.log`: 16 resource-backed comparisons; direct
+  collector and virtual-buffer cases are distinct from those comparisons.
+* `organize-runtime-symbol-rust-final-5.log`: 19 existing symbol ports, all five
+  JVM configuration regressions and all 18 import regressions.
+* `organize-final-oracle-7.log`: all 12 command ports, the 16 resource-backed
+  import comparisons and all 19 existing symbol methods pass with the final
+  module/source-filename metadata. Collector and virtual cases remain separate.
+* `organize-runtime-image-oracle-final-5.log`: selected Java 21/25 imports and
+  symbols, original source filenames, module names and build-path attributes.
+* `organize-runtime-notification-oracle-final-1.log`: unchanged JVM notification
+  assertions with an explicit asynchronous-notification wait.
+* `organize-existing-oracle-final-1.log`: existing source-action and paste targets
+  pass (3, 22 and 9 tests; Rust-only virtual paste remains explicitly excluded).
+* `organize-full-suite-final-3.log`: 95 targets, 1,655 passes, zero failures and
+  12 ignores, including the optional external Javadoc corpus.
+
+The ledger is now 861 ports, 850 passing, 11 ignored and 1,226 unported.
+Interactive import-choice callbacks, the rest of the organize-imports handler
+suite and save-action/cleanup integration remain unfinished. This batch does
+not claim full Eclipse feature parity.

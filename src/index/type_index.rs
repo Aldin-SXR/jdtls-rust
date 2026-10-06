@@ -29,7 +29,7 @@ pub enum TypeOrigin {
     /// A source file: URI and the byte span of the type name.
     Source { uri: String, name: (usize, usize) },
     /// A class file in an archive (jar/folder) or a JDK module.
-    Binary { archive: String, module: Option<String>, class_file: String },
+    Binary { archive: String, module: Option<String>, class_file: String, source_file_name: Option<String> },
 }
 
 #[derive(Debug, Clone)]
@@ -202,7 +202,12 @@ fn parse_types(v: Option<&Value>, archive: &str, module: Option<String>) -> Vec<
             super_types: t.get(3).and_then(Value::as_str).into_iter().chain(
                 t.get(4).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
             ).map(str::to_owned).collect(),
-            origin: TypeOrigin::Binary { archive: archive.to_owned(), module: module.clone(), class_file: format!("{simple}.class") },
+            origin: TypeOrigin::Binary {
+                archive: archive.to_owned(),
+                module: module.clone().or_else(|| t.get(5).and_then(Value::as_str).map(str::to_owned)),
+                class_file: format!("{simple}.class"),
+                source_file_name: t.get(6).and_then(Value::as_str).map(str::to_owned),
+            },
         });
     }
     out

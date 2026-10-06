@@ -2,9 +2,8 @@
 //! `java/searchSymbols` extension) over the Rust type index.
 
 use super::code_lens::position;
-use super::java_element;
 use super::preferences;
-use super::semantic::{Elem, Semantic};
+use super::semantic::Semantic;
 use crate::analysis::dispatcher::Dispatcher;
 use crate::index::type_index::{
     self, name_matches, pattern_match, validate_rule, MatchRule, MethodEntry, TypeEntry, TypeOrigin, ACC_ANNOTATION,
@@ -137,22 +136,21 @@ impl Results {
                 let Ok(uri) = Url::parse(uri) else { return };
                 Location { uri, range: Range { start: position(text, name.0), end: position(text, name.1) } }
             }
-            TypeOrigin::Binary { archive, module, class_file } => {
+            TypeOrigin::Binary { archive, module, class_file, source_file_name } => {
                 if source_only {
                     return;
                 }
-                let e = Elem {
-                    kind: "type".into(),
-                    package_name: Some(t.package.clone()),
-                    archive: Some(archive.clone()),
+                let desc = crate::classfile::ClassFileDesc {
+                    package_name: t.package.clone(),
+                    root: archive.clone(),
                     module: module.clone(),
-                    class_file: Some(class_file.clone()),
-                    ..Default::default()
+                    class_file_name: class_file.clone(),
+                    source_file_name: source_file_name.clone(),
                 };
-                let Some(uri) = java_element::class_file_uri(&e, &scope.project).and_then(|u| Url::parse(&u).ok()) else {
+                let Ok(uri) = Url::parse(&super::navigation::class_file_uri(&scope.workspace, &scope.project, &desc)) else {
                     return;
                 };
-                Location { uri, range: java_element::zero_range() }
+                Location { uri, range: Range::default() }
             }
         };
         let deprecated = t.modifiers & ACC_DEPRECATED != 0;
@@ -198,6 +196,7 @@ fn map_kind(flags: u32) -> SymbolKind {
 
 /// The types (and source methods) of a search scope.
 struct SearchScope {
+    workspace: Workspace,
     project: String,
     types: Vec<TypeEntry>,
     methods: Vec<MethodEntry>,
@@ -251,6 +250,10 @@ async fn scope(dispatcher: &Dispatcher, ws: &Workspace, project_name: Option<&st
                 if exclude_tests && lib.is_test {
                     continue;
                 }
+                if target.is_some_and(|owner| owner.name != p.name)
+                    && p.runtime.as_ref().is_some_and(|vm| vm.libraries.iter().any(|runtime| runtime.path == lib.path)) {
+                    continue;
+                }
                 let s = lib.path.to_string_lossy().into_owned();
                 if !archives.contains(&s) {
                     archives.push(s);
@@ -265,7 +268,15 @@ async fn scope(dispatcher: &Dispatcher, ws: &Workspace, project_name: Option<&st
             }
         }
         let missing: Vec<String> = archives.iter().filter(|a| type_index::cached_archive(a).is_none()).cloned().collect();
-        let include_jdk = projects.is_empty() || projects.iter().any(|p| p.classpath.iter().any(|entry| entry.is_jre_container()));
+        // Configured VMs are already present as explicit library images.
+        // Include the running VM only for projects that use that fallback.
+        let include_jdk = if projects.is_empty() {
+            dispatcher.context_for(None).await.options.get(crate::project::INCLUDE_RUNNING_VM)
+                .map_or(true, |include| include == "true")
+        } else {
+            projects.iter().any(|p| p.runtime.is_none()
+                && p.classpath.iter().any(|entry| entry.is_jre_container()))
+        };
         let need_jdk = include_jdk && type_index::cached_jdk().is_none();
         if !missing.is_empty() || need_jdk {
             let sem = Semantic::new(dispatcher).await;
@@ -278,7 +289,7 @@ async fn scope(dispatcher: &Dispatcher, ws: &Workspace, project_name: Option<&st
         }
         if include_jdk { types.extend(type_index::cached_jdk().unwrap_or_default()); }
     }
-    SearchScope { project, types, methods, texts }
+    SearchScope { workspace: ws.clone(), project, types, methods, texts }
 }
 
 async fn dispatcher_classpath(dispatcher: &Dispatcher) -> Vec<String> {

@@ -196,6 +196,13 @@ fn invalid_runtime_notifications_use_the_negotiated_client_capability() {
         } else {
             "window/showMessage"
         };
+        // Settings notifications run concurrently with requests. A cheap
+        // round trip does not guarantee the warning has arrived yet.
+        let notification = ws.client().recv_until(std::time::Duration::from_secs(30), |n|
+            n["method"] == method && n["params"]["message"].as_str()
+                .is_some_and(|m| m.starts_with("Invalid runtime for JavaSE-21:")))
+            .expect("runtime validation notification");
+        ws.client().notifications.push(notification);
         let notifications: Vec<_> = ws
             .client()
             .notifications

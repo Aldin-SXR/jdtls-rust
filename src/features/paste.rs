@@ -1,7 +1,7 @@
 //! Rust port of jdt.ls `PasteEventHandler`: string escaping, import edits
 //! against an isolated working copy, and Java file destination selection.
 
-mod imports;
+use super::organize_imports::operation as imports;
 
 use super::completion::doc::Doc;
 use super::java_model::{self, TypeKind};
