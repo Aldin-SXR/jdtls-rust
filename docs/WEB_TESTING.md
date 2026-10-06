@@ -28,6 +28,10 @@ Check the following in either editor:
    resolved to a type. Restore the imports to clear those errors.
 4. Hover over `items` after restoring the imports. Its Java signature should be
    shown as code, with source information below it.
+5. Remove only the `java.util.ArrayList` import, place the cursor on `ArrayList`,
+   and click **Quick Fix…**. Choose **Import 'java.util.ArrayList'**. The import
+   should be inserted and the error should disappear. Mouse clicks and keyboard
+   selection both work in the action menu.
 
 These demos use an unsaved non-project file. Eclipse JDT LS defaults to reporting
 only syntax errors for such files. The clients explicitly call
@@ -41,3 +45,13 @@ hover signatures rendered correctly, and validation persisted after reload.
 There were no console errors or failed requests. Local evidence is in
 `target/parity-evidence/web-java-browser-2.log`, with screenshots named
 `web-java-main.png`, `web-java-adapter.png`, and `web-java-imports-*.png`.
+
+The import quick-fix flow was also verified on both routes. The primary client
+now advertises code-action support and sends the original diagnostic (including
+its Java source, problem code and data) with a valid selection range. The adapter
+page enables its code-action providers and filters diagnostics to the selected
+markers. Both pages position the action widget so Monaco's stacking order keeps
+the clickable menu above its pointer guard. Selecting the import applies the
+exact edit and clears the diagnostic. Evidence is in
+`target/parity-evidence/import-browser-final-3.log` (keyboard),
+`import-browser-final-4.log` (mouse), and `import-quickfix-*.png`.

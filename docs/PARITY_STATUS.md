@@ -1276,3 +1276,15 @@ the upstream mapping test remains unfinished and excluded from the passing count
 The current ledger is 836 ported, 809 passing, 27 ignored and 1,251 unported.
 `web-and-provider-full-suite-1.log` records the fresh full Rust run: 88 targets,
 1,531 passes, zero failures and 28 ignores (including the optional Javadoc corpus).
+
+The follow-up local web check also verifies applying a missing-import quick fix.
+The primary page previously omitted code-action capabilities and stripped the
+Java diagnostic source, code and data from its request, which produced no import
+action. It now preserves the diagnostic and uses a valid selection range. The
+adapter page enables its advanced providers and supplies only selected-marker
+diagnostics. A popup stacking fix lets mouse clicks reach the action menu. Both
+pages show **Import 'java.util.ArrayList'**, apply the exact import edit, and clear
+the unresolved-type error. Keyboard and mouse flows each pass two browser tests
+without console errors or failed requests (`import-browser-final-3.log` and
+`import-browser-final-4.log`). These changes are in the local, gitignored clients;
+they do not change the upstream-test ledger or require a Rust behavior change.
