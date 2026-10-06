@@ -16,19 +16,20 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 836 | 40.1% |
-| Passing | 822 | 39.4% |
-| Ported but `#[ignore]`d | 14 | 0.7% |
-| Not ported yet | 1,251 | 59.9% |
+| Ported | 838 | 40.2% |
+| Passing | 825 | 39.5% |
+| Ported but `#[ignore]`d | 13 | 0.6% |
+| Not ported yet | 1,249 | 59.8% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,547 passed,
-0 failed and 15 ignored across 88 test targets. That count also includes our own regression suite
-(`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 2 tests;
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,587 passed,
+0 failed and 14 ignored across 89 test targets. That count also includes our own regression suite
+(`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 3 tests;
 `tests/binary_editor_regressions.rs`, 6 tests;
 `tests/content_provider_regressions.rs`, 4 tests;
 `tests/correction_regressions.rs`, 3 tests;
 `tests/completion_regressions.rs`, 6 tests;
 `tests/project_download_regressions.rs`, 2 tests;
+`tests/projects_manager_regressions.rs`, 14 tests;
 `tests/paste_regressions.rs`, 9 tests;
 `tests/smart_detection_regressions.rs`, 13 tests;
 `tests/accessor_regressions.rs`, 18 tests;
@@ -46,8 +47,9 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,547 passed
 `tests/nullness_generation_regressions.rs`, 39 tests;
 `tests/uncaught_exception_regressions.rs`, 18 tests;
 `tests/allocation_correction_regressions.rs`, 24 tests) and unit
-tests that aren't ports. Five project-manager targets also compile the project
-module's 11 unit tests, and BasicFileDetector recompiles its detector unit test.
+tests that aren't ports. Six project-manager port targets and the additional
+project-manager regression target also compile the project module's 11 unit tests,
+and BasicFileDetector recompiles its detector unit test.
 ContentProviderManager also reuses three class-file URI unit tests.
 Those duplicate runs are excluded from the upstream-port counts.
 
@@ -58,7 +60,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | handlers | 871 | 562 | 558 | 64% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
-| managers | 211 | 132 | 122 | 58% |
+| managers | 211 | 134 | 125 | 59% |
 | correction | 604 | 93 | 93 | 15% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
@@ -140,7 +142,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | managers/InvisibleProjectPreferenceChangeListenerTest | `managers_invisible_project_preference_change_listener_test` | 6 | 6 | 0 | 6/6 |
 | managers/MavenProjectImporterTest | `managers_maven_project_importer_test` | 32 | 31 | 1 | 29/29 active LSP; 2 unit ports |
 | managers/MultiRootTest | `managers_multi_root_test` | 2 | 2 | 0 | 2/2 |
-| managers/ProjectsManagerTest | `managers_projects_manager_test` | 11 | 7 | 4 | 7/7 active; Gradle and internal initialization cases ignored |
+| managers/ProjectsManagerTest | `managers_projects_manager_test` | 13 | 10 | 3 | 10/10 active; direct empty-root initialization and resource filters verified through actual manager APIs; Gradle cases remain ignored |
 | managers/StandardProjectManagerTest | `managers_standard_project_manager_test` | 1 | 1 | 0 | n/a (unit port) |
 
 ## Ignored tests
@@ -148,7 +150,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 Every ignore names its reason in the test file (`#[ignore = "..."]`), and every
 ignored test remains counted as unfinished. All provider-manager ports now run
 with their original internal assertions. The separate optional
-`javadoc::converter::corpus_diff::corpus` unit test needs an external `JAVADOC_CORPUS`; it is the 15th ignored test in the full
+`javadoc::converter::corpus_diff::corpus` unit test needs an external `JAVADOC_CORPUS`; it is the 14th ignored test in the full
 Rust run and is excluded from the upstream-port count.
 
 | Reason | Count | Tests |
@@ -160,7 +162,6 @@ Rust run and is excluded from the upstream-port count.
 | Requires an installed JavaSE-1.8 or Java 26 VM | 4 | Eclipse `test_forbidden_reference`, `test_preview_features_disabled_by_default`; invisible `test_preview_features_enabled_by_default`; Maven `test_java26_project` |
 | Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
 | Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
-| Direct empty-root initialization has no equivalent public LSP call | 1 | ProjectsManager `test_create_default_project` |
 | Gradle model/update parity and a compatible Gradle VM | 3 | ProjectsManager `test_sending_ok_project_status`, `test_sending_warning_project_status`, `test_reload_gradle_project_marker` |
 
 ## Lifecycle/init integration evidence
@@ -333,6 +334,11 @@ assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matche
   whitespace differs between them; Rust restores whitespace from the DOM source
   range, retaining the upstream hover assertion (both snippet cases oracle pass).
   Other build differences may surface as more cases are ported.
+* **Resource filters:** the default filters, direct manager operations, saved-file
+  builds and tested Java regex forms work. Java-specific Unicode inline flags/properties,
+  string-encoded filter lists and arbitrary persisted `.project` matcher
+  descriptors remain unported. The tested forms do not establish complete
+  `java.util.regex.Pattern` compatibility.
 * **`java.signatureHelp.enabled`** defaults to `true`, where jdt.ls defaults to
   `false`. This keeps signature help working for clients that send no settings
   (lms-monaco, `web/`).
@@ -397,7 +403,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 |---|---:|---:|
 | Remaining quick fixes and assists (`correction`) | 536 | 26% |
 | Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
-| Remaining project managers | 79 | 4% |
+| Remaining project managers | 77 | 4% |
 | Refactoring | 119 | 6% |
 | Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 206 | 10% |
 | Core utilities, preferences, commands and the rest | 233 | 11% |
@@ -1329,3 +1335,54 @@ records 88 targets, 1,547 passes, zero failures and 15 ignores. Evidence lives i
 The ledger is now 836 ported, 822 passing, 14 ignored and 1,251 unported. Full
 feature parity remains unfinished; the remaining ignored ports and unported
 classes are still excluded from the passing count.
+
+## Default projects and resource filters
+
+`ProjectsManagerTest.testCreateDefaultProject` is restored with the original
+empty-root initialization, project count, non-null handle, identity and existence
+assertions. Two newly ported upstream methods, `testResourceFilters` and
+`testInvalidResourceFilters`, retain the original `maven/salut` fixture, folder
+handles, preference values and assertions. Rust materializes the default Java
+project's metadata and source/output directories; source buffers remain virtual.
+
+The Rust project model owns managed resource filters. They match complete names,
+inherit through ancestors, include the upstream managed-filter sentinel, prune
+filtered files from source discovery and compilation, and leave the default
+project untouched. Invalid expressions are removed individually. The native
+regex engine uses Java syntax with named captures/backreferences enabled and
+Java's ASCII defaults for predefined classes. Actual Eclipse comparisons cover
+quoted literals, character-class intersections, lookarounds, numeric/named
+backreferences, possessive quantifiers, atomic groups, Unicode escapes, full-name
+matching and inherited filters. Broader Java regex compatibility remains a gap.
+
+Public settings updates retain the old list for null or missing values; an empty
+array removes filters. This differs from the direct manager setter, where null
+clears them. The saved-file regression verifies removal of old diagnostics,
+preservation of unaffected errors, retention across null/unrelated updates, and
+restoration after an empty list and full rebuild. A separate Rust lifecycle
+regression verifies type errors and their correction in absent-file, `untitled:`
+and `inmemory:` buffers with a filter that would exclude all project resources.
+The oracle product doesn't publish diagnostics for that absent-file buffer;
+virtual-buffer support remains an explicit Rust requirement, not an upstream port.
+
+A thin test-only fragment calls the real `StandardProjectsManager`, `Preferences`
+and `Resource.isFiltered` APIs. The shared fixture builder creates separate
+`projects-manager` and `content-provider` products without changing the original
+oracle. The Rust fixtures call the production model directly. No manager or
+regex implementation is substituted in the Eclipse product.
+
+Verification evidence in `target/parity-evidence/`:
+
+* `project-filters-oracle-final-2.log`: all 10 active ProjectsManager upstream
+  ports pass; the subsequent additional configuration regression exposed the
+  need for a full rebuild after reintroducing filtered sources.
+* `project-filter-regressions-oracle-final-3.log`: all 14 additional project
+  regressions pass against Eclipse, excluding the 11 reused Rust unit tests.
+* `oracle-fixture-builder-provider-final-1.log`: all 21 upstream provider-manager
+  ports still pass against Eclipse after generalizing the fixture builder.
+* `project-filters-full-suite-final-1.log`: 89 targets, 1,587 passes, zero failures
+  and 14 ignores, including the optional external Javadoc corpus.
+
+The ledger now has 838 upstream ports, 825 passing, 13 ignored and 1,249 unported.
+Full feature parity remains unfinished, including the three ignored Gradle
+manager ports and the unported cancellation/importer manager cases.

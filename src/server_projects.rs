@@ -19,7 +19,12 @@ impl JavaLanguageServer {
 
     /// Install `ws` as the workspace model: register its source files, the
     /// file watchers, and rebuild.
-    pub(crate) async fn install_workspace(&self, ws: Workspace) {
+    pub(crate) async fn install_workspace(&self, mut ws: Workspace) {
+        let settings = self.current_import_settings().await;
+        ws.configure_filters(&settings.resource_filters);
+        if let Err(error) = ws.ensure_default_project() {
+            tracing::error!("Unable to create default Java project: {error}");
+        }
         let files: Vec<Url> = ws
             .java_files()
             .into_keys()
@@ -188,6 +193,10 @@ impl JavaLanguageServer {
         let roots = self.roots.read().await.clone();
         let mut changed = false;
         let mut error: Option<String> = None;
+        if old.resource_filters != new.resource_filters {
+            ws.configure_filters(&new.resource_filters);
+            changed = true;
+        }
         if old.source_paths != new.source_paths {
             for p in ws
                 .projects

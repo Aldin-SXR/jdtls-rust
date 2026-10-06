@@ -2,17 +2,22 @@
 """Build a test fragment in an isolated copy of the real Eclipse oracle.
 
 The original product is never changed. No manager/decompiler implementation is
-compiled here: the fragment supplies upstream fake extensions and a call adapter.
+compiled here: the fragment supplies a call adapter and, where required, the
+upstream tests' fake extensions.
 """
+import argparse
 import os
 from pathlib import Path
 import shutil
 import subprocess
 
 repo = Path(__file__).resolve().parent.parent
-source = repo / "tests/oracle/content-provider"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("fixture", choices=["content-provider", "projects-manager"])
+fixture = parser.parse_args().fixture
+source = repo / "tests/oracle" / fixture
 oracle = Path(os.environ.get("JDTLS_ORACLE_HOME", repo / ".oracle/jdtls-1.58.0")).resolve()
-product = repo / "target/content-provider-oracle"
+product = repo / "target" / f"{fixture}-oracle"
 classes = product / "classes"
 classes.mkdir(parents=True, exist_ok=True)
 plugins = product / "plugins"
@@ -32,7 +37,7 @@ def java_tool(name):
 classpath = os.pathsep.join(str(p) for p in (oracle / "plugins").glob("*.jar"))
 subprocess.run([java_tool("javac"), "--release", "21", "-cp", classpath, "-d", str(classes),
                 *(str(p) for p in (source / "src").rglob("*.java"))], check=True)
-jar_name = "jdtls.rust.contentprovider.tests_1.0.0.jar"
+jar_name = f"jdtls.rust.{fixture.replace('-', '')}.tests_1.0.0.jar"
 shutil.copyfile(source / "plugin.xml", classes / "fragment.xml")
 subprocess.run([java_tool("jar"), "--create", "--file", str(plugins / jar_name),
                 "--manifest", str(source / "MANIFEST.MF"), "-C", str(classes), "."], check=True)

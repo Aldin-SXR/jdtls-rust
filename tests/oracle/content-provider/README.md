@@ -24,7 +24,7 @@ CARGO_INCREMENTAL=0 cargo test --test managers_content_provider_manager_test
 JDTLS_ORACLE=1 CARGO_INCREMENTAL=0 cargo test --test managers_content_provider_manager_test -- --test-threads=1 --skip fixture::classfile::tests
 ```
 
-Oracle mode automatically runs `scripts/prepare-content-provider-oracle.py`.
+Oracle mode automatically runs `scripts/prepare-oracle-fixture.py content-provider`.
 The script compiles only the test fragment, symlinks the original oracle
 plugins into `target/content-provider-oracle`, and adds the fragment to copied
 configurations. It sets the isolated installation area explicitly because the

@@ -19,6 +19,7 @@ pub mod jdt_defaults;
 pub mod maven;
 pub mod null_analysis;
 pub mod prefs;
+pub mod resource_filters;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -203,6 +204,8 @@ pub struct Project {
     pub options: BTreeMap<String, String>,
     /// Maven: the selected profiles (`org.eclipse.m2e.core.selectedProfiles`).
     pub selected_profiles: String,
+    /// Managed resource filters, excluding the default project.
+    pub resource_filters: resource_filters::ResourceFilters,
 }
 
 impl Project {
@@ -222,6 +225,7 @@ impl Project {
             project_deps: Vec::new(),
             options: BTreeMap::new(),
             selected_profiles: String::new(),
+            resource_filters: resource_filters::ResourceFilters::default(),
         }
     }
 
@@ -333,10 +337,17 @@ impl Project {
     }
 
     pub fn source_folder_for(&self, path: &Path) -> Option<&SourceFolder> {
+        if self.is_filtered(path) {
+            return None;
+        }
         self.source_folders
             .iter()
             .filter(|sf| path.starts_with(&sf.path) && !self.is_excluded(path, &sf.path))
             .max_by_key(|sf| sf.path.components().count())
+    }
+
+    pub fn is_filtered(&self, path: &Path) -> bool {
+        self.resource_filters.is_filtered(&self.root, path)
     }
 
     /// Whether `path` is excluded from the source entry at `folder`
@@ -370,6 +381,7 @@ impl Project {
             for entry in walkdir::WalkDir::new(&sf.path)
                 .follow_links(true)
                 .into_iter()
+                .filter_entry(|entry| !self.is_filtered(entry.path()))
                 .flatten()
             {
                 let p = entry.path();
@@ -427,6 +439,7 @@ pub struct ImportSettings {
     pub maven: maven::MavenSettings,
     /// `java.compile.nullAnalysis.*`.
     pub null_analysis: null_analysis::NullAnalysisSettings,
+    pub resource_filters: resource_filters::ResourceFilters,
 }
 
 impl ImportSettings {
@@ -451,6 +464,7 @@ impl ImportSettings {
                 mode: "disabled".to_owned(),
                 ..Default::default()
             },
+            resource_filters: resource_filters::ResourceFilters::jdtls_default(),
         }
     }
 
@@ -481,6 +495,41 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// `IWorkspaceRoot.getProjects`, including the default project handle.
+    pub fn all_projects(&self) -> Vec<Project> {
+        let mut projects = self.projects.clone();
+        if let Some(root) = &self.default_project {
+            projects.push(default_java_project(root));
+        }
+        projects.sort_by(|a, b| a.name.cmp(&b.name));
+        projects
+    }
+    /// Materialize the default Java project created by empty-root initialization
+    /// or needed by a standalone buffer. Source buffers themselves stay virtual.
+    pub fn ensure_default_project(&self) -> std::io::Result<()> {
+        let Some(root) = &self.default_project else {
+            return Ok(());
+        };
+        std::fs::create_dir_all(root.join("src"))?;
+        std::fs::create_dir_all(root.join("bin"))?;
+        let description = root.join(".project");
+        if !description.exists() {
+            std::fs::write(description, format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription><name>{DEFAULT_PROJECT_NAME}</name><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name><arguments/></buildCommand></buildSpec><natures><nature>{JAVA_NATURE}</nature></natures></projectDescription>\n"))?;
+        }
+        let classpath = root.join(".classpath");
+        if !classpath.exists() {
+            std::fs::write(classpath, format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<classpath><classpathentry kind=\"src\" path=\"src\"/><classpathentry kind=\"con\" path=\"{JRE_CONTAINER}\"/><classpathentry kind=\"output\" path=\"bin\"/></classpath>\n"))?;
+        }
+        Ok(())
+    }
+
+    pub fn configure_filters(&mut self, filters: &resource_filters::ResourceFilters) {
+        for project in &mut self.projects {
+            if project.kind != ProjectKind::Default {
+                project.resource_filters = filters.clone();
+            }
+        }
+    }
     /// Import every project found under `roots`, mirroring jdt.ls
     /// `ProjectsManager.initializeProjects`: for each root the importers run
     /// in order Gradle (300) → Maven (400) → Eclipse (1000) → Invisible
@@ -699,6 +748,17 @@ impl Workspace {
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
     }
+}
+
+/// The default project's Java model, shared by the manager and project commands.
+pub fn default_java_project(location: &Path) -> Project {
+    let mut project = Project::new(DEFAULT_PROJECT_NAME, location, ProjectKind::Default);
+    project.natures = vec![JAVA_NATURE.to_owned()];
+    let mut source = ClasspathEntry::new(EntryKind::Source, format!("/{DEFAULT_PROJECT_NAME}/src"));
+    source.location = Some(location.join("src"));
+    project.classpath = vec![source, ClasspathEntry::new(EntryKind::Container, JRE_CONTAINER)];
+    project.output = Some(location.join("bin"));
+    project
 }
 
 /// `java.io.File.toURI().toString()`: `file:` + absolute path (trailing `/`
@@ -1075,6 +1135,7 @@ impl ImportSettings {
         if let Some(ex) = pref_list(c, "java.import.exclusions") {
             s.exclusions = ex;
         }
+        s.resource_filters = s.resource_filters.updated_from_settings(c);
         if let Some(b) = pref_bool(c, "java.import.maven.enabled") {
             s.maven_enabled = b;
         }

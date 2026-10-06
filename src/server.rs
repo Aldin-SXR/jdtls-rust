@@ -368,7 +368,14 @@ impl JavaLanguageServer {
         let previous = self.workspace_snapshot();
         let import_progress = self.begin_maven_import_progress(&roots, &settings).await;
         let ws = tokio::task::spawn_blocking(move || {
-            crate::project::Workspace::import_with_previous(&roots, &settings, Some(&previous))
+            let mut ws = crate::project::Workspace::import_with_previous(
+                &roots, &settings, Some(&previous),
+            );
+            ws.configure_filters(&settings.resource_filters);
+            if let Err(error) = ws.ensure_default_project() {
+                tracing::error!("Unable to create default Java project: {error}");
+            }
+            ws
         })
         .await
         .unwrap_or_default();
@@ -2746,6 +2753,9 @@ pub(crate) fn vm_home(cfg: &Config) -> Option<std::path::PathBuf> {
 /// options that drive import (`triggerFiles`, `projectConfigurations`).
 fn import_settings(cfg: &Config) -> crate::project::ImportSettings {
     let mut s = crate::project::ImportSettings::from_settings(cfg.settings.as_ref());
+    if let Some(filters) = &cfg.resource_filters {
+        s.resource_filters = filters.clone();
+    }
     let to_paths = |uris: &[String]| -> Vec<std::path::PathBuf> {
         uris.iter()
             .filter_map(|u| Url::parse(u).ok())
@@ -2768,6 +2778,10 @@ fn import_settings(cfg: &Config) -> crate::project::ImportSettings {
 fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
     let mut restart_ecj = false;
     config.inlay_hints.update_from(settings);
+    let previous_filters = config.resource_filters.clone().unwrap_or_else(|| {
+        crate::project::ImportSettings::from_settings(config.settings.as_ref()).resource_filters
+    });
+    config.resource_filters = Some(previous_filters.updated_from_settings(settings));
     config.settings = Some(settings.clone());
 
     let updated_java_home = setting_string(settings, &["javaHome"])

@@ -6,7 +6,7 @@
 
 use crate::project::{
     java_file_uri, ClasspathEntry, EntryKind, Project, ProjectKind, Workspace,
-    DEFAULT_PROJECT_NAME, JAVA_NATURE, MAVEN_NATURE, WORKSPACE_LINK,
+    MAVEN_NATURE, WORKSPACE_LINK,
 };
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -30,27 +30,13 @@ pub struct Env<'a> {
 
 /// The default project (`jdt.ls-java-project`) as a model project.
 pub fn default_project(location: &Path) -> Project {
-    let mut p = Project::new(DEFAULT_PROJECT_NAME, location, ProjectKind::Default);
-    p.natures = vec![JAVA_NATURE.to_owned()];
-    let mut src = ClasspathEntry::new(EntryKind::Source, format!("/{DEFAULT_PROJECT_NAME}/src"));
-    src.location = Some(location.join("src"));
-    p.classpath = vec![
-        src,
-        ClasspathEntry::new(EntryKind::Container, crate::project::JRE_CONTAINER),
-    ];
-    p.output = Some(location.join("bin"));
-    p
+    crate::project::default_java_project(location)
 }
 
 /// Every workspace project (`IWorkspaceRoot.getProjects()`, sorted by name),
 /// including the default project when it exists.
 pub fn all_projects(ws: &Workspace) -> Vec<Project> {
-    let mut v: Vec<Project> = ws.projects.clone();
-    if let Some(loc) = &ws.default_project {
-        v.push(default_project(loc));
-    }
-    v.sort_by(|a, b| a.name.cmp(&b.name));
-    v
+    ws.all_projects()
 }
 
 /// `ProjectCommand.getAllJavaProjects` / `getAllProjects`.

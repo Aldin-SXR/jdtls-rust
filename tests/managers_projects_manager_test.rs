@@ -8,6 +8,11 @@
 //! `workspace/didChangeWatchedFiles` notification.
 
 mod common;
+#[path = "../src/project/mod.rs"]
+#[allow(dead_code, unused_imports)]
+mod project;
+#[path = "common/projects_manager_fixture.rs"]
+mod manager_fixture;
 
 use common::jdtls::*;
 use common::projects::*;
@@ -43,21 +48,48 @@ fn assert_projects(ws: &mut Workspace, expected: &[PathBuf]) {
 }
 
 #[test]
-#[ignore = "initializeProjects(emptyList) has no LSP equivalent: jdt.ls always gets root paths (rootUri, or the workspace location as fallback), so it never creates the default project at startup"]
 fn test_create_default_project() {
-    let mut ws = workspace();
-    let projects = ws.all_projects(true);
+    let mut ws = manager_fixture::workspace();
+    let projects = manager_fixture::initialize_empty(&mut ws);
     assert_eq!(1, projects.len());
     let result = projects.first().expect("default project");
-    let location = canonical(
-        &tower_lsp::lsp_types::Url::parse(result)
-            .unwrap()
-            .to_file_path()
-            .unwrap(),
-    );
+    assert_eq!(json!(true), result["isDefault"]);
+    let location = canonical(&PathBuf::from(
+        result["location"].as_str().expect("project location"),
+    ));
     let expected = canonical(&ws.workspace_project_location("jdt.ls-java-project"));
     assert_eq!(expected, location);
+    assert_eq!(
+        json!(true), result["exists"], "the default project does not exist"
+    );
     assert!(location.is_dir(), "the default project does not exist");
+}
+
+#[test]
+fn test_resource_filters() {
+    let mut ws = manager_fixture::workspace();
+    ws.import_projects(&["maven/salut"]);
+    let results = manager_fixture::filters(
+        &mut ws, "salut", &["/node_modules", "/.git", "/src"],
+        vec![json!({}), json!({"patterns":["node_modules", "\\.git"]}), json!({"patterns":null})],
+    );
+    assert_eq!(json!([false, false, false]), results[0]["filtered"]);
+    assert_eq!(json!([true, true, false]), results[1]["filtered"]);
+    assert_eq!(json!([false, false, false]), results[2]["filtered"]);
+}
+
+#[test]
+fn test_invalid_resource_filters() {
+    let mut ws = manager_fixture::workspace();
+    ws.import_projects(&["maven/salut"]);
+    let patterns = vec!["**/node_modules/**", "node_modules", "\\.git"];
+    assert_eq!(3, patterns.len());
+    let results = manager_fixture::filters(
+        &mut ws, "salut", &[], vec![json!({"patterns":patterns})],
+    );
+    assert_eq!(
+        2, results[0]["patterns"].as_array().expect("resource filters").len(),
+    );
 }
 
 #[test]

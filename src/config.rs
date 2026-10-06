@@ -52,6 +52,11 @@ pub struct Config {
     /// jdt.ls-style `settings` object (`{ "java": { ... } }`).
     pub settings: Option<serde_json::Value>,
 
+    /// Effective managed resource filters. Preference updates retain the old
+    /// value for missing/null keys; an empty array removes the filters.
+    #[serde(skip)]
+    pub resource_filters: Option<crate::project::resource_filters::ResourceFilters>,
+
     /// Client supports Markdown completion documentation
     /// (`ClientPreferences.isSupportsCompletionDocumentationMarkdown`).
     #[serde(skip)]
