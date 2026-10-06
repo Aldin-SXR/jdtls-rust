@@ -246,7 +246,6 @@ fn update_project(ws: &mut Workspace, project: &Path) {
 }
 
 #[test]
-#[ignore = "the oracle cannot update these old Gradle builds with the installed JDK 25: it reports ProjectStatus WARNING and retains the reload marker; requires a compatible Gradle VM and real Gradle model parity"]
 fn test_sending_ok_project_status() {
     let mut ws = workspace();
     ws.import_projects(&["gradle/simple-gradle"]);
@@ -308,7 +307,6 @@ fn test_reload_maven_project_marker() {
 }
 
 #[test]
-#[ignore = "the oracle cannot update these old Gradle builds with the installed JDK 25: it reports ProjectStatus WARNING and retains the reload marker; requires a compatible Gradle VM and real Gradle model parity"]
 fn test_reload_gradle_project_marker() {
     let mut ws = workspace();
     ws.import_projects(&["gradle/sample"]);

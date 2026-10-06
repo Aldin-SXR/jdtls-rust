@@ -17,12 +17,12 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 | | Tests | Share of upstream |
 |---|---:|---:|
 | Ported | 849 | 40.7% |
-| Passing | 836 | 40.1% |
-| Ported but `#[ignore]`d | 13 | 0.6% |
+| Passing | 838 | 40.2% |
+| Ported but `#[ignore]`d | 11 | 0.5% |
 | Not ported yet | 1,238 | 59.3% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,623 passed,
-0 failed and 14 ignored across 93 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,625 passed,
+0 failed and 12 ignored across 93 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 3 tests;
 `tests/binary_editor_regressions.rs`, 6 tests;
 `tests/content_provider_regressions.rs`, 4 tests;
@@ -63,7 +63,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | handlers | 871 | 562 | 558 | 64% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 11 | 11 | 18% |
-| managers | 211 | 134 | 125 | 59% |
+| managers | 211 | 134 | 127 | 60% |
 | correction | 604 | 93 | 93 | 15% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 7 | 7 | 10% |
@@ -147,7 +147,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | managers/InvisibleProjectPreferenceChangeListenerTest | `managers_invisible_project_preference_change_listener_test` | 6 | 6 | 0 | 6/6 |
 | managers/MavenProjectImporterTest | `managers_maven_project_importer_test` | 32 | 31 | 1 | 29/29 active LSP; 2 unit ports |
 | managers/MultiRootTest | `managers_multi_root_test` | 2 | 2 | 0 | 2/2 |
-| managers/ProjectsManagerTest | `managers_projects_manager_test` | 13 | 10 | 3 | 10/10 active; direct empty-root initialization and resource filters verified through actual manager APIs; Gradle cases remain ignored |
+| managers/ProjectsManagerTest | `managers_projects_manager_test` | 13 | 12 | 1 | 12/12 active, including unchanged Gradle successful-update and reload-marker assertions on Java 21; invalid-build status remains ignored |
 | managers/StandardProjectManagerTest | `managers_standard_project_manager_test` | 1 | 1 | 0 | n/a (unit port) |
 
 ## Ignored tests
@@ -155,7 +155,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 Every ignore names its reason in the test file (`#[ignore = "..."]`), and every
 ignored test remains counted as unfinished. All provider-manager ports now run
 with their original internal assertions. The separate optional
-`javadoc::converter::corpus_diff::corpus` unit test needs an external `JAVADOC_CORPUS`; it is the 14th ignored test in the full
+`javadoc::converter::corpus_diff::corpus` unit test needs an external `JAVADOC_CORPUS`; it is the 12th ignored test in the full
 Rust run and is excluded from the upstream-port count.
 
 | Reason | Count | Tests |
@@ -167,7 +167,7 @@ Rust run and is excluded from the upstream-port count.
 | Requires an installed JavaSE-1.8 or Java 26 VM | 4 | Eclipse `test_forbidden_reference`, `test_preview_features_disabled_by_default`; invisible `test_preview_features_enabled_by_default`; Maven `test_java26_project` |
 | Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
 | Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
-| Gradle model/update parity and a compatible Gradle VM | 3 | ProjectsManager `test_sending_ok_project_status`, `test_sending_warning_project_status`, `test_reload_gradle_project_marker` |
+| Gradle model/update parity for an invalid build | 1 | ProjectsManager `test_sending_warning_project_status`; successful-update and reload-marker assertions now run with the compatible Gradle VM |
 
 ## Lifecycle/init integration evidence
 
@@ -1520,7 +1520,37 @@ Evidence in `target/parity-evidence/`:
 * `build-path-existing-oracle-2.log`: all 29 existing diagnostics-command,
   lifecycle, multi-root and invisible source/output preference cases pass.
 
-The ledger is now 849 ports, 836 passing, 13 ignored and 1,238 unported.
-The compatible Gradle VM enables the unchanged source-path fixture; it does
-not complete Gradle model/update parity or restore the three ignored
-ProjectsManager Gradle cases. Full feature parity remains unfinished.
+At the source-path commit, the ledger was 849 ports, 836 passing, 13 ignored
+and 1,238 unported. Gradle model/update parity remains unfinished; the follow-up
+restoration below covers the two runtime-dependent project-manager cases.
+
+## Restored Gradle project-manager assertions
+
+`ProjectsManagerTest.testSendingOKProjectStatus` and
+`testReloadGradleProjectMarker` now run with their original fixtures, commands,
+notification counts/status and marker assertions. Their earlier oracle failure
+came from running Gradle 8.5 on Java 25. The unchanged fixtures and assertions
+pass on Java 21, so both ignores are removed. Run the project-manager oracle
+target with `JAVA_HOME` pointing to a compatible Java 21 installation, as for
+the source-path targets above.
+
+All 12 active upstream project-manager methods pass against both Rust and
+Eclipse; the target also repeats 11 Rust project unit tests. Evidence:
+
+* `gradle-ignored-java21-oracle-probe-1.log` and
+  `gradle-ignored-rust-probe-1.log`: both restored cases pass unchanged.
+* `gradle-restored-projects-rust-1.log` and
+  `gradle-restored-projects-oracle-1.log`: 23 passes, zero failures and one
+  remaining ignore per target (12 upstream methods plus 11 Rust unit tests).
+* `build-path-full-suite-final-2.log`: 93 targets, 1,625 passes, zero failures
+  and 12 ignores after restoring the two Gradle tests.
+
+`testSendingWarningProjectStatus` remains ignored and unfinished. Its original
+invalid Gradle build references a Java configuration without applying the Java
+plugin. Rust currently reports `OK` instead of `WARNING`. The public Eclipse
+probe observed only the initial update message, so verifying the original
+direct-manager assertion also requires the proper Gradle/job setup. This is
+recorded as missing model parity, not a passing test or a complete Gradle port.
+
+The current ledger is 849 ports, 838 passing, 11 ignored and 1,238 unported.
+Full feature parity remains unfinished.
