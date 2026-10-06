@@ -86,10 +86,10 @@ impl LspClient {
     }
 
     pub fn spawn_in(data_dir: Option<&Path>) -> Self {
-        Self::spawn_in_with_java_options(data_dir, &[])
+        Self::spawn_in_with_java_options(data_dir, &[], None)
     }
 
-    fn spawn_in_with_java_options(data_dir: Option<&Path>, java_options: &[String]) -> Self {
+    fn spawn_in_with_java_options(data_dir: Option<&Path>, java_options: &[String], oracle_home: Option<&Path>) -> Self {
         let mut cmd = if is_oracle() {
             let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/oracle-jdtls.sh");
             let data = data_dir.map(Path::to_path_buf).unwrap_or_else(|| {
@@ -97,6 +97,9 @@ impl LspClient {
             });
             let mut c = Command::new(script);
             c.arg(data);
+            if let Some(home) = oracle_home {
+                c.env("JDTLS_ORACLE_HOME", home);
+            }
             c
         } else {
             let mut c = Command::new(env!("CARGO_BIN_EXE_jdtls-rust"));
@@ -283,6 +286,8 @@ pub struct Workspace {
     pub capabilities: Value,
     /// JVM properties set directly by the upstream test (oracle only).
     pub oracle_java_options: Vec<String>,
+    /// Isolated oracle product with test-only extensions, when needed.
+    pub oracle_home: Option<PathBuf>,
     /// The `initialize` result, once the server has started.
     pub initialize_result: Value,
     versions: BTreeMap<String, i32>,
@@ -307,6 +312,7 @@ impl Workspace {
             init_options: json!({ "extendedClientCapabilities": { "classFileContentsSupport": true } }),
             capabilities: default_client_capabilities(),
             oracle_java_options: Vec::new(),
+            oracle_home: None,
             initialize_result: Value::Null,
             versions: BTreeMap::new(),
         }
@@ -473,6 +479,7 @@ impl Workspace {
             let mut c = LspClient::spawn_in_with_java_options(
                 Some(&self.dir.parent().unwrap().join("oracle-data")),
                 &self.oracle_java_options,
+                self.oracle_home.as_deref(),
             );
             let folders: Vec<Value> = self
                 .roots

@@ -34,6 +34,7 @@ public class BridgeProtocol {
         // navData / classFileContents / classFileInfo (NavigationDataService)
         public String op;
         public String provider; // classFileContents: source or fernflower raw facts
+        public boolean dumpOriginalLines; // primitive FernFlower debug option
         public int line, character;
         public ClassFileService.ClassFileDesc classFile;
         public Map<String, String> sourceAttachments; // library path -> source attachment path

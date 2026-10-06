@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fragment>
+  <!-- The four registrations from the upstream tests/plugin.xml. PlaceHolder
+       intentionally names a missing class, just as the original fixture does. -->
+  <extension point="org.eclipse.jdt.ls.core.contentProvider">
+    <contentProvider class="org.eclipse.jdt.ls.core.internal.PlaceHolder"
+                     id="placeholderContentProvider" uriPattern=".+\.class"/>
+    <contentProvider class="org.eclipse.jdt.ls.core.internal.FakeContentProvider"
+                     id="fakeContentProvider"/>
+    <contentProvider class="org.eclipse.jdt.ls.core.internal.FakeContentProvider"
+                     id="fakeContentProvider2"/>
+    <contentProvider class="org.eclipse.jdt.ls.core.internal.FakeContentProvider"
+                     id="thingyContentProvider" uriPattern=".+\.thingy"/>
+  </extension>
+  <extension point="org.eclipse.jdt.ls.core.delegateCommandHandler">
+    <delegateCommandHandler class="org.eclipse.jdt.ls.core.internal.ContentProviderTestCommand">
+      <command id="jdtls.test.contentProvider"/>
+    </delegateCommandHandler>
+  </extension>
+</fragment>

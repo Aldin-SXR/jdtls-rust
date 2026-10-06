@@ -1777,7 +1777,7 @@ final class NavigationDataService {
             response.available = source != null;
             response.attachedSource = source != null;
         } else if ("fernflower".equals(req.provider)) {
-            ClassFileService.Decompiled result = cf == null ? null : ClassFileService.decompileResult(cf);
+            ClassFileService.Decompiled result = cf == null ? null : ClassFileService.decompileResult(cf, req.dumpOriginalLines);
             response = new ClassFileContentsResponse(req.id, result == null ? "" : result.content);
             response.available = result != null;
             response.rawLineMappings = result == null ? null : result.rawLineMappings;

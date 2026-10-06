@@ -446,6 +446,10 @@ final class ClassFileService {
 
     /** Raw decompiler text and line pairs; provider policy is implemented in Rust. */
     static Decompiled decompileResult(ClassFileDesc d) {
+        return decompileResult(d, false);
+    }
+
+    static Decompiled decompileResult(ClassFileDesc d, boolean dumpOriginalLines) {
 
         String top = topLevelBinaryName(d);
         ClassFileDesc topDesc = new ClassFileDesc();
@@ -453,7 +457,7 @@ final class ClassFileService {
         topDesc.module = d.module;
         topDesc.packageName = d.packageName;
         topDesc.classFileName = top.substring(top.lastIndexOf('.') + 1) + ".class";
-        String key = topDesc.key();
+        String key = topDesc.key() + "|dumpOriginalLines=" + dumpOriginalLines;
         Decompiled cached = DECOMPILED.get(key);
         if (cached != null) {
             return cached;
@@ -475,6 +479,9 @@ final class ClassFileService {
         options.put(IFernflowerPreferences.LOG_LEVEL, IFernflowerLogger.Severity.ERROR.name());
         options.put(IFernflowerPreferences.ASCII_STRING_CHARACTERS, "0");
         options.put(IFernflowerPreferences.BYTECODE_SOURCE_MAPPING, "1");
+        if (dumpOriginalLines) {
+            options.put(IFernflowerPreferences.DUMP_ORIGINAL_LINES, "1");
+        }
         final String[] content = new String[1];
         final int[][] rawLineMappings = new int[1][];
         IResultSaver saver = new IResultSaver() {

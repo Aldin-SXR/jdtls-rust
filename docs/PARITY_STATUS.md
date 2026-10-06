@@ -17,12 +17,12 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 | | Tests | Share of upstream |
 |---|---:|---:|
 | Ported | 836 | 40.1% |
-| Passing | 809 | 38.8% |
-| Ported but `#[ignore]`d | 27 | 1.3% |
+| Passing | 822 | 39.4% |
+| Ported but `#[ignore]`d | 14 | 0.7% |
 | Not ported yet | 1,251 | 59.9% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,531 passed,
-0 failed and 28 ignored across 88 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,547 passed,
+0 failed and 15 ignored across 88 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 2 tests;
 `tests/binary_editor_regressions.rs`, 6 tests;
 `tests/content_provider_regressions.rs`, 4 tests;
@@ -47,8 +47,9 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,531 passed
 `tests/uncaught_exception_regressions.rs`, 18 tests;
 `tests/allocation_correction_regressions.rs`, 24 tests) and unit
 tests that aren't ports. Five project-manager targets also compile the project
-module's 11 unit tests, and BasicFileDetector recompiles its detector unit test;
-those duplicate runs are excluded from the upstream-port counts.
+module's 11 unit tests, and BasicFileDetector recompiles its detector unit test.
+ContentProviderManager also reuses three class-file URI unit tests.
+Those duplicate runs are excluded from the upstream-port counts.
 
 ## By upstream area
 
@@ -57,7 +58,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers | 871 | 562 | 558 | 64% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
-| managers | 211 | 132 | 109 | 52% |
+| managers | 211 | 132 | 122 | 58% |
 | correction | 604 | 93 | 93 | 15% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
@@ -130,7 +131,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | javadoc/JavaDoc2PlainTextConverterTest | unit tests in `src/javadoc/converter.rs` | 2 | 2 | 0 | n/a (unit tests) |
 | javadoc/JavaDocImageExtractionTest | `javadoc_java_doc_image_extraction_test`, plus a unit test in `src/javadoc/path_handler.rs` | 6 | 6 | 0 | pass |
 | javadoc/JavadocContentTest | `javadoc_javadoc_content_test` | 5 | 5 | 0 | pass |
-| managers/ContentProviderManagerTest | `managers_content_provider_manager_test` | 21 | 8 | 13 | 6 active LSP ports and 2 direct null-input ports; Rust provider policy integrated |
+| managers/ContentProviderManagerTest | `managers_content_provider_manager_test` | 21 | 21 | 0 | 21/21 direct API calls against the actual manager in an isolated Eclipse test-extension product |
 | managers/BasicFileDetectorTest | `managers_basic_file_detector_test` | 12 | 12 | 0 | n/a (unit ports) |
 | managers/EclipseBuildSupportTest | `managers_eclipse_build_support_test` | 1 | 1 | 0 | 1/1 |
 | managers/EclipseProjectImporterTest | `managers_eclipse_project_importer_test` | 15 | 11 | 4 | 8/8 active LSP; 3 unit ports |
@@ -145,16 +146,13 @@ those duplicate runs are excluded from the upstream-port counts.
 ## Ignored tests
 
 Every ignore names its reason in the test file (`#[ignore = "..."]`), and every
-ignored test remains counted as unfinished. The six provider-chain cases also
-need the upstream plugin log assertions, which their current LSP adapters cannot
-observe. The separate optional `javadoc::converter::corpus_diff::corpus` unit
-test needs an external `JAVADOC_CORPUS`; it is the 28th ignored test in the full
+ignored test remains counted as unfinished. All provider-manager ports now run
+with their original internal assertions. The separate optional
+`javadoc::converter::corpus_diff::corpus` unit test needs an external `JAVADOC_CORPUS`; it is the 15th ignored test in the full
 Rust run and is excluded from the upstream-port count.
 
 | Reason | Count | Tests |
 |---|---:|---|
-| Upstream test-plugin provider injection and log assertions (throwing providers, duplicate providers, placeholder provider) | 6 | ContentProviderManagerTest: `test_throws_exception`, `test_decompile_throws_exception`, `test_default_order`, `test_decompile_default_order`, `test_prefer_non_existing_provider_class`, `test_decompile_prefer_non_existing_provider_class` |
-| Upstream test-plugin internals with no LSP equivalent (FakeContentProvider, decompiler line mappings) | 7 | ContentProviderManagerTest |
 | Lombok not supported | 1 | `test_lombok_show_generated_code_symbols` |
 | Kotlin not supported | 1 | `test_kotlin` |
 | Direct completion-requestor state access | 1 | `test_signature_help_for_selected_completion_proposal` selects the first raw proposal directly, whose ordering differs from LSP items; the public selection flow is implemented and oracle verified separately |
@@ -1269,11 +1267,12 @@ invalid LSP URI as a substitute. `content-provider-null-oracle-1.log` records th
 probe. `content-provider-oracle-1.log` separately verifies all six active LSP
 provider ports and all six binary-editor regressions against Eclipse.
 
-The other 13 provider ports remain ignored until their actual test-extension
-registration, complete log assertions and decompiler mapping fixtures are
-verified. Raw mapping transport and Rust mapping conversion are implemented;
-the upstream mapping test remains unfinished and excluded from the passing count.
-The current ledger is 836 ported, 809 passing, 27 ignored and 1,251 unported.
+At that point, the other 13 provider ports remained ignored until their actual
+test-extension registration, complete log assertions and decompiler mapping
+fixtures were verified. Raw mapping transport and Rust mapping conversion were
+implemented, while the mapping test remained excluded from the passing count
+until the follow-up batch below.
+That batch reached 836 ported, 809 passing, 27 ignored and 1,251 unported.
 `web-and-provider-full-suite-1.log` records the fresh full Rust run: 88 targets,
 1,531 passes, zero failures and 28 ignores (including the optional Javadoc corpus).
 
@@ -1288,3 +1287,45 @@ the unresolved-type error. Keyboard and mouse flows each pass two browser tests
 without console errors or failed requests (`import-browser-final-3.log` and
 `import-browser-final-4.log`). These changes are in the local, gitignored clients;
 they do not change the upstream-test ledger or require a Rust behavior change.
+
+## Restored provider internals (2026-10-06)
+
+All 21 `ContentProviderManagerTest` ports now call the actual manager APIs,
+restoring 13 ignored tests and correcting the attached-source decompile port to
+use `getSource` rather than substituting a `java/classFileContents` request.
+The original fake extensions exercise exception fallback and its error log,
+duplicate priorities and their error log, missing provider classes and their
+info log, preferred providers with no errors, cancellation of the actual
+monitor, identity of the injected preferences, and two requests on one manager
+with different fake return values. The mapping test retains both non-null
+arrays, both lengths of six, and the original first pair `[11, 12]`.
+
+The Rust tests use the production manager and obtain real attached-source and
+raw FernFlower facts from the embedded bridge. The bridge accepts the same
+primitive debug line-dump option used by the upstream class, with separate
+cache keys for normal and debug output. Provider policy and mapping conversion
+remain in Rust.
+
+A test-only fragment supplies the unchanged upstream `FakeContentProvider`,
+the original four extension registrations, and a thin command adapter in an
+isolated copy of the real Eclipse 1.58.0 product. The actual Eclipse manager,
+registry, decompiler and platform logs run unchanged. The original oracle
+installation is untouched, and the per-workspace product override does not
+change other targets. The target shares one Eclipse runtime for the class,
+preserving its actual source-discovery cache as the upstream JUnit class does.
+It does not filter errors to satisfy the empty-error assertions. Mapping setup
+waits for the reference project to be imported before resolving its class.
+See [the fixture README](../tests/oracle/content-provider/README.md) for commands
+and the exact adapter scope.
+
+`content-provider-direct-oracle-4.log` verifies all 21 upstream cases with zero
+failures. `content-provider-direct-rust-2.log` verifies all 21 Rust ports plus
+three reused URI unit tests, and `content-provider-integration-rust-1.log`
+verifies six public binary-editor integrations and four additional policy
+regressions. The fresh full run, `content-provider-direct-full-suite-2.log`,
+records 88 targets, 1,547 passes, zero failures and 15 ignores. Evidence lives in
+`target/parity-evidence/`.
+
+The ledger is now 836 ported, 822 passing, 14 ignored and 1,251 unported. Full
+feature parity remains unfinished; the remaining ignored ports and unported
+classes are still excluded from the passing count.

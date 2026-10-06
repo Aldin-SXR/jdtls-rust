@@ -1,239 +1,369 @@
-//! Port of `org.eclipse.jdt.ls.core.internal.managers.ContentProviderManagerTest`
-//! over `java/classFileContents` and the Rust manager's direct null-input API.
-//!
-//! jdtls-rust has the jdt.ls default providers only: `sourceContentProvider`
-//! (attached source) and `fernflowerContentProvider`.  The upstream test
-//! plugin's `FakeContentProvider`/`placeholderContentProvider` extensions
-//! still need direct fixture injection and real-manager oracle verification.
-//! Sourceless binary cases use the upstream fake JDK
-//! `rtstubs.jar` alongside the original Maven dependencies.
+//! Faithful direct API ports of ContentProviderManagerTest, including the
+//! upstream fake extensions, log assertions and FernFlower line mappings.
+//! Oracle mode invokes the unmodified Eclipse manager via a test-only fragment.
 
 mod common;
 #[path = "../src/features/content_provider.rs"]
 mod content_provider;
-use content_provider::{Manager, Monitor, Preferences};
-use std::sync::Arc;
-use common::jdtls::Workspace;
-use serde_json::json;
+#[path = "common/content_provider_fixture.rs"]
+mod fixture;
+
+use content_provider::DECOMPILER_HEADER;
+use serde_json::{json, Value};
 
 const FAKE_DECOMPILED_SOURCE: &str = "This is decompiled";
-/// `FernFlowerDecompiler.DECOMPILER_HEADER`.
-const DECOMPILER_HEADER: &str = "// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\n";
 
 struct Fixture {
-    ws: Workspace,
+    ws: fixture::TestWorkspace,
     sourceless_uri: String,
     source_available_uri: String,
 }
-
-fn setup() -> Fixture { setup_with_test_jdk(false) }
-
-fn setup_with_test_jdk(stub_jdk: bool) -> Fixture {
-    let mut ws = Workspace::new();
-    ws.import_projects(&["maven/salut"]);
-    if stub_jdk { ws.use_upstream_maven_test_jdk("salut", "1.8"); }
-    let sourceless_uri = ws.class_file_uri("salut", "java.math.BigDecimal");
-    let source_available_uri = ws.class_file_uri("salut", "org.apache.commons.lang3.text.WordUtils");
-    Fixture { ws, sourceless_uri, source_available_uri }
+impl Fixture {
+    fn new() -> Self {
+        Self::with_projects(&[])
+    }
+    fn with_projects(projects: &[&str]) -> Self {
+        let mut ws = fixture::workspace();
+        // Import synchronously during initialize, before resolving any classes.
+        // Eclipse's workspace-folder notification queues an asynchronous import.
+        ws.import_projects(projects);
+        let sourceless_uri = ws.class_file_uri("salut", "java.math.BigDecimal");
+        let source_available_uri =
+            ws.class_file_uri("salut", "org.apache.commons.lang3.text.WordUtils");
+        Self {
+            ws,
+            sourceless_uri,
+            source_available_uri,
+        }
+    }
+    fn call(
+        &mut self,
+        api: &str,
+        uri: Option<&str>,
+        preferred: &[&str],
+        kind: &str,
+        value: Option<&str>,
+    ) -> Value {
+        fixture::run(
+            &mut self.ws,
+            preferred,
+            vec![fixture::operation(api, uri, kind, value)],
+        )
+        .remove(0)
+    }
+    fn sourceless(
+        &mut self,
+        api: &str,
+        preferred: &[&str],
+        kind: &str,
+        value: Option<&str>,
+    ) -> Value {
+        self.call(
+            api,
+            Some(&self.sourceless_uri.clone()),
+            preferred,
+            kind,
+            value,
+        )
+    }
 }
-
-fn get_content(ws: &mut Workspace, uri: &str) -> String {
-    let result = ws.request("java/classFileContents", json!({ "uri": uri }));
-    result.as_str().expect("content must not be null").to_owned()
+fn content(result: &Value) -> &str {
+    result["content"]
+        .as_str()
+        .expect("content must not be null")
 }
-
-fn set_preferred(ws: &mut Workspace, ids: &[&str]) {
-    ws.update_settings(json!({ "java": { "contentProvider": { "preferred": ids } } }));
+fn assert_decompiled(result: &Value) {
+    assert!(
+        content(result).starts_with(DECOMPILER_HEADER),
+        "disassembler header is missing from {result}"
+    );
+}
+fn expect_log(result: &Value, level: &str, expected: &str) {
+    assert!(
+        result[level]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e.as_str().unwrap().contains(expected)),
+        "expected {level} containing {expected}: {result}"
+    );
 }
 
 #[test]
 fn test_open_source_code() {
-    let mut f = setup();
-    let uri = f.source_available_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.contains("Operations on Strings that contain words."), "unexpected body content {result}");
+    let mut f = Fixture::new();
+    let result = f.call(
+        "content",
+        Some(&f.source_available_uri.clone()),
+        &[],
+        "null",
+        None,
+    );
+    assert!(
+        content(&result).contains("Operations on Strings that contain words."),
+        "unexpected body content {result}"
+    );
 }
-
 #[test]
 fn test_decompile_source_code() {
-    let mut f = setup();
-    let uri = f.source_available_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.contains("Operations on Strings that contain words."), "unexpected body content {result}");
+    let mut f = Fixture::new();
+    let result = f.call(
+        "source",
+        Some(&f.source_available_uri.clone()),
+        &[],
+        "null",
+        None,
+    );
+    assert!(
+        content(&result).contains("Operations on Strings that contain words."),
+        "unexpected body content {result}"
+    );
 }
-
 #[test]
 fn test_open_missing_file() {
-    let mut f = setup();
-    let result = get_content(&mut f.ws, "file:///this/is/Missing.class");
-    assert!(result.is_empty(), "not empty: {result}");
+    let mut f = Fixture::new();
+    let result = f.call(
+        "content",
+        Some("file:///this/is/Missing.class"),
+        &[],
+        "null",
+        None,
+    );
+    assert!(content(&result).is_empty(), "not empty: {result}");
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's FakeContentProvider registered for *.thingy URIs"]
 fn test_open_thingy() {
-    let mut f = setup();
-    assert_eq!(FAKE_DECOMPILED_SOURCE, get_content(&mut f.ws, "file://this/is/Some.thingy"));
+    let mut f = Fixture::new();
+    let result = f.call(
+        "content",
+        Some("file://this/is/Some.thingy"),
+        &[],
+        "text",
+        Some(FAKE_DECOMPILED_SOURCE),
+    );
+    assert_eq!(FAKE_DECOMPILED_SOURCE, content(&result));
 }
-
 #[test]
 fn test_open_nothing() {
-    let manager = Manager::new(Arc::new(Preferences::default()), Vec::new());
-    let result = futures::executor::block_on(manager.get_content(None, &Monitor::default()));
-    assert!(result.is_none());
+    let mut ws = fixture::workspace();
+    let result = fixture::run(
+        &mut ws,
+        &[],
+        vec![fixture::operation("content", None, "null", None)],
+    )
+    .remove(0);
+    assert!(result["content"].is_null());
 }
-
 #[test]
 fn test_decompile_nothing() {
-    let manager = Manager::new(Arc::new(Preferences::default()), Vec::new());
-    let result = futures::executor::block_on(manager.get_source(None, &Monitor::default()));
-    assert!(result.is_none());
+    let mut ws = fixture::workspace();
+    let result = fixture::run(
+        &mut ws,
+        &[],
+        vec![fixture::operation("source", None, "null", None)],
+    )
+    .remove(0);
+    assert!(result["content"].is_null());
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's throwing FakeContentProvider and its logged-error assertion"]
 fn test_throws_exception() {
-    let mut f = setup();
-    let uri = f.sourceless_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER), "disassembler header is missing from {result}");
+    let mut f = Fixture::new();
+    let result = f.sourceless(
+        "content",
+        &[],
+        "exception",
+        Some("Something bad happened here"),
+    );
+    assert_decompiled(&result);
+    expect_log(&result, "errors", "Something bad happened here");
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's throwing FakeContentProvider and its logged-error assertion"]
 fn test_decompile_throws_exception() {
-    let mut f = setup();
-    let uri = f.sourceless_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER), "disassembler header is missing from {result}");
+    let mut f = Fixture::new();
+    let result = f.sourceless(
+        "source",
+        &[],
+        "exception",
+        Some("Something bad happened here"),
+    );
+    assert_decompiled(&result);
+    expect_log(&result, "errors", "Something bad happened here");
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's duplicate-provider extensions and logged-error assertion"]
 fn test_default_order() {
-    let mut f = setup();
-    let uri = f.sourceless_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER), "disassembler header is missing from {result}");
+    let mut f = Fixture::new();
+    let result = f.sourceless("content", &[], "null", None);
+    assert_decompiled(&result);
+    expect_log(
+        &result,
+        "errors",
+        "You have more than one content provider installed:",
+    );
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's duplicate-provider extensions and logged-error assertion"]
 fn test_decompile_default_order() {
-    let mut f = setup();
-    let uri = f.sourceless_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER), "disassembler header is missing from {result}");
+    let mut f = Fixture::new();
+    let result = f.sourceless("source", &[], "null", None);
+    assert_decompiled(&result);
+    expect_log(
+        &result,
+        "errors",
+        "You have more than one content provider installed:",
+    );
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's FakeContentProvider"]
 fn test_prefer_existing_provider_class() {
-    let mut f = setup();
-    set_preferred(&mut f.ws, &["fakeContentProvider", "placeholderContentProvider"]);
-    let uri = f.sourceless_uri.clone();
-    assert_eq!(FAKE_DECOMPILED_SOURCE, get_content(&mut f.ws, &uri));
+    let mut f = Fixture::new();
+    let result = f.sourceless(
+        "content",
+        &["fakeContentProvider", "placeholderContentProvider"],
+        "text",
+        Some(FAKE_DECOMPILED_SOURCE),
+    );
+    assert_eq!(FAKE_DECOMPILED_SOURCE, content(&result));
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's FakeContentProvider"]
 fn test_decompile_prefer_existing_provider_class() {
-    let mut f = setup();
-    set_preferred(&mut f.ws, &["fakeContentProvider", "placeholderContentProvider"]);
-    let uri = f.sourceless_uri.clone();
-    assert_eq!(FAKE_DECOMPILED_SOURCE, get_content(&mut f.ws, &uri));
+    let mut f = Fixture::new();
+    let result = f.sourceless(
+        "source",
+        &["fakeContentProvider", "placeholderContentProvider"],
+        "text",
+        Some(FAKE_DECOMPILED_SOURCE),
+    );
+    assert_eq!(FAKE_DECOMPILED_SOURCE, content(&result));
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's placeholderContentProvider and logged-info assertion"]
 fn test_prefer_non_existing_provider_class() {
-    let mut f = setup();
-    set_preferred(&mut f.ws, &["placeholderContentProvider"]);
-    let uri = f.sourceless_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER), "disassembler header is missing from {result}");
+    let mut f = Fixture::new();
+    let result = f.sourceless("content", &["placeholderContentProvider"], "null", None);
+    assert_decompiled(&result);
+    expect_log(
+        &result,
+        "infos",
+        "placeholderContentProvider doesn't match IContentProvider. Skipping.",
+    );
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's placeholderContentProvider and logged-info assertion"]
 fn test_decompile_prefer_non_existing_provider_class() {
-    let mut f = setup();
-    set_preferred(&mut f.ws, &["placeholderContentProvider"]);
-    let uri = f.sourceless_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER), "disassembler header is missing from {result}");
+    let mut f = Fixture::new();
+    let result = f.sourceless("source", &["placeholderContentProvider"], "null", None);
+    assert_decompiled(&result);
+    expect_log(
+        &result,
+        "infos",
+        "placeholderContentProvider doesn't match IDecompiler. Skipping.",
+    );
 }
-
 #[test]
 fn test_prefer_unknown_extension() {
-    let mut f = setup_with_test_jdk(true);
-    set_preferred(&mut f.ws, &["unknownContentProvider"]);
-    let uri = f.sourceless_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER), "disassembler header is missing from {result}");
+    let mut f = Fixture::new();
+    let result = f.sourceless("content", &["unknownContentProvider"], "null", None);
+    assert_decompiled(&result);
 }
-
 #[test]
 fn test_prefer_disassembler() {
-    let mut f = setup_with_test_jdk(true);
-    set_preferred(&mut f.ws, &["disassemblerContentProvider"]);
-    let uri = f.sourceless_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER), "disassembler header is missing from {result}");
-    assert!(result.contains("public class BigDecimal extends Number implements Comparable"), "unexpected body content {result}");
+    let mut f = Fixture::new();
+    let result = f.sourceless("content", &["disassemblerContentProvider"], "null", None);
+    assert_decompiled(&result);
+    assert!(
+        content(&result).contains("public class BigDecimal extends Number implements Comparable"),
+        "unexpected body content {result}"
+    );
 }
-
 #[test]
 fn test_disassemble_inner_class() {
-    let mut f = setup_with_test_jdk(true);
-    set_preferred(&mut f.ws, &["disassemblerContentProvider"]);
+    let mut f = Fixture::new();
     let uri = f.ws.class_file_uri("salut", "java.util.Map");
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER), "disassembler header is missing from {result}");
-    assert!(result.contains("interface Entry"), "unexpected body content {result}");
-
+    let result = f.call(
+        "content",
+        Some(&uri),
+        &["disassemblerContentProvider"],
+        "null",
+        None,
+    );
+    assert_decompiled(&result);
+    assert!(
+        content(&result).contains("interface Entry"),
+        "unexpected body content {result}"
+    );
     let uri = f.ws.class_file_uri("salut", "java.util.Map$Entry");
-    // Decompiling the inner class directly should include the outer class code
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER), "disassembler header is missing from {result}");
-    assert!(result.contains("public interface Map<"), "unexpected body content {result}");
+    let result = f.call(
+        "content",
+        Some(&uri),
+        &["disassemblerContentProvider"],
+        "null",
+        None,
+    );
+    assert_decompiled(&result);
+    assert!(
+        content(&result).contains("public interface Map<"),
+        "unexpected body content {result}"
+    );
 }
-
 #[test]
-#[ignore = "inspects DecompilerResult line mappings, which java/classFileContents does not expose"]
 fn test_decompile_line_mappings() {
-    let mut f = setup();
-    f.ws.import_projects(&["eclipse/reference"]);
-    let uri = f.ws.class_file_uri("reference", "org.sample.Foo");
-    set_preferred(&mut f.ws, &["fernflowerContentProvider"]);
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.starts_with(DECOMPILER_HEADER));
-    unreachable!("line mappings (original [11, 12, ...], 6 entries each) are not available over LSP");
+    let mut f = Fixture::with_projects(&["eclipse/reference"]);
+    let uri = fixture::class_file_uri(&mut f.ws, "reference", "org.sample.Foo");
+    let result = f.call(
+        "result",
+        Some(&uri),
+        &["fernflowerContentProvider"],
+        "null",
+        None,
+    );
+    assert!(!result["content"].is_null());
+    let original = result["originalLineMappings"]
+        .as_array()
+        .expect("original mappings must not be null");
+    assert_eq!(6, original.len());
+    assert_eq!(json!(11), original[0]);
+    assert_eq!(json!(12), original[1]);
+    let decompiled = result["decompiledLineMappings"]
+        .as_array()
+        .expect("decompiled mappings must not be null");
+    assert_eq!(6, decompiled.len());
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's FakeContentProvider cancelling the monitor"]
 fn test_cancel_monitor() {
-    let mut f = setup();
-    let uri = f.sourceless_uri.clone();
-    let result = get_content(&mut f.ws, &uri);
-    assert!(result.is_empty(), "not empty");
+    let mut f = Fixture::new();
+    let result = f.sourceless("content", &[], "cancel", None);
+    assert_eq!(json!(true), result["canceled"]);
+    assert!(content(&result).is_empty(), "not empty: {result}");
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's FakeContentProvider recording the preferences"]
 fn test_expect_preferences() {
-    let mut f = setup();
-    let uri = f.sourceless_uri.clone();
-    get_content(&mut f.ws, &uri);
-    unreachable!("FakeContentProvider.preferences is not observable");
+    let mut f = Fixture::new();
+    let result = f.sourceless("content", &[], "null", None);
+    assert_eq!(
+        json!(true),
+        result["preferencesMatch"],
+        "preferences not set"
+    );
 }
-
 #[test]
-#[ignore = "requires the upstream test plugin's FakeContentProvider"]
 fn test_no_caching() {
-    let mut f = setup();
-    let uri = f.sourceless_uri.clone();
-    assert_eq!("some value", get_content(&mut f.ws, &uri));
-    assert_eq!("something else", get_content(&mut f.ws, &uri));
+    let mut f = Fixture::new();
+    let results = fixture::run(
+        &mut f.ws,
+        &[],
+        vec![
+            fixture::operation(
+                "content",
+                Some(&f.sourceless_uri),
+                "text",
+                Some("some value"),
+            ),
+            fixture::operation(
+                "content",
+                Some(&f.sourceless_uri),
+                "text",
+                Some("something else"),
+            ),
+        ],
+    );
+    assert_eq!("some value", content(&results[0]));
+    assert_eq!("something else", content(&results[1]));
 }
