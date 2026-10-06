@@ -865,6 +865,8 @@ impl LanguageServer for JavaLanguageServer {
                         "java.project.getSettings".to_owned(),
                         "java.project.getClasspaths".to_owned(),
                         "java.project.isTestFile".to_owned(),
+                        "java.project.addToSourcePath".to_owned(),
+                        "java.project.removeFromSourcePath".to_owned(),
                         "java.project.listSourcePaths".to_owned(),
                         "java.project.resolveSourceAttachment".to_owned(),
                         "java.project.changeImportedProjects".to_owned(),
@@ -2451,6 +2453,11 @@ impl LanguageServer for JavaLanguageServer {
                 crate::features::project_commands::is_test_file(&ws, &uri)
                     .map(|b| Some(Value::Bool(b)))
                     .map_err(internal_error)
+            }
+            "java.project.addToSourcePath" | "java.project.removeFromSourcePath" => {
+                let uri = params.arguments.first().and_then(Value::as_str)
+                    .ok_or_else(|| tower_lsp::jsonrpc::Error::invalid_params("source folder URI must be a string"))?;
+                Ok(Some(self.change_source_path(uri.to_owned(), params.command == "java.project.addToSourcePath").await?))
             }
             "java.project.listSourcePaths" => {
                 let ws = self

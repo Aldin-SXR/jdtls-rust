@@ -44,7 +44,14 @@ pub fn get_all(ws: &Workspace, include_non_java: bool) -> Value {
     let uris: Vec<Value> = all_projects(ws)
         .iter()
         .filter(|p| include_non_java || p.is_java())
-        .map(|p| Value::String(java_file_uri(&p.root, p.root.is_dir() || !p.root.exists())))
+        .map(|p| {
+            let root = if p.has_nature(crate::project::UNMANAGED_FOLDER_NATURE) {
+                &p.root
+            } else {
+                &p.location
+            };
+            Value::String(java_file_uri(root, root.is_dir() || !root.exists()))
+        })
         .collect();
     Value::Array(uris)
 }

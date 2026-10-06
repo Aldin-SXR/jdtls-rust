@@ -37,6 +37,55 @@ pub fn java_string_hash(s: &str) -> i32 {
         .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
 }
 
+/// `ProjectUtils.createInvisibleProjectIfNotExist`: create the model without
+/// inferring source folders or adding the importer-only unmanaged nature.
+pub fn new_project(root: &Path, settings: &ImportSettings) -> Project {
+    let name = project_name(root);
+    let mut project = Project::new(&name, root, ProjectKind::Invisible);
+    project.location = settings.workspace_location(&name);
+    project.natures = vec![super::JAVA_NATURE.to_owned()];
+    project.options = invisible_options(root);
+    project.output = Some(project.location.join("bin"));
+    project.classpath.push(ClasspathEntry::new(EntryKind::Container, super::JRE_CONTAINER));
+    project
+}
+
+/// Restore a command-created project from the server's workspace. The linked
+/// user folder remains distinct from the project's metadata location.
+pub fn restore_project(root: &Path, settings: &ImportSettings) -> Option<Project> {
+    let location = settings.workspace_location(&project_name(root));
+    let text = std::fs::read_to_string(location.join(".project")).ok()?;
+    let doc = roxmltree::Document::parse(&text).ok()?;
+    let linked = doc.descendants().filter(|n| n.has_tag_name("link")).any(|n| {
+        let value = |tag| n.children().find(|c| c.has_tag_name(tag)).and_then(|c| c.text());
+        value("name") == Some(WORKSPACE_LINK)
+            && value("locationURI").and_then(|u| tower_lsp::lsp_types::Url::parse(u).ok())
+                .and_then(|u| super::uri_to_path(&u)).as_deref() == Some(root)
+    });
+    if !linked || !location.join(".classpath").is_file() {
+        return None;
+    }
+    let mut project = super::eclipse::load(&location)?;
+    project.kind = ProjectKind::Invisible;
+    project.root = root.to_path_buf();
+    project.options = invisible_options(root);
+    let remap = |path: &mut Option<PathBuf>| {
+        if let Some(value) = path {
+            if let Ok(rel) = value.strip_prefix(location.join(WORKSPACE_LINK)) {
+                *path = Some(root.join(rel));
+            }
+        }
+    };
+    remap(&mut project.output);
+    for entry in &mut project.classpath {
+        remap(&mut entry.location);
+        remap(&mut entry.output);
+        remap(&mut entry.source_attachment);
+    }
+    project.derive_views();
+    Some(project)
+}
+
 /// Errors `loadInvisibleProject` reports (as `CoreException`s).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvisibleError {
@@ -72,14 +121,8 @@ pub fn try_load_invisible_project(
     if !source_dir.starts_with(root) || is_part_of_mature_project(&source_dir) {
         return Ok(None);
     }
-    let name = project_name(root);
-    let mut project = Project::new(&name, root, ProjectKind::Invisible);
-    project.location = settings.workspace_location(&name);
-    project.natures = vec![
-        super::JAVA_NATURE.to_owned(),
-        super::UNMANAGED_FOLDER_NATURE.to_owned(),
-    ];
-    project.options = invisible_options(root);
+    let mut project = new_project(root, settings);
+    project.natures.push(super::UNMANAGED_FOLDER_NATURE.to_owned());
 
     // Source paths.
     let mut source_paths: Vec<PathBuf> = Vec::new();
@@ -118,10 +161,6 @@ pub fn try_load_invisible_project(
     project.output = Some(output.clone());
 
     // createJavaProject: the JRE container, then the resolved source entries.
-    project.classpath.push(ClasspathEntry::new(
-        EntryKind::Container,
-        super::JRE_CONTAINER,
-    ));
     let excluding: Vec<PathBuf> = Vec::new();
     project.classpath.extend(resolve_source_entries(
         &project,

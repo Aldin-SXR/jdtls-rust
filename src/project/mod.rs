@@ -12,6 +12,7 @@
 pub mod detect;
 pub mod download;
 pub mod eclipse;
+pub mod classpath;
 pub mod gradle;
 pub mod invisible;
 pub mod jar;
@@ -505,7 +506,8 @@ impl Workspace {
     pub fn all_projects(&self) -> Vec<Project> {
         let mut projects = self.projects.clone();
         if let Some(root) = &self.default_project {
-            let mut project = default_java_project(root);
+            let mut project = eclipse::load(root).unwrap_or_else(|| default_java_project(root));
+            project.kind = ProjectKind::Default;
             if let Some(vm) = self.runtime_registry.as_ref().and_then(|r| r.default_install()) {
                 project.runtime = Some(vm.clone());
                 for entry in project.classpath.iter_mut().filter(|e| e.is_jre_container()) {
@@ -600,11 +602,28 @@ impl Workspace {
                     .iter()
                     .find(|p| p.kind == ProjectKind::Invisible && p.root == *root)
             }) {
-                if ws.visible_projects_under(root).is_empty() {
+                if ws.visible_projects_under(root).is_empty()
+                    || !prev.has_nature(UNMANAGED_FOLDER_NATURE)
+                {
                     ws.default_project = previous
                         .and_then(|w| w.default_project.clone())
                         .or(ws.default_project.take());
                     ws.add(prev.clone());
+                    continue;
+                }
+            }
+            if let Some(restored) = invisible::restore_project(root, settings) {
+                if ws.visible_projects_under(root).is_empty()
+                    || !restored.has_nature(UNMANAGED_FOLDER_NATURE)
+                {
+                    // A trigger re-runs the importer on initialization, applying
+                    // source/output preferences even when the project exists.
+                    let imported = if configs.is_none() {
+                        settings.trigger_files.iter().map(|t| canonicalize_lenient(t))
+                            .find(|t| t.starts_with(root))
+                            .and_then(|t| invisible::load_invisible_project(&t, root, settings, &ws))
+                    } else { None };
+                    ws.add(imported.unwrap_or(restored));
                     continue;
                 }
             }

@@ -8,6 +8,19 @@ use crate::project::{invisible, ImportSettings, ProjectKind, Workspace};
 use std::path::{Path, PathBuf};
 
 impl JavaLanguageServer {
+    pub(crate) async fn change_source_path(&self, uri: String, add: bool) -> LspResult<Value> {
+        let _guard = self.import_lock.lock().await;
+        let mut ws = self.workspace_snapshot();
+        let roots = self.roots.read().await.clone();
+        let settings = self.current_import_settings().await;
+        let (ws, change) = tokio::task::spawn_blocking(move || {
+            let change = crate::features::build_path::change(&mut ws, &settings, &roots, &uri, add);
+            (ws, change)
+        }).await.map_err(|e| internal_error(e.to_string()))?;
+        if change.changed { self.install_workspace(ws).await; }
+        Ok(change.result)
+    }
+
     /// Settings changes report runtime validation failures to the client.
     pub(crate) async fn send_runtime_notices(&self) {
         let (messages, actionable) = {
@@ -87,6 +100,20 @@ impl JavaLanguageServer {
     /// (`loadInvisibleProject`); a file of an invisible project that is not
     /// on its classpath gets its source root inferred (`inferSourceRoot`).
     pub(crate) async fn on_document_opened(&self, uri: &Url) {
+        // `JDTUtils.getFakeCompilationUnit` creates the default project when
+        // opening a standalone unit. This also covers virtual buffers; only
+        // the metadata is materialized, never the user's source file.
+        if crate::features::lifecycle::is_java_like(uri)
+            && crate::features::lifecycle::classify(&self.workspace_snapshot(), uri)
+                == crate::features::lifecycle::UnitKind::Default
+        {
+            let settings = self.current_import_settings().await;
+            let mut ws = self.dispatcher.workspace.write().unwrap_or_else(|e| e.into_inner());
+            ws.default_project.get_or_insert_with(|| settings.workspace_location(crate::project::DEFAULT_PROJECT_NAME));
+            if let Err(error) = ws.ensure_default_project() {
+                tracing::error!("Unable to create default Java project: {error}");
+            }
+        }
         let Some(path) = crate::project::uri_to_path(uri) else {
             return;
         };

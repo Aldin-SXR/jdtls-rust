@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 845 | 40.5% |
-| Passing | 832 | 39.9% |
+| Ported | 849 | 40.7% |
+| Passing | 836 | 40.1% |
 | Ported but `#[ignore]`d | 13 | 0.6% |
-| Not ported yet | 1,242 | 59.5% |
+| Not ported yet | 1,238 | 59.3% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,610 passed,
-0 failed and 14 ignored across 91 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,623 passed,
+0 failed and 14 ignored across 93 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 3 tests;
 `tests/binary_editor_regressions.rs`, 6 tests;
 `tests/content_provider_regressions.rs`, 4 tests;
@@ -31,6 +31,7 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,610 passed
 `tests/project_download_regressions.rs`, 2 tests;
 `tests/projects_manager_regressions.rs`, 14 tests;
 `tests/jvm_configuration_regressions.rs`, 5 tests;
+`tests/build_path_regressions.rs`, 9 tests;
 `tests/paste_regressions.rs`, 9 tests;
 `tests/smart_detection_regressions.rs`, 13 tests;
 `tests/accessor_regressions.rs`, 18 tests;
@@ -61,7 +62,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 |---|---:|---:|---:|---:|
 | handlers | 871 | 562 | 558 | 64% |
 | javadoc | 32 | 32 | 32 | 100% |
-| commands | 60 | 7 | 7 | 12% |
+| commands | 60 | 11 | 11 | 18% |
 | managers | 211 | 134 | 125 | 59% |
 | correction | 604 | 93 | 93 | 15% |
 | refactoring | 119 | 0 | 0 | 0% |
@@ -130,6 +131,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
 | codemanipulation/OverrideMethodsTestCase | `codemanipulation_override_methods_test_case` | 10 | 10 | 0 | 10/10 |
 | JVMConfiguratorTest | `jvm_configurator_test` | 7 | 7 | 0 | 7/7 direct calls to the actual JVM/runtime APIs and unchanged upstream VM extension |
+| commands/BuildPathCommandTest | `commands_build_path_command_test` | 4 | 4 | 0 | 4/4; unchanged Gradle 8.5 fixture runs on Java 21 |
 | commands/DiagnosticsCommandTest | `commands_diagnostics_command_test` | 2 | 2 | 0 | 2/2 |
 | commands/TypeHierarchyCommandTest | `commands_type_hierarchy_command_test` | 5 | 5 | 0 | 5/5 |
 | javadoc/JavaDoc2MarkdownConverterTest | unit tests in `src/javadoc/converter.rs` | 19 | 19 | 0 | n/a (unit tests) |
@@ -409,7 +411,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 | Remaining project managers | 77 | 4% |
 | Refactoring | 119 | 6% |
 | Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 206 | 10% |
-| Core utilities, preferences, commands and the rest | 233 | 11% |
+| Core utilities, preferences, commands and the rest | 229 | 11% |
 
 ## Updating this file
 
@@ -1455,9 +1457,70 @@ Evidence in `target/parity-evidence/`:
 * `jvm-full-suite-final-2.log`: 91 targets, 1,610 passes, zero failures and
   14 ignores, including the optional external Javadoc corpus.
 
-The ledger is now 845 ports, 832 passing, 13 ignored and 1,242 unported.
+After the JVM batch, the ledger was 845 ports, 832 passing, 13 ignored and
+1,242 unported.
 This batch does not prove complete VM-platform parity: contributed/native VM
 extension discovery, pre-release-file JDK metadata, all legacy installation
 layouts and strict execution-environment access rules need broader comparisons.
 Full feature parity remains unfinished, including the ignored build-tool cases
 and the unported preference, refactoring, cleanup and syntax-server suites.
+
+## Source-path commands
+
+All four original `BuildPathCommandTest` methods are ported, preserving the
+original Eclipse, Maven, Gradle and standalone-folder fixtures, source-path
+counts and display paths. Both add/remove commands now execute the Rust port
+of `BuildPathCommand` and `ProjectUtils` policy. They choose the deepest Java
+project location, reject build-tool-owned classpaths with the original Maven
+and Gradle messages, and create a linked invisible project when needed.
+
+Adding an existing source path and removing an absent one are successful
+no-ops. A source folder beneath an existing source folder is rejected; adding
+a parent excludes its existing children and visible subprojects. Removing a
+child clears only the corresponding inclusion/exclusion patterns, preserving
+other patterns, per-source outputs, extra attributes and library access rules.
+Changed invisible-project results contain workspace-relative `sourcePaths`;
+visible-project and no-op results omit that field as Eclipse does.
+
+Raw classpath changes are persisted atomically. Updates retain untouched XML,
+including comments and metadata belonging to other tools. Invisible project
+metadata stays in the server workspace, with the user folder linked as `_`;
+manual source paths survive restart. A trigger-based importer reapplies its
+source/output preferences on initialization, including linked output paths.
+Standalone opens also materialize the default project's metadata, and commands
+against that project retain one project handle. Source files and nonexistent
+source directories are never created by these operations.
+
+Nine additional LSP regressions cover the exact response objects, no-ops,
+outside-workspace errors, nested exclusions, empty/root classpaths, classpath
+metadata, visible subprojects, default projects and restart behavior. Eight
+resource-backed regressions are verified against Eclipse; the ninth checks the
+Rust requirement that unsaved, absent-file buffers retain type diagnostics
+through source-path changes without creating source files.
+
+The unchanged Gradle fixture uses Gradle 8.5, which supports running on Java 21
+([official release notes](https://docs.gradle.org/8.5/release-notes.html)). Its
+oracle run uses a checksum-verified Temurin 21 JDK in `.oracle/jdks/`; the wrapper,
+repositories and dependency declarations are unchanged. Run the two targets
+against the reference server with a compatible Java 21 installation:
+
+```sh
+JAVA_HOME=/path/to/jdk21 JDTLS_ORACLE=1 CARGO_INCREMENTAL=0 cargo test \
+  --test commands_build_path_command_test --test build_path_regressions \
+  -- --test-threads=1
+```
+
+Evidence in `target/parity-evidence/`:
+
+* `build-path-focused-rust-6.log`: 4/4 original ports and all nine regressions.
+* `build-path-focused-oracle-6.log`: 4/4 original ports and all eight
+  resource-backed regressions; virtual-buffer case explicitly excluded.
+* `build-path-full-suite-1.log`: 93 targets, 1,623 passes, zero failures and
+  14 ignores, including the optional external Javadoc corpus.
+* `build-path-existing-oracle-2.log`: all 29 existing diagnostics-command,
+  lifecycle, multi-root and invisible source/output preference cases pass.
+
+The ledger is now 849 ports, 836 passing, 13 ignored and 1,238 unported.
+The compatible Gradle VM enables the unchanged source-path fixture; it does
+not complete Gradle model/update parity or restore the three ignored
+ProjectsManager Gradle cases. Full feature parity remains unfinished.
