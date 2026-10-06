@@ -1,13 +1,18 @@
 //! Port of `org.eclipse.jdt.ls.core.internal.managers.ContentProviderManagerTest`
-//! over `java/classFileContents` (`ContentProviderManager.getContent`).
+//! over `java/classFileContents` and the Rust manager's direct null-input API.
 //!
 //! jdtls-rust has the jdt.ls default providers only: `sourceContentProvider`
 //! (attached source) and `fernflowerContentProvider`.  The upstream test
 //! plugin's `FakeContentProvider`/`placeholderContentProvider` extensions
-//! cannot be registered. Sourceless binary cases use the upstream fake JDK
+//! still need direct fixture injection and real-manager oracle verification.
+//! Sourceless binary cases use the upstream fake JDK
 //! `rtstubs.jar` alongside the original Maven dependencies.
 
 mod common;
+#[path = "../src/features/content_provider.rs"]
+mod content_provider;
+use content_provider::{Manager, Monitor, Preferences};
+use std::sync::Arc;
 use common::jdtls::Workspace;
 use serde_json::json;
 
@@ -72,19 +77,17 @@ fn test_open_thingy() {
 }
 
 #[test]
-#[ignore = "calls ContentProviderManager.getContent(null) directly; a null document URI has no LSP equivalent"]
 fn test_open_nothing() {
-    let mut f = setup();
-    let result = f.ws.request("java/classFileContents", json!({ "uri": null }));
-    assert!(result.is_null());
+    let manager = Manager::new(Arc::new(Preferences::default()), Vec::new());
+    let result = futures::executor::block_on(manager.get_content(None, &Monitor::default()));
+    assert!(result.is_none());
 }
 
 #[test]
-#[ignore = "calls ContentProviderManager.getSource(null) directly; a null class file has no LSP equivalent"]
 fn test_decompile_nothing() {
-    let mut f = setup();
-    let result = f.ws.request("java/classFileContents", json!({ "uri": null }));
-    assert!(result.is_null());
+    let manager = Manager::new(Arc::new(Preferences::default()), Vec::new());
+    let result = futures::executor::block_on(manager.get_source(None, &Monitor::default()));
+    assert!(result.is_none());
 }
 
 #[test]

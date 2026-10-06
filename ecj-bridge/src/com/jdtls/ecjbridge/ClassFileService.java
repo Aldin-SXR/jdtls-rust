@@ -422,9 +422,9 @@ final class ClassFileService {
         }
     }
 
-    private static final Map<String, String> DECOMPILED = Collections.synchronizedMap(new LinkedHashMap<>(64, 0.75f, true) {
+    private static final Map<String, Decompiled> DECOMPILED = Collections.synchronizedMap(new LinkedHashMap<>(64, 0.75f, true) {
         @Override
-        protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+        protected boolean removeEldestEntry(Map.Entry<String, Decompiled> eldest) {
             return size() > 100;
         }
     });
@@ -433,7 +433,20 @@ final class ClassFileService {
      * jdt.ls {@code FernFlowerDecompiler}: decompile the top-level class of
      * {@code d} together with its (recursively) declared member types.
      */
+    static final class Decompiled {
+        final String content;
+        final int[] rawLineMappings;
+        Decompiled(String content, int[] rawLineMappings) { this.content = content; this.rawLineMappings = rawLineMappings; }
+    }
+
     static String decompile(ClassFileDesc d) {
+        Decompiled result = decompileResult(d);
+        return result == null ? null : DECOMPILER_HEADER + result.content;
+    }
+
+    /** Raw decompiler text and line pairs; provider policy is implemented in Rust. */
+    static Decompiled decompileResult(ClassFileDesc d) {
+
         String top = topLevelBinaryName(d);
         ClassFileDesc topDesc = new ClassFileDesc();
         topDesc.root = d.root;
@@ -441,7 +454,7 @@ final class ClassFileService {
         topDesc.packageName = d.packageName;
         topDesc.classFileName = top.substring(top.lastIndexOf('.') + 1) + ".class";
         String key = topDesc.key();
-        String cached = DECOMPILED.get(key);
+        Decompiled cached = DECOMPILED.get(key);
         if (cached != null) {
             return cached;
         }
@@ -463,11 +476,13 @@ final class ClassFileService {
         options.put(IFernflowerPreferences.ASCII_STRING_CHARACTERS, "0");
         options.put(IFernflowerPreferences.BYTECODE_SOURCE_MAPPING, "1");
         final String[] content = new String[1];
+        final int[][] rawLineMappings = new int[1][];
         IResultSaver saver = new IResultSaver() {
             @Override public void saveFolder(String path) {}
             @Override public void copyFile(String source, String path, String entryName) {}
             @Override public void saveClassFile(String path, String qualifiedName, String entryName, String c, int[] mapping) {
                 content[0] = c;
+                rawLineMappings[0] = mapping;
             }
             @Override public void createArchive(String path, String archiveName, Manifest manifest) {}
             @Override public void saveDirEntry(String path, String archiveName, String entryName) {}
@@ -497,7 +512,7 @@ final class ClassFileService {
         if (content[0] == null) {
             return null;
         }
-        String result = DECOMPILER_HEADER + content[0];
+        Decompiled result = new Decompiled(content[0], rawLineMappings[0]);
         DECOMPILED.put(key, result);
         return result;
     }

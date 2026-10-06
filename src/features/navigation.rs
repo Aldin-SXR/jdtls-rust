@@ -15,7 +15,7 @@ mod binary_implementations;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use once_cell::sync::Lazy;
 use serde_json::Value;
@@ -396,6 +396,13 @@ pub async fn class_file_contents(d: &Dispatcher, uri: &str) -> String {
 
 /// Text and whether it comes from a source attachment rather than a decompiler.
 pub async fn class_file_document(d: &Dispatcher, uri: &str) -> Option<(String, bool)> {
+    let result = class_file_result(d, uri).await?;
+    (!result.content.is_empty()).then_some((result.content, result.attached_source))
+}
+
+/// Provider policy and decompiler line mappings are owned by Rust.
+pub async fn class_file_result(d: &Dispatcher, uri: &str) -> Option<super::content_provider::DecompilerResult> {
+    use super::content_provider::{Descriptor, Manager, Monitor, Preferences};
     if !d.is_ecj_ready().await {
         return None;
     }
@@ -419,10 +426,51 @@ pub async fn class_file_document(d: &Dispatcher, uri: &str) -> Option<(String, b
             source_file_name: None,
         }
     };
-    let req = BridgeRequest::ClassFileContents { id: next_id(), class_file: desc, source_attachments: source_attachments(&ws) };
-    match d.send_request(req).await {
-        Ok(BridgeResponse::ClassFileContents { contents, attached_source, .. }) if !contents.is_empty() => Some((contents, attached_source)),
-        _ => None,
+    let attachments = source_attachments(&ws);
+    let preferences = Arc::new(Preferences {
+        preferred: super::preferences::get("java.contentProvider.preferred")
+            .and_then(|v| v.as_array().map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_owned)).collect())),
+    });
+    let descriptors = [("sourceContentProvider", "0", None, "source"),
+        ("fernflowerContentProvider", "2147483647", Some(r".+\.class.*"), "fernflower")]
+        .into_iter().map(|(id, priority, pattern, provider)| {
+            let desc = desc.clone();
+            let attachments = attachments.clone();
+            Descriptor::new(id, Some(priority), pattern, move || {
+                Ok(Some(Box::new(BridgeContentProvider { dispatcher: d, class_file: desc.clone(),
+                    attachments: attachments.clone(), provider })))
+            }).expect("built-in provider URI pattern")
+        }).collect();
+    Some(Manager::new(preferences, descriptors).get_content_result(uri, &Monitor::default()).await)
+}
+
+struct BridgeContentProvider<'a> {
+    dispatcher: &'a Dispatcher,
+    class_file: ClassFileDesc,
+    attachments: HashMap<String, String>,
+    provider: &'static str,
+}
+
+impl super::content_provider::ContentProvider for BridgeContentProvider<'_> {
+    fn is_decompiler(&self) -> bool { true }
+    fn provide<'a>(&'a mut self, _source: super::content_provider::Source<'a>, _monitor: &'a super::content_provider::Monitor)
+        -> futures::future::BoxFuture<'a, Result<Option<super::content_provider::DecompilerResult>, String>> {
+        Box::pin(async move {
+            let req = BridgeRequest::ClassFileContents { id: next_id(), class_file: self.class_file.clone(),
+                source_attachments: self.attachments.clone(), provider: Some(self.provider.into()) };
+            match self.dispatcher.send_request(req).await {
+                Ok(BridgeResponse::ClassFileContents { contents, available: true, attached_source, raw_line_mappings, .. }) => {
+                    let mut result = if self.provider == "fernflower" {
+                        super::content_provider::fernflower_result(contents, raw_line_mappings.as_deref())
+                    } else { super::content_provider::DecompilerResult::text(contents) };
+                    result.attached_source = attached_source;
+                    Ok(Some(result))
+                }
+                Ok(BridgeResponse::ClassFileContents { .. }) => Ok(None),
+                Ok(response) => Err(format!("Unexpected class-file response: {response:?}")),
+                Err(error) => Err(error.to_string()),
+            }
+        })
     }
 }
 

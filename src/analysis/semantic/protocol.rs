@@ -304,6 +304,8 @@ pub enum BridgeRequest {
         id: u64,
         class_file: crate::classfile::ClassFileDesc,
         source_attachments: HashMap<String, String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
     },
     /// `ClassFileUtil.getURI`: locate a type by name (source or binary).
     #[serde(rename_all = "camelCase")]
@@ -526,6 +528,10 @@ pub enum BridgeResponse {
         contents: String,
         #[serde(default, rename = "attachedSource")]
         attached_source: bool,
+        #[serde(default)]
+        available: bool,
+        #[serde(default, rename = "rawLineMappings")]
+        raw_line_mappings: Option<Vec<i32>>,
     },
     #[serde(rename_all = "camelCase")]
     ClassFileInfo {

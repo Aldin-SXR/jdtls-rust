@@ -65,6 +65,8 @@ final class NavigationDataService {
     public static class ClassFileContentsResponse extends BridgeProtocol.Response {
         public String contents;
         public boolean attachedSource;
+        public boolean available;
+        public int[] rawLineMappings;
 
         ClassFileContentsResponse(long id, String contents) {
             this.id = id;
@@ -1768,8 +1770,22 @@ final class NavigationDataService {
     static Object classFileContents(BridgeProtocol.Request req) {
         ClassFileDesc cf = ClassFileService.complete(req.classFile);
         Map<String, String> attachments = req.sourceAttachments == null ? Map.of() : req.sourceAttachments;
-        ClassFileContentsResponse response = new ClassFileContentsResponse(req.id, cf == null ? "" : ClassFileService.contents(cf, attachments));
-        response.attachedSource = cf != null && ClassFileService.hasAttachedSource(cf, attachments);
+        ClassFileContentsResponse response;
+        if ("source".equals(req.provider)) {
+            String source = cf == null ? null : ClassFileService.attachedSource(cf, attachments);
+            response = new ClassFileContentsResponse(req.id, source == null ? "" : source);
+            response.available = source != null;
+            response.attachedSource = source != null;
+        } else if ("fernflower".equals(req.provider)) {
+            ClassFileService.Decompiled result = cf == null ? null : ClassFileService.decompileResult(cf);
+            response = new ClassFileContentsResponse(req.id, result == null ? "" : result.content);
+            response.available = result != null;
+            response.rawLineMappings = result == null ? null : result.rawLineMappings;
+        } else {
+            response = new ClassFileContentsResponse(req.id, cf == null ? "" : ClassFileService.contents(cf, attachments));
+            response.attachedSource = cf != null && ClassFileService.hasAttachedSource(cf, attachments);
+            response.available = !response.contents.isEmpty();
+        }
         return response;
     }
 

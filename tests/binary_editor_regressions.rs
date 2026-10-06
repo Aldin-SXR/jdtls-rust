@@ -24,6 +24,25 @@ fn request(ws: &mut Workspace, method: &str, uri: &str) -> Value {
     ws.request(method, json!({ "textDocument": { "uri": uri } }))
 }
 
+#[test]
+fn provider_preferences_can_select_decompiled_or_attached_source() {
+    let mut ws = workspace(true, true);
+    let uri = ws.class_file_uri("source-attachment", "foo.bar");
+    let attached = ws.request("java/classFileContents", json!({ "uri": uri }));
+    assert!(!attached.as_str().unwrap().starts_with("// Source code is decompiled"));
+    ws.update_settings(json!({ "java": { "contentProvider": {
+        "preferred": ["fernflowerContentProvider", "sourceContentProvider"]
+    } } }));
+    let decompiled = ws.request("java/classFileContents", json!({ "uri": uri }));
+    assert!(decompiled.as_str().unwrap().starts_with("// Source code is decompiled"));
+    assert!(decompiled.as_str().unwrap().contains("public class bar"));
+    assert_ne!(attached, decompiled);
+    ws.update_settings(json!({ "java": { "contentProvider": {
+        "preferred": ["sourceContentProvider", "fernflowerContentProvider"]
+    } } }));
+    assert_eq!(attached, ws.request("java/classFileContents", json!({ "uri": uri })));
+}
+
 fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Value {
     json!({ "start": { "line": sl, "character": sc }, "end": { "line": el, "character": ec } })
 }

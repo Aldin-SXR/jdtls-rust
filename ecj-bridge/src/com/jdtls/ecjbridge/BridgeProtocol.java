@@ -33,6 +33,7 @@ public class BridgeProtocol {
         public String data;    // opaque data passed back for typeHierarchy supertypes/subtypes
         // navData / classFileContents / classFileInfo (NavigationDataService)
         public String op;
+        public String provider; // classFileContents: source or fernflower raw facts
         public int line, character;
         public ClassFileService.ClassFileDesc classFile;
         public Map<String, String> sourceAttachments; // library path -> source attachment path

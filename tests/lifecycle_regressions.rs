@@ -3,6 +3,42 @@
 mod common;
 use common::jdtls::*;
 use serde_json::json;
+use tower_lsp::lsp_types::Url;
+
+#[test]
+fn full_diagnostics_for_unsaved_buffers_report_and_clear_type_errors() {
+    for scheme in ["file", "untitled", "inmemory"] {
+        let mut ws = Workspace::new();
+        let missing = ws.external_dir().join("Main.java");
+        let uri = if scheme == "file" {
+            Url::from_file_path(&missing).unwrap().to_string()
+        } else {
+            format!("{scheme}:///Main.java")
+        };
+        let source = "public class Main {\n    void run() {\n        int x = \"this is not an int\";\n        System.out.println(x);\n    }\n}\n";
+        // Like the web client, set full validation before didOpen. No file or
+        // imported project is needed, and edits must keep that validation mode.
+        ws.published_diagnostics();
+        ws.request("workspace/executeCommand", json!({
+            "command": "java.project.refreshDiagnostics",
+            "arguments": [uri, "thisFile", false],
+        }));
+        assert!(ws.published_diagnostics().is_empty());
+        ws.open_with(&uri, source);
+        let reports = ws.published_diagnostics_min(1);
+        let report = reports.iter().find(|r| r["uri"] == uri).unwrap();
+        let diagnostics = report["diagnostics"].as_array().unwrap();
+        let error = diagnostics.iter().find(|d| d["severity"] == 1).unwrap();
+        assert_eq!("Type mismatch: cannot convert from String to int", error["message"]);
+        assert_eq!(range(2, 16, 2, 36), error["range"]);
+
+        ws.change(&uri, &source.replace("\"this is not an int\"", "42"));
+        let reports = ws.published_diagnostics_min(1);
+        let report = reports.iter().find(|r| r["uri"] == uri).unwrap();
+        assert!(report["diagnostics"].as_array().unwrap().iter().all(|d| d["severity"] != 1), "{report:#?}");
+        assert!(!missing.exists(), "validation must use the open buffer");
+    }
+}
 
 #[test]
 fn other_open_buffers_are_validated_on_the_next_trigger_like_jdtls() {

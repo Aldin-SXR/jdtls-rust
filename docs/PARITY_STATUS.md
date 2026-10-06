@@ -7,7 +7,7 @@ suite. For how the port is done, see [PORTING.md](PORTING.md).
   binary-editor, initial correction, completion and project-manager integrations. `main` is unchanged.
 * **Reference:** eclipse.jdt.ls 1.58.0. The upstream checkout is 1.58.0-SNAPSHOT
   (2026-04-10), and the oracle in `.oracle/` is the 1.58.0 release.
-* **Last updated:** 2026-10-05.
+* **Last updated:** 2026-10-06.
 
 ## Summary
 
@@ -17,14 +17,15 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 | | Tests | Share of upstream |
 |---|---:|---:|
 | Ported | 836 | 40.1% |
-| Passing | 807 | 38.7% |
-| Ported but `#[ignore]`d | 29 | 1.4% |
+| Passing | 809 | 38.8% |
+| Ported but `#[ignore]`d | 27 | 1.3% |
 | Not ported yet | 1,251 | 59.9% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,523 passed,
-0 failed and 30 ignored across 87 test targets. That count also includes our own regression suite
-(`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 1 test;
-`tests/binary_editor_regressions.rs`, 5 tests;
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,531 passed,
+0 failed and 28 ignored across 88 test targets. That count also includes our own regression suite
+(`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 2 tests;
+`tests/binary_editor_regressions.rs`, 6 tests;
+`tests/content_provider_regressions.rs`, 4 tests;
 `tests/correction_regressions.rs`, 3 tests;
 `tests/completion_regressions.rs`, 6 tests;
 `tests/project_download_regressions.rs`, 2 tests;
@@ -56,7 +57,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | handlers | 871 | 562 | 558 | 64% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 7 | 7 | 12% |
-| managers | 211 | 132 | 107 | 51% |
+| managers | 211 | 132 | 109 | 52% |
 | correction | 604 | 93 | 93 | 15% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 0 | 0 | 0% |
@@ -129,7 +130,7 @@ those duplicate runs are excluded from the upstream-port counts.
 | javadoc/JavaDoc2PlainTextConverterTest | unit tests in `src/javadoc/converter.rs` | 2 | 2 | 0 | n/a (unit tests) |
 | javadoc/JavaDocImageExtractionTest | `javadoc_java_doc_image_extraction_test`, plus a unit test in `src/javadoc/path_handler.rs` | 6 | 6 | 0 | pass |
 | javadoc/JavadocContentTest | `javadoc_javadoc_content_test` | 5 | 5 | 0 | pass |
-| managers/ContentProviderManagerTest | `managers_content_provider_manager_test` | 21 | 6 | 15 | 6 active ports; three restored sourceless-provider assertions verified |
+| managers/ContentProviderManagerTest | `managers_content_provider_manager_test` | 21 | 8 | 13 | 6 active LSP ports and 2 direct null-input ports; Rust provider policy integrated |
 | managers/BasicFileDetectorTest | `managers_basic_file_detector_test` | 12 | 12 | 0 | n/a (unit ports) |
 | managers/EclipseBuildSupportTest | `managers_eclipse_build_support_test` | 1 | 1 | 0 | 1/1 |
 | managers/EclipseProjectImporterTest | `managers_eclipse_project_importer_test` | 15 | 11 | 4 | 8/8 active LSP; 3 unit ports |
@@ -147,13 +148,13 @@ Every ignore names its reason in the test file (`#[ignore = "..."]`), and every
 ignored test remains counted as unfinished. The six provider-chain cases also
 need the upstream plugin log assertions, which their current LSP adapters cannot
 observe. The separate optional `javadoc::converter::corpus_diff::corpus` unit
-test needs an external `JAVADOC_CORPUS`; it is the 30th ignored test in the full
+test needs an external `JAVADOC_CORPUS`; it is the 28th ignored test in the full
 Rust run and is excluded from the upstream-port count.
 
 | Reason | Count | Tests |
 |---|---:|---|
 | Upstream test-plugin provider injection and log assertions (throwing providers, duplicate providers, placeholder provider) | 6 | ContentProviderManagerTest: `test_throws_exception`, `test_decompile_throws_exception`, `test_default_order`, `test_decompile_default_order`, `test_prefer_non_existing_provider_class`, `test_decompile_prefer_non_existing_provider_class` |
-| Upstream test-plugin internals with no LSP equivalent (FakeContentProvider, null URIs, decompiler line mappings) | 9 | ContentProviderManagerTest |
+| Upstream test-plugin internals with no LSP equivalent (FakeContentProvider, decompiler line mappings) | 7 | ContentProviderManagerTest |
 | Lombok not supported | 1 | `test_lombok_show_generated_code_symbols` |
 | Kotlin not supported | 1 | `test_kotlin` |
 | Direct completion-requestor state access | 1 | `test_signature_help_for_selected_completion_proposal` selects the first raw proposal directly, whose ordering differs from LSP items; the public selection flow is implemented and oracle verified separately |
@@ -408,18 +409,15 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 Ported and ignored counts come from the test files:
 
 ```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|lifecycle_regressions|binary_editor_regressions|correction_regressions|completion_regressions|project_download_regressions|paste_regressions|smart_detection_regressions|accessor_regressions|constructor_regressions|tostring_regressions|hashcode_regressions|delegate_regressions|override_regressions|method_correction_regressions|dead_code_regressions|unused_code_regressions|exception_correction_regressions|expression_correction_regressions) continue ;; esac
+for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|*_regressions) continue ;; esac
   echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
 ```
 
 Add the ports that live as unit tests in `src/` (InlayHintFilterManagerTest 7,
 JavaDoc2Markdown 19, JavaDoc2PlainText 2, JavaDocImageExtraction 1, InitHandler 2).
-Exclude `lifecycle_regressions.rs`, `binary_editor_regressions.rs` and
-`correction_regressions.rs`, `completion_regressions.rs` and
-`project_download_regressions.rs`, `paste_regressions.rs` and
-`smart_detection_regressions.rs`, `accessor_regressions.rs`,
-`constructor_regressions.rs`, `tostring_regressions.rs`, `hashcode_regressions.rs`, `delegate_regressions.rs`, `override_regressions.rs`, `method_correction_regressions.rs`, `dead_code_regressions.rs`, `unused_code_regressions.rs`, `exception_correction_regressions.rs`, `expression_correction_regressions.rs`, which are our regression suites, and empty placeholders (these are not ports). Upstream counts
-come from `grep -c '@Test'` over `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
+Exclude `tests/lsp.rs`, all `tests/*_regressions.rs` files, and empty placeholders
+(these are not ports). Upstream counts come from `@Test` methods in
+`eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
 Update this file whenever a branch is merged into `jdtls-parity`.
 
 ## Paste integration evidence
@@ -1231,6 +1229,50 @@ stub projects. That bootstrap is retained; completion/type-search roots follow
 the project classpath separately. The targeted rerun passes all 157 tests in those seven targets plus completion,
 workspace symbols and implementations (`ignored-runtime-bootstrap-rust-green-1.log`).
 The fresh final full run covers that correction.
-The remaining 29 ignored upstream ports concern unsupported features, test-plugin
+At the end of that batch, the remaining 29 ignored upstream ports concerned unsupported features, test-plugin
 internals, direct internal APIs, required VMs and Gradle model behavior; they are
 still excluded from the passing ledger. Full parity remains unfinished.
+
+## Web diagnostics and Rust provider policy (2026-10-06)
+
+The local web clients now explicitly enable full diagnostics for their unsaved
+non-project buffers before `didOpen`, and repeat that setup after reconnecting.
+The server retains Eclipse's syntax-only default. Both editor pages render
+language-tagged hover signatures as code rather than joining objects into text.
+Playwright verified type mismatches, missing `List`/`ArrayList` imports, clearing
+errors after corrections, hover signatures, and validation after reload on `/`
+and `/index2.html`. No console errors or failed requests occurred. See
+[WEB_TESTING.md](WEB_TESTING.md) for startup steps. `web/` and `ui/` remain local,
+gitignored demo files.
+
+The Rust lifecycle regression also verifies type-error ranges and clearing after
+edits for a missing-file buffer, an untitled buffer and an in-memory buffer,
+without creating a source file on disk. Evidence:
+`web-java-browser-2.log`, `web-diagnostics-rust-1.log`, and `web-java-*.png` in
+`target/parity-evidence/`.
+
+`java/classFileContents` now selects its attached-source and FernFlower providers
+through Rust policy. Java supplies attached source, raw decompiled text and raw
+line pairs. Rust applies URI matching, provider priorities, preferred IDs,
+fallback, cancellation checkpoints, preference injection and fresh provider
+construction. An integration regression switches between decompiled and attached
+source using preferences on successive requests; it also passes against Eclipse.
+Four additional policy regressions cover preference identity, error fallback and
+duplicate-provider logs, cancellation, and the absence of manager result caching.
+These four tests are not counted as upstream ports.
+
+Two ignored upstream tests (`test_open_nothing`, `test_decompile_nothing`) now call
+the Rust manager directly, preserving the upstream null-input assertions. A thin
+standalone Java probe checked both calls against the actual manager from the
+oracle's `org.eclipse.jdt.ls.core_1.58.0.202604151538.jar`, rather than using an
+invalid LSP URI as a substitute. `content-provider-null-oracle-1.log` records that
+probe. `content-provider-oracle-1.log` separately verifies all six active LSP
+provider ports and all six binary-editor regressions against Eclipse.
+
+The other 13 provider ports remain ignored until their actual test-extension
+registration, complete log assertions and decompiler mapping fixtures are
+verified. Raw mapping transport and Rust mapping conversion are implemented;
+the upstream mapping test remains unfinished and excluded from the passing count.
+The current ledger is 836 ported, 809 passing, 27 ignored and 1,251 unported.
+`web-and-provider-full-suite-1.log` records the fresh full Rust run: 88 targets,
+1,531 passes, zero failures and 28 ignores (including the optional Javadoc corpus).
