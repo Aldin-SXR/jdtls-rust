@@ -84,7 +84,13 @@ public class InMemoryNameEnvironment implements INameEnvironment {
                 LOG.warning("Classpath entry not found: " + cp);
                 continue;
             }
-            if (cp.endsWith(".jar") || cp.endsWith(".zip")) {
+            if (RuntimeImage.isImage(cp)) {
+                try {
+                    entries.add(new JrtClasspathEntry(RuntimeImage.open(cp)));
+                } catch (IOException e) {
+                    LOG.warning("Cannot open runtime image " + cp + ": " + e.getMessage());
+                }
+            } else if (cp.endsWith(".jar") || cp.endsWith(".zip")) {
                 entries.add(new JarClasspathEntry(f));
             } else if (f.isDirectory()) {
                 entries.add(new DirClasspathEntry(f));
@@ -294,28 +300,20 @@ public class InMemoryNameEnvironment implements INameEnvironment {
      */
     static class JrtClasspathEntry implements ClasspathEntry {
         private final java.nio.file.FileSystem jrtFs;
-        /** Shared across all instances — enumerated once per JVM lifetime. */
-        private static volatile List<java.nio.file.Path> sharedModuleList;
-        private static final Map<String, Boolean> sharedPackageCache = new ConcurrentHashMap<>();
+        private final List<java.nio.file.Path> moduleList;
+        private final Map<String, Boolean> packageCache = new ConcurrentHashMap<>();
 
         JrtClasspathEntry(java.nio.file.FileSystem fs) throws IOException {
             this.jrtFs = fs;
-            if (sharedModuleList == null) {
-                synchronized (JrtClasspathEntry.class) {
-                    if (sharedModuleList == null) {
-                        java.nio.file.Path modulesRoot = fs.getPath("/modules");
-                        try (var stream = Files.list(modulesRoot)) {
-                            sharedModuleList = stream.toList();
-                        }
-                    }
-                }
+            try (var stream = Files.list(fs.getPath("/modules"))) {
+                moduleList = stream.toList();
             }
         }
 
         @Override
         public NameEnvironmentAnswer findClass(String binaryName) {
             String classFile = binaryName + ".class";
-            for (java.nio.file.Path module : sharedModuleList) {
+            for (java.nio.file.Path module : moduleList) {
                 java.nio.file.Path p = module.resolve(classFile);
                 if (Files.exists(p)) {
                     try {
@@ -332,8 +330,8 @@ public class InMemoryNameEnvironment implements INameEnvironment {
 
         @Override
         public boolean isPackage(String packagePath) {
-            return sharedPackageCache.computeIfAbsent(packagePath, pkg -> {
-                for (java.nio.file.Path module : sharedModuleList) {
+            return packageCache.computeIfAbsent(packagePath, pkg -> {
+                for (java.nio.file.Path module : moduleList) {
                     if (Files.isDirectory(module.resolve(pkg))) return true;
                 }
                 return false;

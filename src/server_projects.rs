@@ -8,6 +8,23 @@ use crate::project::{invisible, ImportSettings, ProjectKind, Workspace};
 use std::path::{Path, PathBuf};
 
 impl JavaLanguageServer {
+    /// Settings changes report runtime validation failures to the client.
+    pub(crate) async fn send_runtime_notices(&self) {
+        let (messages, actionable) = {
+            let mut config = self.config.write().await;
+            let actionable = config.extended_capability("actionableRuntimeNotificationSupport");
+            (std::mem::take(&mut config.runtime_notices), actionable)
+        };
+        for message in messages {
+            if actionable {
+                let notice = crate::project::runtime::notice(&message, true);
+                self.client.send_notification::<crate::project::runtime::ActionableNotification>(notice["params"].clone()).await;
+            } else {
+                self.client.show_message(MessageType::ERROR, message).await;
+            }
+        }
+    }
+
     /// The current workspace model.
     pub(crate) fn workspace_snapshot(&self) -> Workspace {
         self.dispatcher
@@ -22,6 +39,9 @@ impl JavaLanguageServer {
     pub(crate) async fn install_workspace(&self, mut ws: Workspace) {
         let settings = self.current_import_settings().await;
         ws.configure_filters(&settings.resource_filters);
+        if let Some(registry) = &settings.runtime_registry {
+            registry.apply_to_workspace(&mut ws);
+        }
         if let Err(error) = ws.ensure_default_project() {
             tracing::error!("Unable to create default Java project: {error}");
         }
@@ -193,6 +213,12 @@ impl JavaLanguageServer {
         let roots = self.roots.read().await.clone();
         let mut changed = false;
         let mut error: Option<String> = None;
+        if old.runtime_registry != new.runtime_registry {
+            if let Some(registry) = &new.runtime_registry {
+                registry.apply_to_workspace(&mut ws);
+                changed = true;
+            }
+        }
         if old.resource_filters != new.resource_filters {
             ws.configure_filters(&new.resource_filters);
             changed = true;

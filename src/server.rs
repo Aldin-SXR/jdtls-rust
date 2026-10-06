@@ -659,6 +659,11 @@ impl LanguageServer for JavaLanguageServer {
             if let Some(settings) = cfg.settings.clone() {
                 merge_config_settings(&mut cfg, &settings);
             }
+            // BaseInitHandler configures JVMs without a client connection.
+            // Configuration updates later use the connected client.
+            for message in cfg.runtime_notices.drain(..) {
+                tracing::error!("{message}");
+            }
             cfg.completion_documentation_markdown = completion_markdown(&params.capabilities);
             *self.config.write().await = cfg;
         } else {
@@ -1064,6 +1069,7 @@ impl LanguageServer for JavaLanguageServer {
         }
 
         let new_import_settings = self.current_import_settings().await;
+        self.send_runtime_notices().await;
         self.on_import_settings_changed(&old_import_settings, &new_import_settings)
             .await;
         if !self.legacy_diagnostics().await {
@@ -2730,6 +2736,9 @@ pub(crate) fn data_dir() -> std::path::PathBuf {
 
 /// The default VM's home (`JavaRuntime.getDefaultVMInstall()`).
 pub(crate) fn vm_home(cfg: &Config) -> Option<std::path::PathBuf> {
+    if let Some(vm) = cfg.runtime_registry.as_ref().and_then(|r| r.default_install()) {
+        return Some(vm.home.clone());
+    }
     let from = |h: &str| {
         let p = std::path::PathBuf::from(h);
         p.join("bin")
@@ -2772,11 +2781,30 @@ fn import_settings(cfg: &Config) -> crate::project::ImportSettings {
     s.data_dir = Some(data_dir());
     s.vm_home = vm_home(cfg);
     s.vm_version = s.vm_home.as_deref().and_then(crate::project::vm_version);
+    s.runtime_registry = cfg.runtime_registry.clone();
     s
 }
 
 fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
     let mut restart_ecj = false;
+    let runtimes = crate::project::runtime::parse_runtimes(settings);
+    let java_home = crate::project::runtime::setting_value(settings, "java.home");
+    if runtimes.is_some() || java_home.is_some() || config.runtime_registry.is_some() {
+        if config.runtime_registry.is_none() {
+            config.runtime_registry = Some(vm_home(config).as_deref()
+                .map(crate::project::runtime::RuntimeRegistry::with_default_home)
+                .unwrap_or_default());
+        }
+        if let Some(runtimes) = runtimes {
+            config.runtimes = runtimes;
+        }
+        if let Some(home) = java_home {
+            config.runtime_java_home = home.as_str().map(crate::project::invisible::expand_path);
+        }
+        let result = config.runtime_registry.as_mut().unwrap()
+            .configure(&config.runtimes, config.runtime_java_home.as_deref());
+        config.runtime_notices.extend(result.notices);
+    }
     config.inlay_hints.update_from(settings);
     let previous_filters = config.resource_filters.clone().unwrap_or_else(|| {
         crate::project::ImportSettings::from_settings(config.settings.as_ref()).resource_filters
@@ -2786,7 +2814,6 @@ fn merge_config_settings(config: &mut Config, settings: &Value) -> bool {
 
     let updated_java_home = setting_string(settings, &["javaHome"])
         .or_else(|| setting_string(settings, &["java", "javaHome"]))
-        .or_else(|| setting_string(settings, &["java", "home"]))
         .or_else(|| setting_string(settings, &["java", "jdt", "ls", "java", "home"]));
     if let Some(java_home) = updated_java_home {
         if config.java_home.as_deref() != Some(java_home.as_str()) {

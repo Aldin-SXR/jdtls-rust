@@ -190,8 +190,7 @@ final class TypeIndex {
     }
 
     private static final Map<String, BinaryRoot> ROOTS = new ConcurrentHashMap<>();
-    private static volatile BinaryRoot JRT;
-    private static volatile BinaryRoot JRT_ALL;
+    private static final Map<String, BinaryRoot> JRT_ROOTS = new ConcurrentHashMap<>();
 
     /** The JDK image. Below Java 9 JDT reads the image as a flat classpath
      * (every package of every system module, as jdt.ls proposes e.g.
@@ -199,18 +198,27 @@ final class TypeIndex {
      * project); from 9 on only unqualified exports are visible to the
      * unnamed module. */
     static BinaryRoot jrt(boolean allPackages) {
-        BinaryRoot r = allPackages ? JRT_ALL : JRT;
-        if (r != null) return r;
-        synchronized (TypeIndex.class) {
-            r = allPackages ? JRT_ALL : JRT;
-            if (r != null) return r;
-            BinaryRoot root = new BinaryRoot("jrt");
+        return jrt(null, allPackages);
+    }
+
+    static BinaryRoot jrt(String library, boolean allPackages) {
+        String id = library == null ? "jrt" : library;
+        return JRT_ROOTS.computeIfAbsent(id + "|" + allPackages, key -> {
+            BinaryRoot root = new BinaryRoot(id);
             try {
-                FileSystem fs = FileSystems.getFileSystem(URI.create("jrt:/"));
+                FileSystem fs = library == null ? FileSystems.getFileSystem(URI.create("jrt:/")) : RuntimeImage.open(library);
+                Map<String, ModuleDescriptor> descriptors = new HashMap<>();
+                try (Stream<Path> modules = Files.list(fs.getPath("/modules"))) {
+                    for (Path module : modules.toList()) {
+                        try (InputStream info = Files.newInputStream(module.resolve("module-info.class"))) {
+                            ModuleDescriptor descriptor = ModuleDescriptor.read(info);
+                            descriptors.put(descriptor.name(), descriptor);
+                        }
+                    }
+                }
                 // Only packages exported (unqualified) by system modules are visible to unnamed-module code.
                 Map<String, Set<String>> exported = new HashMap<>();
-                for (ModuleReference ref : ModuleFinder.ofSystem().findAll()) {
-                    ModuleDescriptor d = ref.descriptor();
+                for (ModuleDescriptor d : descriptors.values()) {
                     Set<String> pk = new HashSet<>();
                     for (ModuleDescriptor.Exports ex : d.exports()) {
                         if (!ex.isQualified()) pk.add(ex.source());
@@ -227,9 +235,10 @@ final class TypeIndex {
                 while (!todo.isEmpty()) {
                     String m = todo.poll();
                     if (!rootModules.add(m)) continue;
-                    ModuleFinder.ofSystem().find(m).ifPresent(ref -> {
-                        for (ModuleDescriptor.Requires req : ref.descriptor().requires()) todo.add(req.name());
-                    });
+                    ModuleDescriptor descriptor = descriptors.get(m);
+                    if (descriptor != null) {
+                        for (ModuleDescriptor.Requires req : descriptor.requires()) todo.add(req.name());
+                    }
                 }
                 Path modules = fs.getPath("/modules");
                 try (Stream<Path> mods = Files.list(modules)) {
@@ -257,9 +266,8 @@ final class TypeIndex {
             } catch (Exception e) {
                 // no jrt: empty JDK index
             }
-            if (allPackages) JRT_ALL = root; else JRT = root;
             return root;
-        }
+        });
     }
 
     static BinaryRoot root(String path) {
@@ -387,7 +395,7 @@ final class TypeIndex {
     TypeIndex(Map<String, String> files, Set<String> testUris, List<String> classpath, String sourceLevel, String skipUri,
             boolean excludeTestCode) {
         for (String cp : classpath) {
-            binaryRoots.add(root(cp));
+            binaryRoots.add(RuntimeImage.isImage(cp) ? jrt(cp, BridgeOptions.version(sourceLevel).startsWith("1.")) : root(cp));
         }
         if (BridgeOptions.includeRunningVM()) binaryRoots.add(jrt(BridgeOptions.version(sourceLevel).startsWith("1.")));
         for (Map.Entry<String, String> f : files.entrySet()) {

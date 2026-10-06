@@ -561,6 +561,12 @@ pub async fn completion_documentation(
 
 /// `javadoc_location` of a library of `project` (`CoreJavaDocLocations.getJavadocBaseLocation`).
 fn javadoc_location(ws: &crate::project::Workspace, project: &str, root: &Path) -> Option<String> {
+    let vm = ws.project(project).and_then(|p| p.runtime.as_ref())
+        .or_else(|| ws.runtime_registry.as_ref().and_then(|r| r.default_install()));
+    if let Some(url) = vm.and_then(|vm| vm.libraries.iter().find(|l| l.path == root))
+        .and_then(|l| l.javadoc.clone()) {
+        return Some(url);
+    }
     let attributes = match ws.project(project) {
         Some(p) if p.kind == crate::project::ProjectKind::Maven => p
             .libraries

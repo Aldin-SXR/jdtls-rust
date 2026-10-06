@@ -83,13 +83,13 @@ final class BridgeOptions {
      * archive. Project type-search roots are governed separately by Rust.
      */
     static void configureEnvironment(org.eclipse.jdt.core.dom.ASTParser parser, String[] classpath) {
-        parser.setEnvironment(classpath, null, null, /* includeRunningVMBootclasspath */ true);
+        parser.setEnvironment(classpath, null, null, !"true".equals(CURRENT.get().get("jdtls.bridge.explicitRuntime")));
     }
 
     /** As {@link #configureEnvironment(org.eclipse.jdt.core.dom.ASTParser, String[])}, plus UTF-8 source folders. */
     static void configureEnvironment(org.eclipse.jdt.core.dom.ASTParser parser, String[] classpath, String[] sourcepath) {
         String[] encodings = new String[sourcepath.length];
         java.util.Arrays.fill(encodings, "UTF-8");
-        parser.setEnvironment(classpath, sourcepath, encodings, /* includeRunningVMBootclasspath */ true);
+        parser.setEnvironment(classpath, sourcepath, encodings, !"true".equals(CURRENT.get().get("jdtls.bridge.explicitRuntime")));
     }
 }

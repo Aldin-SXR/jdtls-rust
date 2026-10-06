@@ -1,0 +1,6 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-SymbolicName: org.eclipse.jdt.ls.tests;singleton:=true
+Bundle-Version: 1.0.0
+Fragment-Host: org.eclipse.jdt.ls.core;bundle-version="[1.58.0,1.59.0)"
+Bundle-RequiredExecutionEnvironment: JavaSE-21

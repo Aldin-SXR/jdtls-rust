@@ -13,7 +13,7 @@ import subprocess
 
 repo = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("fixture", choices=["content-provider", "projects-manager"])
+parser.add_argument("fixture", choices=["content-provider", "projects-manager", "jvm-configuration"])
 fixture = parser.parse_args().fixture
 source = repo / "tests/oracle" / fixture
 oracle = Path(os.environ.get("JDTLS_ORACLE_HOME", repo / ".oracle/jdtls-1.58.0")).resolve()
@@ -39,7 +39,19 @@ subprocess.run([java_tool("javac"), "--release", "21", "-cp", classpath, "-d", s
                 *(str(p) for p in (source / "src").rglob("*.java"))], check=True)
 jar_name = f"jdtls.rust.{fixture.replace('-', '')}.tests_1.0.0.jar"
 shutil.copyfile(source / "plugin.xml", classes / "fragment.xml")
-subprocess.run([java_tool("jar"), "--create", "--file", str(plugins / jar_name),
+if fixture == "jvm-configuration":
+    # TestVMType's unchanged resource lookup requires actual directories.
+    jar_name = "jdtls.rust.jvmconfiguration.tests_1.0.0"
+    bundle = plugins / jar_name
+    shutil.copytree(classes, bundle, dirs_exist_ok=True)
+    (bundle / "META-INF").mkdir(exist_ok=True)
+    shutil.copyfile(source / "MANIFEST.MF", bundle / "META-INF/MANIFEST.MF")
+    for directory in ("fakejdk", "fakejdk2"):
+        shutil.copytree(repo / "tests/fixtures" / directory, bundle / directory, dirs_exist_ok=True)
+    for directory in ("doc", "modules"):
+        (bundle / "fakejdk2/21a" / directory).mkdir(exist_ok=True)
+else:
+    subprocess.run([java_tool("jar"), "--create", "--file", str(plugins / jar_name),
                 "--manifest", str(source / "MANIFEST.MF"), "-C", str(classes), "."], check=True)
 for config in oracle.glob("config_*"):
     destination = product / config.name

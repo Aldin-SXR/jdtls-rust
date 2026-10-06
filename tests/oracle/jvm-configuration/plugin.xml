@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fragment>
+  <extension point="org.eclipse.jdt.launching.vmInstallTypes">
+    <vmInstallType class="org.eclipse.jdt.ls.core.internal.TestVMType" id="org.eclipse.jdt.ls.core.internal.TestVMType"/>
+  </extension>
+  <extension point="org.eclipse.jdt.ls.core.delegateCommandHandler">
+    <delegateCommandHandler class="org.eclipse.jdt.ls.core.internal.JvmConfigurationTestCommand">
+      <command id="jdtls.test.jvmConfiguration"/>
+    </delegateCommandHandler>
+  </extension>
+</fragment>

@@ -57,6 +57,16 @@ pub struct Config {
     #[serde(skip)]
     pub resource_filters: Option<crate::project::resource_filters::ResourceFilters>,
 
+    /// Project VMs are independent of the Java process running the compiler bridge.
+    #[serde(skip)]
+    pub runtime_registry: Option<crate::project::runtime::RuntimeRegistry>,
+    #[serde(skip)]
+    pub runtimes: Vec<crate::project::runtime::RuntimeEnvironment>,
+    #[serde(skip)]
+    pub runtime_java_home: Option<String>,
+    #[serde(skip)]
+    pub runtime_notices: Vec<String>,
+
     /// Client supports Markdown completion documentation
     /// (`ClientPreferences.isSupportsCompletionDocumentationMarkdown`).
     #[serde(skip)]

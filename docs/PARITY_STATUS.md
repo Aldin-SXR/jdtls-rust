@@ -16,13 +16,13 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 838 | 40.2% |
-| Passing | 825 | 39.5% |
+| Ported | 845 | 40.5% |
+| Passing | 832 | 39.9% |
 | Ported but `#[ignore]`d | 13 | 0.6% |
-| Not ported yet | 1,249 | 59.8% |
+| Not ported yet | 1,242 | 59.5% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,587 passed,
-0 failed and 14 ignored across 89 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,610 passed,
+0 failed and 14 ignored across 91 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 3 tests;
 `tests/binary_editor_regressions.rs`, 6 tests;
 `tests/content_provider_regressions.rs`, 4 tests;
@@ -30,6 +30,7 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,587 passed
 `tests/completion_regressions.rs`, 6 tests;
 `tests/project_download_regressions.rs`, 2 tests;
 `tests/projects_manager_regressions.rs`, 14 tests;
+`tests/jvm_configuration_regressions.rs`, 5 tests;
 `tests/paste_regressions.rs`, 9 tests;
 `tests/smart_detection_regressions.rs`, 13 tests;
 `tests/accessor_regressions.rs`, 18 tests;
@@ -48,8 +49,9 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,587 passed
 `tests/uncaught_exception_regressions.rs`, 18 tests;
 `tests/allocation_correction_regressions.rs`, 24 tests) and unit
 tests that aren't ports. Six project-manager port targets and the additional
-project-manager regression target also compile the project module's 11 unit tests,
-and BasicFileDetector recompiles its detector unit test.
+project-manager regression target also compile the project module's 11 unit tests.
+JVMConfigurator recompiles those same 11 unit tests.
+BasicFileDetector recompiles its detector unit test.
 ContentProviderManager also reuses three class-file URI unit tests.
 Those duplicate runs are excluded from the upstream-port counts.
 
@@ -63,7 +65,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | managers | 211 | 134 | 125 | 59% |
 | correction | 604 | 93 | 93 | 15% |
 | refactoring | 119 | 0 | 0 | 0% |
-| (root) | 71 | 0 | 0 | 0% |
+| (root) | 71 | 7 | 7 | 10% |
 | preferences | 53 | 0 | 0 | 0% |
 | codemanipulation | 20 | 10 | 10 | 50% |
 | cleanup | 18 | 0 | 0 | 0% |
@@ -127,6 +129,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
 | codemanipulation/OverrideMethodsTestCase | `codemanipulation_override_methods_test_case` | 10 | 10 | 0 | 10/10 |
+| JVMConfiguratorTest | `jvm_configurator_test` | 7 | 7 | 0 | 7/7 direct calls to the actual JVM/runtime APIs and unchanged upstream VM extension |
 | commands/DiagnosticsCommandTest | `commands_diagnostics_command_test` | 2 | 2 | 0 | 2/2 |
 | commands/TypeHierarchyCommandTest | `commands_type_hierarchy_command_test` | 5 | 5 | 0 | 5/5 |
 | javadoc/JavaDoc2MarkdownConverterTest | unit tests in `src/javadoc/converter.rs` | 19 | 19 | 0 | n/a (unit tests) |
@@ -1386,3 +1389,75 @@ Verification evidence in `target/parity-evidence/`:
 The ledger now has 838 upstream ports, 825 passing, 13 ignored and 1,249 unported.
 Full feature parity remains unfinished, including the three ignored Gradle
 manager ports and the unported cancellation/importer manager cases.
+
+
+## JVM configuration and execution environments
+
+All seven original `JVMConfiguratorTest` methods are ported with their original
+assertions: default VM reuse, native runtime validation, library Javadoc,
+absolute Javadoc-directory conversion, preview/compliance changes, both runtime
+validation notification forms, and the single `java.lang.Object` symbol check.
+The isolated oracle registers upstream's unchanged `TestVMType` and all its
+Java 8 and Java 9–26 stub libraries. A thin adapter calls the actual JDT LS,
+launching and project APIs; it does not replace configuration or VM policy.
+The default/invisible-project listener test observes 21 → 26 → 12 → 21.
+
+Rust owns runtime preferences, installation lookup, execution-environment and
+named-VM selection, the default VM, and source/Javadoc attachment settings.
+Public `java.configuration.runtimes` accepts nested and flat preferences;
+missing keys retain the list and explicit null/empty lists clear it while
+previously installed VMs remain registered. The first `default` key is the
+only one considered, matching upstream even when that value is false. Runtime
+validation is logged during initialization and sent to the client after a
+configuration update, using actionable notifications when negotiated.
+
+Project `java.home` and the selected runtimes are separate from the Java process
+running the compiler bridge. VM changes update project libraries, default
+compiler options and unmanaged-project preview settings. Referenced projects
+contribute their dependencies and sources, not their JRE libraries. The Java
+bridge reads the selected JDK image for compilation, type search and binary
+navigation, with module descriptors and caches scoped to that image. Configured
+JDK source attachments and Javadoc locations reach binary-editor content and
+class-file URIs instead of being overwritten by the running JVM's defaults.
+The filesystem factory and module-descriptor APIs were checked against the
+[official Java filesystem documentation](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/nio/file/FileSystems.html)
+and [module-descriptor documentation](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/module/ModuleDescriptor.html);
+the pinned Eclipse implementation and oracle supply configuration semantics.
+
+Five additional public LSP regressions verify separate project execution
+environments, runtime changes and continued compiler availability, initialization
+versus update notifications, native source/Javadoc attachments, and type errors
+plus import fixes in absent-file, `untitled:` and `inmemory:` buffers. All four
+resource-backed cases also pass against Eclipse. The virtual-buffer case is an
+explicit Rust requirement and is excluded from oracle runs. The runtime-change
+case includes upstream's empty fake Java executable: project-VM configuration
+must not use it to launch the compiler bridge.
+
+The existing fallback tests now isolate their compiler socket and use an
+unavailable bridge instead of relying on startup timing. All original assertions
+remain. The range-formatting case still uses the real compiler bridge. The
+server releases its configuration lock before waiting for bridge startup, so
+fallback requests and settings updates remain responsive. The LSP regression
+target remains 95 tests.
+
+Evidence in `target/parity-evidence/`:
+
+* `jvm-configurator-oracle-final-3.log`: 7/7 original upstream methods pass;
+  the 11 reused Rust project unit tests are excluded from this oracle command.
+* `jvm-wire-oracle-final-2.log`: 4/4 additional resource-backed settings cases.
+* `jvm-wire-rust-final-3.log`: all five additional cases pass, including virtual
+  buffers and the two-project execution-environment selection.
+* `jvm-lsp-regressions-final-3.log`: all 95 existing LSP regressions pass with
+  deterministic fallback coverage.
+* `jvm-builder-provider-oracle-final-1.log` and
+  `jvm-builder-projects-oracle-final-1.log`: original isolated provider and
+  project-manager products still pass after extending the fixture builder.
+* `jvm-full-suite-final-2.log`: 91 targets, 1,610 passes, zero failures and
+  14 ignores, including the optional external Javadoc corpus.
+
+The ledger is now 845 ports, 832 passing, 13 ignored and 1,242 unported.
+This batch does not prove complete VM-platform parity: contributed/native VM
+extension discovery, pre-release-file JDK metadata, all legacy installation
+layouts and strict execution-environment access rules need broader comparisons.
+Full feature parity remains unfinished, including the ignored build-tool cases
+and the unported preference, refactoring, cleanup and syntax-server suites.

@@ -20,6 +20,7 @@ struct LspClient {
     stdin: ChildStdin,
     rx: Receiver<Value>,
     next_id: u64,
+    _syntax_dir: Option<tempfile::TempDir>,
 }
 
 /// Read one Content-Length-framed JSON message from `reader`.
@@ -50,8 +51,27 @@ fn read_one_lsp_message(
 
 impl LspClient {
     fn spawn() -> Self {
+        Self::spawn_with_bridge(true)
+    }
+
+    /// Exercise the startup fallback independently of a shared daemon's
+    /// readiness. The production override points to an invalid jar in a
+    /// separate temporary/socket directory; the bridge cannot become ready.
+    fn spawn_syntax() -> Self {
+        Self::spawn_with_bridge(false)
+    }
+
+    fn spawn_with_bridge(bridge: bool) -> Self {
         let bin = env!("CARGO_BIN_EXE_jdtls-rust");
-        let mut child = Command::new(bin)
+        let syntax_dir = (!bridge).then(|| tempfile::Builder::new()
+            .prefix("jdtls-syntax-").tempdir_in("/tmp").unwrap());
+        let mut command = Command::new(bin);
+        if let Some(dir) = &syntax_dir {
+            let jar = dir.path().join("unavailable-bridge.jar");
+            fs::write(&jar, []).unwrap();
+            command.env("TMPDIR", dir.path()).env("JDTLS_ECJ_JAR", jar);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(if std::env::var_os("JDTLS_TEST_STDERR").is_some() { Stdio::inherit() } else { Stdio::null() })
@@ -75,7 +95,7 @@ impl LspClient {
             }
         });
 
-        LspClient { _child: child, stdin, rx, next_id: 1 }
+        LspClient { _child: child, stdin, rx, next_id: 1, _syntax_dir: syntax_dir }
     }
 
     // ── Wire protocol ─────────────────────────────────────────────────────────
@@ -813,7 +833,7 @@ fn compile_java_to_dir(out_dir: &Path, sources: &[(&str, &str)]) {
 /// Typing `for` inside a method body → the `for` snippet is offered.
 #[test]
 fn syntax_snippet_for() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_snippet_for");
@@ -830,7 +850,7 @@ fn syntax_snippet_for() {
 /// Typing `sout` → the `System.out.println` snippet is offered.
 #[test]
 fn syntax_snippet_sout() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_snippet_sout");
@@ -845,7 +865,7 @@ fn syntax_snippet_sout() {
 
 #[test]
 fn syntax_postfix_snippets_present() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_postfix_present");
@@ -867,7 +887,7 @@ fn syntax_postfix_snippets_present() {
 
 #[test]
 fn syntax_postfix_sysout_rewrites_bare_member_access() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_postfix_bare_sysout");
@@ -910,7 +930,7 @@ fn syntax_postfix_sysout_rewrites_bare_member_access() {
 
 #[test]
 fn syntax_postfix_sysout_rewrites_full_expression() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_postfix_sysout");
@@ -949,7 +969,7 @@ fn syntax_postfix_sysout_rewrites_full_expression() {
 
 #[test]
 fn syntax_postfix_opt_adds_optional_import() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_postfix_opt_import");
@@ -981,7 +1001,7 @@ fn syntax_postfix_opt_adds_optional_import() {
 
 #[test]
 fn syntax_postfix_snippets_sort_after_members() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_postfix_sort_after_members");
@@ -1009,7 +1029,7 @@ fn syntax_postfix_snippets_sort_after_members() {
 
 #[test]
 fn syntax_postfix_not_offered_in_imports() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_postfix_import");
@@ -1029,7 +1049,7 @@ fn syntax_postfix_not_offered_in_imports() {
 
 #[test]
 fn syntax_postfix_not_offered_on_type_qualifier() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_postfix_type_qualifier");
@@ -1056,7 +1076,7 @@ fn syntax_postfix_not_offered_on_type_qualifier() {
 
 #[test]
 fn syntax_no_completion_after_member_modifier() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_no_completion_after_member_modifier");
@@ -1076,7 +1096,7 @@ fn syntax_no_completion_after_member_modifier() {
 
 #[test]
 fn syntax_no_completion_after_method_return_type() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_no_completion_after_method_return_type");
@@ -1096,7 +1116,7 @@ fn syntax_no_completion_after_method_return_type() {
 
 #[test]
 fn syntax_no_completion_after_parameter_type_in_signature() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_no_completion_after_parameter_type");
@@ -1116,7 +1136,7 @@ fn syntax_no_completion_after_parameter_type_in_signature() {
 
 #[test]
 fn syntax_class_body_type_prefix_offers_int() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_class_body_type_prefix");
@@ -1137,7 +1157,7 @@ fn syntax_class_body_type_prefix_offers_int() {
 
 #[test]
 fn syntax_no_completion_after_method_signature_close_paren() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_no_completion_after_signature_close_paren");
@@ -1158,7 +1178,7 @@ fn syntax_no_completion_after_method_signature_close_paren() {
 /// Cursor in variable-name slot (`int |x`) → no completions.
 #[test]
 fn syntax_no_completion_in_var_name() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_no_completion_in_var_name");
@@ -1174,7 +1194,7 @@ fn syntax_no_completion_in_var_name() {
 /// Prefix-filtered member completion: `this.` in class → own fields appear.
 #[test]
 fn syntax_this_member_completion() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_this_member");
@@ -1199,7 +1219,7 @@ fn syntax_this_member_completion() {
 /// Fields/methods from the class that don't match should NOT appear.
 #[test]
 fn syntax_prefix_filters_members() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_prefix_filters");
@@ -1227,7 +1247,7 @@ fn syntax_prefix_filters_members() {
 /// Empty prefix in expression context → imported type names ARE offered.
 #[test]
 fn syntax_expression_offers_imported_types() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_expr_imports");
@@ -1668,7 +1688,7 @@ fn ui_document_link_for_imported_open_type() {
 /// (from jdtls DocumentHighlightHandlerTest#testDocumentHighlight_Occurrences)
 #[test]
 fn syntax_document_highlight_local_var() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_highlight");
@@ -1695,7 +1715,7 @@ fn syntax_document_highlight_local_var() {
 /// (from jdtls ReferencesHandlerTest#testReference)
 #[test]
 fn syntax_find_references_same_file() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_refs");
@@ -2074,7 +2094,7 @@ fn ui_on_type_formatting_returns_edits() {
 /// (from jdtls DocumentSymbolHandlerTest#testDocumentSymbolsOnPlainFile)
 #[test]
 fn syntax_document_symbols_class_members() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_symbols");
@@ -2105,7 +2125,7 @@ fn syntax_document_symbols_class_members() {
 /// (from jdtls NavigateToDefinitionHandlerTest — same-file variant)
 #[test]
 fn syntax_goto_definition_method() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_gotodef");
@@ -2133,7 +2153,7 @@ fn syntax_goto_definition_method() {
 /// (from jdtls NavigateToDefinitionHandlerTest — same-file field variant)
 #[test]
 fn syntax_goto_definition_field() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_gotodef_field");
@@ -2995,7 +3015,7 @@ fn ecj_code_action_final_modifiers_uses_source_kind() {
 /// (from jdtls FoldingRangeHandlerTest#testTypes)
 #[test]
 fn syntax_folding_ranges() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_folding");
@@ -3032,7 +3052,7 @@ fn syntax_folding_ranges() {
 /// (from jdtls SelectionRangeHandlerTest#testParamList)
 #[test]
 fn syntax_selection_ranges() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_selection");
@@ -3226,7 +3246,7 @@ fn ecj_goto_type_definition() {
 /// (from jdtls WorkspaceSymbolHandlerTest#testWorkspaceSymbol)
 #[test]
 fn syntax_workspace_symbols() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri1 = test_uri("syntax_ws_1");
@@ -3471,7 +3491,7 @@ fn ecj_goto_definition_method_name_same_as_variable() {
 /// (from jdtls NavigateToDeclarationHandlerTest#testDeclaration)
 #[test]
 fn syntax_goto_declaration() {
-    let mut c = LspClient::spawn();
+    let mut c = LspClient::spawn_syntax();
     c.initialize();
 
     let uri = test_uri("syntax_declaration");

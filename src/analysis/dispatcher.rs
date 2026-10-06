@@ -50,10 +50,10 @@ impl Dispatcher {
 
     /// Connect to the shared ecj-bridge daemon, starting it if not running.
     pub async fn start_ecj(&self) -> Result<()> {
-        let cfg = self.config.read().await;
+        let java_binary = self.config.read().await.java_binary();
         let jar = ecj_jar_path()?;
         let socket = crate::embedded_jar::socket_path();
-        let proc = EcjProcess::ensure_started(jar, &cfg.java_binary(), socket).await?;
+        let proc = EcjProcess::ensure_started(jar, &java_binary, socket).await?;
         *self.ecj.write().await = Some(proc);
         Ok(())
     }
@@ -271,11 +271,27 @@ impl Dispatcher {
                 });
             }
             let mut options = crate::project::jdtls_default_options();
+            let vm = ws.runtime_registry.as_ref().and_then(|r| r.default_install());
+            if let Some(version) = vm.and_then(crate::project::runtime::VmInstall::major_version) {
+                for key in [crate::project::SOURCE, crate::project::COMPLIANCE, crate::project::TARGET] {
+                    options.insert(key.into(), version.clone());
+                }
+            }
             options.extend(cfg.compiler_options.clone());
+            let mut classpath = cfg.classpath.clone();
+            if let Some(vm) = vm {
+                classpath.extend(vm.libraries.iter().map(|l| l.path.to_string_lossy().into_owned()));
+                options.insert(crate::project::INCLUDE_RUNNING_VM.into(), "false".into());
+                options.insert("jdtls.bridge.explicitRuntime".into(), "true".into());
+                let mut default = crate::project::default_java_project(&std::path::PathBuf::new());
+                crate::project::runtime::configure_project_preview(&mut default, vm);
+                options.extend(default.options);
+            }
             return RequestContext {
                 files: all,
-                classpath: cfg.classpath.clone(),
-                source_level: cfg.source_compatibility.clone(),
+                classpath,
+                source_level: vm.and_then(crate::project::runtime::VmInstall::major_version)
+                    .unwrap_or_else(|| cfg.source_compatibility.clone()),
                 options,
             };
         };
@@ -291,6 +307,12 @@ impl Dispatcher {
         let mut classpath: Vec<String> = Vec::new();
         for p in &closure {
             for lib in &p.libraries {
+                // A referenced project's system library is not exported onto
+                // this project's build path. Use the owning project's VM.
+                if p.name != project.name && p.runtime.as_ref().is_some_and(|vm|
+                    vm.libraries.iter().any(|runtime| runtime.path == lib.path)) {
+                    continue;
+                }
                 let s = lib.path.to_string_lossy().into_owned();
                 if !classpath.contains(&s) {
                     classpath.push(s);
@@ -299,16 +321,27 @@ impl Dispatcher {
         }
         classpath.extend(cfg.classpath.iter().cloned());
         let mut options = crate::project::jdtls_default_options();
+        if ws.runtime_registry.is_some() {
+            if let Some(version) = &ws.vm_version {
+                for key in [crate::project::SOURCE, crate::project::COMPLIANCE, crate::project::TARGET] {
+                    options.insert(key.into(), version.clone());
+                }
+            }
+        }
         options.extend(cfg.compiler_options.clone());
         options.extend(project.options.clone());
         options.insert(
             crate::project::INCLUDE_RUNNING_VM.to_owned(),
-            project.classpath.iter().any(|entry| entry.is_jre_container()).to_string(),
+            (project.runtime.is_none() && project.classpath.iter().any(|entry| entry.is_jre_container())).to_string(),
         );
+        if project.runtime.is_some() {
+            options.insert("jdtls.bridge.explicitRuntime".into(), "true".into());
+        }
         let source_level = project
             .compliance()
             .map(str::to_owned)
-            .unwrap_or_else(|| cfg.source_compatibility.clone());
+            .unwrap_or_else(|| ws.runtime_registry.as_ref().and(ws.vm_version.clone())
+                .unwrap_or_else(|| cfg.source_compatibility.clone()));
         RequestContext {
             files: all,
             classpath,
@@ -834,21 +867,41 @@ impl Dispatcher {
         let cfg = self.config.read().await.clone();
         let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner());
         let mut options = crate::project::jdtls_default_options();
+        if ws.runtime_registry.is_some() {
+            if let Some(version) = &ws.vm_version {
+                for key in [crate::project::SOURCE, crate::project::COMPLIANCE, crate::project::TARGET] {
+                    options.insert(key.into(), version.clone());
+                }
+            }
+        }
         options.extend(cfg.compiler_options.clone());
         match uri.and_then(|u| ws.project_for_uri(u)) {
             Some(project) => {
                 options.extend(project.options.clone());
                 options.insert(
                     crate::project::INCLUDE_RUNNING_VM.to_owned(),
-                    project.classpath.iter().any(|entry| entry.is_jre_container()).to_string(),
+                    (project.runtime.is_none() && project.classpath.iter().any(|entry| entry.is_jre_container())).to_string(),
                 );
+                if project.runtime.is_some() {
+                    options.insert("jdtls.bridge.explicitRuntime".into(), "true".into());
+                }
                 let level = project
                     .compliance()
                     .map(str::to_owned)
-                    .unwrap_or_else(|| cfg.source_compatibility.clone());
+                    .unwrap_or_else(|| ws.runtime_registry.as_ref().and(ws.vm_version.clone())
+                        .unwrap_or_else(|| cfg.source_compatibility.clone()));
                 (options, level)
             }
-            None => (options, cfg.source_compatibility.clone()),
+            None => {
+                if let Some(vm) = ws.runtime_registry.as_ref().and_then(|r| r.default_install()) {
+                    options.insert(crate::project::INCLUDE_RUNNING_VM.into(), "false".into());
+                    options.insert("jdtls.bridge.explicitRuntime".into(), "true".into());
+                    let mut project = crate::project::default_java_project(&std::path::PathBuf::new());
+                    crate::project::runtime::configure_project_preview(&mut project, vm);
+                    options.extend(project.options);
+                    (options, vm.major_version().unwrap_or_else(|| cfg.source_compatibility.clone()))
+                } else { (options, cfg.source_compatibility.clone()) }
+            },
         }
     }
 

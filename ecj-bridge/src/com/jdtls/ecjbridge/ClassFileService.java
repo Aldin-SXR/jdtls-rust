@@ -162,6 +162,19 @@ final class ClassFileService {
         String entry = internal + ".class";
         if (classpath != null) {
             for (String cp : classpath) {
+                if (RuntimeImage.isImage(cp)) {
+                    try {
+                        FileSystem fs = RuntimeImage.open(cp);
+                        try (Stream<Path> modules = Files.list(fs.getPath("/modules"))) {
+                            for (Path module : modules.toList()) {
+                                if (Files.isRegularFile(module.resolve(entry))) {
+                                    return desc(cp, module.getFileName().toString(), pkg, file);
+                                }
+                            }
+                        }
+                    } catch (IOException e) { /* inaccessible image */ }
+                    continue;
+                }
                 File f = new File(cp);
                 boolean found = f.isDirectory() ? new File(f, entry).isFile() : f.isFile() && jarEntries(cp).contains(entry);
                 if (found) {
@@ -169,6 +182,7 @@ final class ClassFileService {
                 }
             }
         }
+        if (!BridgeOptions.includeRunningVM()) return null;
         for (String module : modulesOf(pkg)) {
             FileSystem fs = jrt();
             if (fs != null && Files.isRegularFile(fs.getPath("/modules", module, entry))) {
@@ -202,6 +216,16 @@ final class ClassFileService {
         }
         int dot = fqn.lastIndexOf('.');
         String pkg = dot < 0 ? "" : fqn.substring(0, dot);
+        if (!BridgeOptions.includeRunningVM()) {
+            if (classpath != null) for (String cp : classpath) {
+                if (!RuntimeImage.isImage(cp)) continue;
+                TypeIndex.BinaryRoot root = TypeIndex.jrt(cp, true);
+                for (String name : root.binaryNames) {
+                    if ((name + ".class").equalsIgnoreCase(wanted)) return locate(List.of(cp), name.replace('/', '.'));
+                }
+            }
+            return null;
+        }
         FileSystem fs = jrt();
         if (fs != null) {
             try (Stream<Path> s = Files.list(fs.getPath("/packages"))) {
@@ -255,7 +279,7 @@ final class ClassFileService {
     static byte[] bytes(ClassFileDesc d, String entry) {
         try {
             if (d.isJrt()) {
-                FileSystem fs = jrt();
+                FileSystem fs = RuntimeImage.open(d.root);
                 Path p = fs == null ? null : fs.getPath("/modules", d.module, entry);
                 return p != null && Files.isRegularFile(p) ? Files.readAllBytes(p) : null;
             }
@@ -363,11 +387,12 @@ final class ClassFileService {
         String archive;
         String prefix = "";
         if (d.isJrt()) {
-            Path srcZip = Path.of(System.getProperty("java.home"), "lib", "src.zip");
-            if (!Files.isRegularFile(srcZip)) {
-                return null;
+            archive = attachments == null ? null : attachments.get(d.root);
+            if (archive == null) {
+                Path srcZip = Path.of(d.root).getParent().resolve("src.zip");
+                if (!Files.isRegularFile(srcZip)) return null;
+                archive = srcZip.toString();
             }
-            archive = srcZip.toString();
             prefix = d.module + "/";
         } else {
             archive = attachments == null ? null : attachments.get(d.root);

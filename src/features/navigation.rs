@@ -137,7 +137,7 @@ async fn resolve_target(d: &Dispatcher, uri: &Url) -> Option<Target> {
 /// Library path → source attachment, for every imported project.
 pub fn source_attachments(ws: &Workspace) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    for p in &ws.projects {
+    for p in &ws.all_projects() {
         for lib in &p.libraries {
             if let Some(src) = &lib.source {
                 out.insert(lib.path.to_string_lossy().into_owned(), src.to_string_lossy().into_owned());
@@ -161,7 +161,9 @@ pub fn class_file_uri(ws: &Workspace, project: &str, desc: &ClassFileDesc) -> St
             // JRE container library: JDT adds the javadoc location, then the
             // container entry's own attributes.
             let mut a = Vec::new();
-            if let Some(url) = classfile::jdk_javadoc_location(&root) {
+            if let Some(url) = p.runtime.as_ref().and_then(|vm| vm.libraries.iter()
+                .find(|lib| lib.path == root).and_then(|lib| lib.javadoc.clone()))
+                .or_else(|| classfile::jdk_javadoc_location(&root)) {
                 a.push(("javadoc_location".to_owned(), url));
             }
             a.extend(match p.kind {
@@ -171,7 +173,9 @@ pub fn class_file_uri(ws: &Workspace, project: &str, desc: &ClassFileDesc) -> St
             });
             a
         }
-        None if desc.module.is_some() => classfile::jdk_javadoc_location(&root)
+        None if desc.module.is_some() => ws.runtime_registry.as_ref().and_then(|r| r.default_install())
+            .and_then(|vm| vm.libraries.iter().find(|l| l.path == root).and_then(|l| l.javadoc.clone()))
+            .or_else(|| classfile::jdk_javadoc_location(&root))
             .map(|url| vec![("javadoc_location".to_owned(), url)])
             .unwrap_or_default(),
         Some(p) => match p.kind {

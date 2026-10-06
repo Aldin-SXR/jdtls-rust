@@ -189,7 +189,7 @@ pub fn get_settings(
         }
         let value = match key.as_str() {
             NATURE_IDS => json!(project.natures),
-            VM_LOCATION => match &env.vm_home {
+            VM_LOCATION => match project.runtime.as_ref().map(|vm| &vm.home).or(env.vm_home.as_ref()) {
                 Some(h) if !project.markers.iter().any(|m| m.code == "963") => {
                     json!(location_string(h))
                 }

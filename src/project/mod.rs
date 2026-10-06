@@ -20,6 +20,7 @@ pub mod maven;
 pub mod null_analysis;
 pub mod prefs;
 pub mod resource_filters;
+pub mod runtime;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -206,6 +207,7 @@ pub struct Project {
     pub selected_profiles: String,
     /// Managed resource filters, excluding the default project.
     pub resource_filters: resource_filters::ResourceFilters,
+    pub runtime: Option<runtime::VmInstall>,
 }
 
 impl Project {
@@ -226,6 +228,7 @@ impl Project {
             options: BTreeMap::new(),
             selected_profiles: String::new(),
             resource_filters: resource_filters::ResourceFilters::default(),
+            runtime: None,
         }
     }
 
@@ -435,6 +438,7 @@ pub struct ImportSettings {
     pub data_dir: Option<PathBuf>,
     /// The default VM's home and major version (`"25"`).
     pub vm_home: Option<PathBuf>,
+    pub runtime_registry: Option<runtime::RuntimeRegistry>,
     pub vm_version: Option<String>,
     pub maven: maven::MavenSettings,
     /// `java.compile.nullAnalysis.*`.
@@ -458,6 +462,7 @@ impl ImportSettings {
             project_configurations: None,
             data_dir: None,
             vm_home: None,
+            runtime_registry: None,
             vm_version: None,
             maven: maven::MavenSettings::default(),
             null_analysis: null_analysis::NullAnalysisSettings {
@@ -492,6 +497,7 @@ pub struct Workspace {
     pub roots: Vec<PathBuf>,
     /// Major version of the default VM (`"25"`).
     pub vm_version: Option<String>,
+    pub runtime_registry: Option<runtime::RuntimeRegistry>,
 }
 
 impl Workspace {
@@ -499,7 +505,16 @@ impl Workspace {
     pub fn all_projects(&self) -> Vec<Project> {
         let mut projects = self.projects.clone();
         if let Some(root) = &self.default_project {
-            projects.push(default_java_project(root));
+            let mut project = default_java_project(root);
+            if let Some(vm) = self.runtime_registry.as_ref().and_then(|r| r.default_install()) {
+                project.runtime = Some(vm.clone());
+                for entry in project.classpath.iter_mut().filter(|e| e.is_jre_container()) {
+                    entry.children = vm.classpath_entries();
+                }
+                project.derive_views();
+                runtime::configure_project_preview(&mut project, vm);
+            }
+            projects.push(project);
         }
         projects.sort_by(|a, b| a.name.cmp(&b.name));
         projects
@@ -552,6 +567,7 @@ impl Workspace {
             default_project: None,
             roots: roots.clone(),
             vm_version: settings.vm_version.clone(),
+            runtime_registry: None,
         };
         if roots.is_empty() {
             ws.default_project = Some(settings.workspace_location(DEFAULT_PROJECT_NAME));
@@ -609,7 +625,11 @@ impl Workspace {
                 }
             }
         }
-        ws.finish();
+        if let Some(registry) = &settings.runtime_registry {
+            registry.apply_to_workspace(&mut ws);
+        } else {
+            ws.finish();
+        }
         // `projectsBuildFinished`: the annotation-based null analysis options.
         let vm = ws.vm_version.clone();
         for p in &mut ws.projects {
@@ -658,8 +678,8 @@ impl Workspace {
                 marker.derived = true;
                 p.markers.push(marker);
             }
-            if let Some(vm) = vm.as_deref() {
-                for mut m in jre_markers(p, vm) {
+            if let Some(vm) = p.runtime.as_ref().and_then(|v| v.major_version()).or_else(|| vm.clone()) {
+                for mut m in jre_markers(p, &vm) {
                     m.derived = true;
                     p.markers.push(m);
                 }
