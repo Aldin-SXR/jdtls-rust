@@ -29,7 +29,7 @@ Check the following in either editor:
 4. Hover over `items` after restoring the imports. Its Java signature should be
    shown as code, with source information below it.
 5. Remove only the `java.util.ArrayList` import, place the cursor on `ArrayList`,
-   and click **Quick Fix…**. Choose **Import 'java.util.ArrayList'**. The import
+   and click **Quick Fix…**. Choose **Import 'ArrayList' (java.util)**. The import
    should be inserted and the error should disappear. Mouse clicks and keyboard
    selection both work in the action menu.
 
@@ -55,3 +55,11 @@ the clickable menu above its pointer guard. Selecting the import applies the
 exact edit and clears the diagnostic. Evidence is in
 `target/parity-evidence/import-browser-final-3.log` (keyboard),
 `import-browser-final-4.log` (mouse), and `import-quickfix-*.png`.
+
+The latest label and standalone-file flow were verified on both routes in
+`target/parity-evidence/import-choice-browser-final-2.log`: the type mismatch
+appeared, clicking **Import 'ArrayList' (java.util)** inserted the import and
+cleared the missing-type error, and correcting the assignment cleared all errors.
+There were no console errors or failed requests. Screenshots are
+`import-choice-web-{main,adapter}-{menu,fixed}.png` in the same evidence directory.
+The standalone warning remains expected when full validation is enabled.

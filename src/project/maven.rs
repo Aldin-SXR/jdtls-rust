@@ -225,6 +225,7 @@ fn parse_build(build: roxmltree::Node, pom: &mut RawPom) {
 /// Resolves POMs from the workspace and the local repository.
 pub struct Resolver {
     pub local_repo: PathBuf,
+    pub repositories: Vec<super::download::Repository>,
     cache: HashMap<PathBuf, Option<Model>>,
     settings: MavenSettings,
 }
@@ -233,6 +234,7 @@ impl Resolver {
     pub fn new() -> Self {
         Self {
             local_repo: local_repository(),
+            repositories: super::download::default_repositories(),
             cache: HashMap::new(),
             settings: MavenSettings::default(),
         }
@@ -241,6 +243,7 @@ impl Resolver {
     pub fn with_settings(settings: &MavenSettings) -> Self {
         Self {
             local_repo: local_repository(),
+            repositories: super::download::default_repositories(),
             cache: HashMap::new(),
             settings: settings.clone(),
         }
@@ -261,7 +264,7 @@ impl Resolver {
         }
         super::download::fetch(
             &self.local_repo,
-            &super::download::default_repositories(),
+            &self.repositories,
             g,
             a,
             v,
@@ -272,6 +275,14 @@ impl Resolver {
 
     pub fn repo_pom(&self, g: &str, a: &str, v: &str) -> PathBuf {
         self.repo_dir(g, a, v).join(format!("{a}-{v}.pom"))
+    }
+
+    fn artifact_model(&mut self, g: &str, a: &str, v: &str) -> Option<Model> {
+        let pom = self.repo_pom(g, a, v);
+        if !pom.is_file() {
+            self.download_artifact(g, a, v, None, "pom")?;
+        }
+        self.model(&pom)
     }
 
     fn repo_dir(&self, g: &str, a: &str, v: &str) -> PathBuf {
@@ -352,8 +363,7 @@ impl Resolver {
                     }
                 }
             }
-            let repo = self.repo_pom(&p.group, &p.artifact, &p.version);
-            self.model(&repo)
+            self.artifact_model(&p.group, &p.artifact, &p.version)
         });
 
         let mut m = parent_model.clone().unwrap_or_default();
@@ -445,8 +455,7 @@ impl Resolver {
         }
         for bom in boms {
             if let Some(v) = &bom.version {
-                let pom = self.repo_pom(&bom.group, &bom.artifact, v);
-                if let Some(bm) = self.model(&pom) {
+                if let Some(bm) = self.artifact_model(&bom.group, &bom.artifact, v) {
                     for (k, d) in bm.dep_mgmt {
                         m.dep_mgmt.entry(k).or_insert(d);
                     }
@@ -509,8 +518,7 @@ impl Resolver {
             if scope == "system" {
                 continue;
             }
-            let pom = self.repo_pom(&dep.group, &dep.artifact, &version);
-            let Some(dm) = self.model(&pom) else { continue };
+            let Some(dm) = self.artifact_model(&dep.group, &dep.artifact, &version) else { continue };
             for td in dm.deps {
                 let ts = td.scope.clone().unwrap_or_else(|| "compile".into());
                 if td.optional || ts == "test" || ts == "provided" || ts == "system" {

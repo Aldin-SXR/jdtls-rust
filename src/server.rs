@@ -417,6 +417,27 @@ impl JavaLanguageServer {
         }
     }
 
+    pub async fn organize_imports(&self, params: CodeActionParams) -> LspResult<Option<WorkspaceEdit>> {
+        let env = self.format_env().await;
+        let uri = params.text_document.uri;
+        let options = env.jdt_options(Some(&uri)).await;
+        match crate::features::organize_imports::operation::organize_action(
+            &env, &uri, &options, false, Some(uri.to_string()),
+        ).await {
+            Ok(Some(change)) => Ok(Some(WorkspaceEdit {
+                changes: Some([(uri, crate::correction::edit::tree_to_text_edits(
+                    &change.ast.source, change.edits.as_ref().expect("import edits"),
+                ))].into()),
+                ..Default::default()
+            })),
+            Ok(None) => Ok(None),
+            Err(error) => {
+                warn!(%error, "Failed to resolve organize imports source action");
+                Ok(None)
+            }
+        }
+    }
+
     fn request_compile(&self) {
         let next = (*self.compile_tx.borrow()).wrapping_add(1);
         let _ = self.compile_tx.send(next);

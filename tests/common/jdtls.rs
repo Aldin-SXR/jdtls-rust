@@ -48,6 +48,8 @@ pub struct LspClient {
     /// Canned results for server→client requests, by method
     /// (e.g. `workspace/executeClientCommand`).
     pub request_results: BTreeMap<String, Value>,
+    /// Dynamic replies for requests with server-generated opaque identities.
+    pub request_handlers: BTreeMap<String, Box<dyn FnMut(&Value) -> Value + Send>>,
     /// Every server→client request received (e.g. `client/registerCapability`,
     /// `workspace/applyEdit`), in arrival order.
     pub server_requests: Vec<Value>,
@@ -143,6 +145,7 @@ impl LspClient {
             next_id: 1,
             notifications: Vec::new(),
             request_results: BTreeMap::new(),
+            request_handlers: BTreeMap::new(),
             server_requests: Vec::new(),
         }
     }
@@ -166,6 +169,9 @@ impl LspClient {
             .and_then(|m| self.request_results.get(m))
             .cloned();
         let result = match msg["method"].as_str() {
+            Some(method) if self.request_handlers.contains_key(method) => {
+                self.request_handlers.get_mut(method).unwrap()(msg)
+            }
             _ if canned.is_some() => canned.unwrap(),
             Some("workspace/configuration") => {
                 let n = msg["params"]["items"].as_array().map_or(0, |a| a.len());

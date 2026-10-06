@@ -106,7 +106,7 @@ fn selected_native_runtime_compiles_and_offers_imports_in_virtual_documents() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|a| a["title"] == "Import 'java.util.ArrayList'")
+            .find(|a| a["title"] == "Import 'ArrayList' (java.util)")
             .unwrap_or_else(|| panic!("{scheme}: {actions:#?}"));
         let corrected = apply_edits(source, action["edit"]["changes"][&uri].as_array().unwrap());
         assert!(

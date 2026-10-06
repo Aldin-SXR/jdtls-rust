@@ -109,7 +109,7 @@ pub(crate) async fn missing_imports(
     copied: &HashSet<String>,
 ) -> anyhow::Result<Option<WorkspaceEdit>> {
     let (options, _) = d.options_for(Some(uri)).await;
-    let Some(change) = rewrite_imports(d, uri, ctx, copied, true, &options).await? else {
+    let Some(change) = rewrite_imports(d, uri, ctx, copied, true, &options, None).await? else {
         return Ok(None);
     };
     let edits = crate::correction::edit::tree_to_text_edits(
@@ -130,7 +130,29 @@ pub(crate) async fn organize(
     options: &BTreeMap<String, String>,
 ) -> anyhow::Result<Option<crate::correction::CuChange>> {
     let ctx = d.context_for(Some(uri)).await;
-    rewrite_imports(d, uri, ctx, &HashSet::new(), false, options).await
+    rewrite_imports(d, uri, ctx, &HashSet::new(), false, options, None).await
+}
+
+/// Source actions negotiate the interactive chooser separately from the edit
+/// command. A missing client-command capability cancels an ambiguous operation.
+pub(crate) async fn organize_action(
+    env: &super::super::formatting::FormatEnv<'_>,
+    uri: &Url,
+    options: &BTreeMap<String, String>,
+    restore: bool,
+    chooser_uri: Option<String>,
+) -> anyhow::Result<Option<crate::correction::CuChange>> {
+    let ctx = env.dispatcher.context_for(Some(uri)).await;
+    rewrite_imports(
+        env.dispatcher,
+        uri,
+        ctx,
+        &HashSet::new(),
+        restore,
+        options,
+        chooser_uri.map(|uri| (env, uri)),
+    )
+    .await
 }
 
 async fn rewrite_imports(
@@ -140,6 +162,7 @@ async fn rewrite_imports(
     copied: &HashSet<String>,
     restore: bool,
     options: &BTreeMap<String, String>,
+    chooser: Option<(&super::super::formatting::FormatEnv<'_>, String)>,
 ) -> anyhow::Result<Option<crate::correction::CuChange>> {
     let ast = semantic_ast::fetch_with(d, uri.as_str(), ctx.clone()).await?;
     let (threshold, static_threshold) = preferences::import_thresholds();
@@ -223,10 +246,14 @@ async fn rewrite_imports(
         })
         .unwrap_or_default();
     let filter = TypeFilter::new(&patterns, &[]);
+    let mut choices = Vec::new();
+    let mut candidate_ids = BTreeMap::new();
+    let doc =
+        crate::analysis::semantic::diagnostics::Doc16::new(&String::from_utf16_lossy(&ast.source));
     for (name, node) in unresolved {
         let kinds = possible_type_kinds(node);
         let mut containers = HashSet::new();
-        let candidates: Vec<&TypeEntry> = types
+        let mut candidates: Vec<&TypeEntry> = types
             .0
             .iter()
             .filter(|t| {
@@ -238,6 +265,7 @@ async fn rewrite_imports(
                     && containers.insert(t.container())
             })
             .collect();
+        candidates.sort_by_key(|t| full_name(t));
         let selected = if candidates.len() == 1 {
             candidates.first().copied()
         } else {
@@ -270,9 +298,66 @@ async fn rewrite_imports(
         };
         if let Some(t) = selected {
             imports.add_import(&full_name(t), &DefaultContext);
+        } else if candidates.len() > 1 && chooser.is_some() {
+            // IDs are opaque tokens scoped to this invocation, just like the
+            // upstream TypeNameMatch identities. Never trust returned names.
+            static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let candidates: Vec<_> = candidates
+                .iter()
+                .map(|t| {
+                    let qualified = full_name(t);
+                    let id = format!(
+                        "{}@{}",
+                        qualified,
+                        NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    );
+                    candidate_ids.insert(id.clone(), qualified.clone());
+                    serde_json::json!({"fullyQualifiedName": qualified, "id": id})
+                })
+                .collect();
+            choices.push(serde_json::json!({"candidates": candidates,
+                "range": doc.to_range(node.start() as i64, (node.end() - node.start()) as i64)}));
         } else {
             for name in unresolvable.matching(&name, false) {
                 imports.add_import(name, &UnresolvableContext);
+            }
+        }
+    }
+    if !choices.is_empty() {
+        let (env, chooser_uri) = chooser.expect("interactive choices");
+        if !env
+            .extended_client_capabilities
+            .as_ref()
+            .and_then(|caps| caps.get("executeClientCommandSupport"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(None);
+        }
+        let response = env
+            .client
+            .send_request::<super::super::formatting::ExecuteClientCommand>(
+                tower_lsp::lsp_types::ExecuteCommandParams {
+                    command: "java.action.organizeImports.chooseImports".into(),
+                    arguments: vec![
+                        serde_json::json!(chooser_uri),
+                        serde_json::json!(choices),
+                        serde_json::json!(restore),
+                    ],
+                    work_done_progress_params: Default::default(),
+                },
+            )
+            .await;
+        let Ok(Some(serde_json::Value::Array(selected))) = response else {
+            return Ok(None);
+        };
+        for candidate in selected {
+            if let Some(qualified) = candidate
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|id| candidate_ids.get(id))
+            {
+                imports.add_import(qualified, &DefaultContext);
             }
         }
     }

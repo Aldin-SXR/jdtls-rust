@@ -39,6 +39,7 @@ async fn main() {
     let stdout = tokio::io::stdout();
 
     let (service, socket) = LspService::build(JavaLanguageServer::new)
+        .custom_method("java/organizeImports", JavaLanguageServer::organize_imports)
         .custom_method("java/getRefactorEdit", JavaLanguageServer::get_refactor_edit)
         .custom_method(
             "java/classFileContents",

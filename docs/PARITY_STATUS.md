@@ -16,23 +16,24 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 861 | 41.3% |
-| Passing | 850 | 40.7% |
+| Ported | 874 | 41.9% |
+| Passing | 863 | 41.4% |
 | Ported but `#[ignore]`d | 11 | 0.5% |
-| Not ported yet | 1,226 | 58.7% |
+| Not ported yet | 1,213 | 58.1% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,655 passed,
-0 failed and 12 ignored across 95 test targets. That count also includes our own regression suite
+On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,684 passed,
+0 failed and 12 ignored across 99 test targets. That count also includes our own regression suite
 (`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 3 tests;
 `tests/binary_editor_regressions.rs`, 6 tests;
 `tests/content_provider_regressions.rs`, 4 tests;
 `tests/correction_regressions.rs`, 3 tests;
 `tests/completion_regressions.rs`, 6 tests;
 `tests/project_download_regressions.rs`, 2 tests;
-`tests/projects_manager_regressions.rs`, 14 tests;
+`tests/projects_manager_regressions.rs`, 16 tests;
 `tests/jvm_configuration_regressions.rs`, 5 tests;
 `tests/build_path_regressions.rs`, 9 tests;
 `tests/organize_imports_regressions.rs`, 18 tests;
+`tests/import_choice_regressions.rs`, 14 tests;
 `tests/paste_regressions.rs`, 9 tests;
 `tests/smart_detection_regressions.rs`, 13 tests;
 `tests/accessor_regressions.rs`, 18 tests;
@@ -61,11 +62,11 @@ Those duplicate runs are excluded from the upstream-port counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 562 | 558 | 64% |
+| handlers | 871 | 567 | 563 | 65% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 23 | 23 | 38% |
 | managers | 211 | 134 | 127 | 60% |
-| correction | 604 | 93 | 93 | 15% |
+| correction | 604 | 101 | 101 | 17% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 7 | 7 | 10% |
 | preferences | 53 | 0 | 0 | 0% |
@@ -82,6 +83,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 
 | Upstream class | Test file | Ported | Pass | Ignored | Oracle |
 |---|---|---:|---:|---:|---|
+| handlers/AdvancedOrganizeImportsHandlerTest | `handlers_advanced_organize_imports_handler_test` | 5 | 5 | 0 | 5/5; dynamic chooser replies and unchanged Maven fixtures |
 | handlers/BuildWorkspaceHandlerTest | `handlers_build_workspace_handler_test` | 5 | 5 | 0 | 5/5 |
 | handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 10 | 0 | 10/10; restored stub-JDK source-location assertion verified |
 | handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 11 | 11 | 0 | 11/11 |
@@ -127,6 +129,8 @@ Those duplicate runs are excluded from the upstream-port counts.
 | correction/AssignToVariableRefactorTest | `correction_assign_to_variable_refactor_test` | 2 | 2 | 0 | 2/2 (advanced assignment commands) |
 | correction/AbstractMethodQuickFixTest | `correction_abstract_method_quick_fix_test` | 8 | 8 | 0 | 8/8 |
 | correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 75 | 75 | 0 | 75/75 with `--test-threads=1`; 12 upstream methods remain unported |
+| correction/NonProjectFixTest | `correction_non_project_fix_test` | 2 | 2 | 0 | 2/2; original source, action order, titles and command arguments |
+| correction/OrganizeImportsActionTest | `correction_organize_imports_action_test` | 6 | 6 | 0 | 6/6; original sources and edit assertions |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -1295,7 +1299,7 @@ Java diagnostic source, code and data from its request, which produced no import
 action. It now preserves the diagnostic and uses a valid selection range. The
 adapter page enables its advanced providers and supplies only selected-marker
 diagnostics. A popup stacking fix lets mouse clicks reach the action menu. Both
-pages show **Import 'java.util.ArrayList'**, apply the exact import edit, and clear
+pages showed the then-current import label, applied the exact import edit, and cleared
 the unresolved-type error. Keyboard and mouse flows each pass two browser tests
 without console errors or failed requests (`import-browser-final-3.log` and
 `import-browser-final-4.log`). These changes are in the local, gitignored clients;
@@ -1631,7 +1635,97 @@ Evidence in `target/parity-evidence/`:
 * `organize-full-suite-final-3.log`: 95 targets, 1,655 passes, zero failures and
   12 ignores, including the optional external Javadoc corpus.
 
-The ledger is now 861 ports, 850 passing, 11 ignored and 1,226 unported.
-Interactive import-choice callbacks, the rest of the organize-imports handler
-suite and save-action/cleanup integration remain unfinished. This batch does
-not claim full Eclipse feature parity.
+That batch brought the ledger to 861 ports, 850 passing, 11 ignored and 1,226
+unported. Interactive import-choice callbacks and the advanced handler/source
+assistant suites were still unfinished at that point; the following batch
+addresses those areas. Save-action/cleanup integration remains unfinished.
+
+
+## Interactive import selection and standalone quick fixes
+
+`java/organizeImports` now uses the Rust import operation and negotiates
+`workspace/executeClientCommand` with command
+`java.action.organizeImports.chooseImports`. The client receives the document
+URI, candidate groups with UTF-16 source ranges and the restore-existing-imports
+flag. Candidate identities are opaque tokens scoped to the operation. Rust maps
+returned IDs to its own candidates rather than trusting returned type names;
+null entries and unknown IDs are ignored. A null reply or missing client-command
+support cancels the entire ambiguous operation, including otherwise valid
+removals and unique imports. An empty selection allows those unambiguous edits.
+Operations without ambiguity do not prompt or require client-command support.
+
+Source actions enable the chooser only when `advancedOrganizeImportsSupport` is
+negotiated, including deferred `codeAction/resolve`. Eclipse's source assistant
+passes a Java-rendered resource location URI (`file:/...`), while the direct
+handler forwards the client's document URI; both forms are preserved, including
+Unicode filenames and escaped spaces. Workspace-edit resource URIs are compared
+as URLs in the Unicode regression because their equivalent serialized forms can
+differ. Source actions now offer **Add all missing imports** with kind `source`
+when the DOM reports an undefined type (including Javadoc). That action retains
+existing imports and passes `restoreExistingImports: true`; organize imports
+rebuilds the list. The edit command and paste retain their noninteractive
+behavior.
+
+All five methods of `AdvancedOrganizeImportsHandlerTest`, all six methods of
+`OrganizeImportsActionTest` and both methods of `NonProjectFixTest` are ported
+with their original sources and assertions. The advanced handler's direct Java
+callback is exercised through the public handler and dynamic client replies;
+its candidate names, order, ranges and resulting source assertions are retained.
+Its Maven/static-import cases use unchanged `salut4` and `salut6` fixtures.
+The `MavenBuildSupport.applies` assertions use the same Maven-project nature
+predicate exposed through project settings, including project existence.
+
+The standalone-file diagnostic is expected Eclipse behavior: code `16`, severity
+`2`, warning that only JDK classes are available. Full-validation mode still
+reports type mismatches and unresolved JDK types. The standalone regression
+checks the warning alongside `String`-to-`int` and missing-`ArrayList` errors,
+applies the import fix and corrects the assignment in the client buffer, then
+verifies only the warning remains and disk content is unchanged. Import-fix
+labels now use Eclipse's **Import 'ArrayList' (java.util)** wording, shaped in
+Rust from the legacy bridge response. The broader unresolved-type quick-fix
+processor remains unported; this batch does not claim its full proposal parity.
+
+The first advanced Maven run exposed a cold-cache defect: JARs were downloaded
+without fetching the missing POMs needed to discover transitive dependencies.
+The Rust resolver now fetches dependency, parent and imported-BOM POMs before
+loading their models, respecting offline settings. Two local HTTP/offline
+regressions verify all four POM requests, inherited dependency management,
+transitive versions, cache reuse after the repository server stops and direct
+dependency retention when offline. They are Rust regressions rather than
+upstream ports.
+
+Fourteen additional import regressions cover cancellation, empty replies,
+identity validation, capability negotiation, deferred resolution, restoration,
+multiple ambiguities, CRLF/UTF-16 ranges, Java URI rendering, no-op behavior,
+standalone diagnostics and virtual buffers. Thirteen resource-backed cases pass
+against Eclipse. The `untitled:`, `inmemory:` and absent-file case is a separate
+Rust requirement and is explicitly excluded from Oracle comparisons. The test
+client's dynamic request handlers retain its ability to move shared workspaces
+between test threads.
+
+Evidence in `target/parity-evidence/`:
+
+* `import-choice-oracle-final-10.log`: all 13 original methods and 13
+  resource-backed comparisons pass; the virtual-buffer case is recorded
+  separately from those comparisons.
+* `import-choice-rust-9.log`: all 14 import regressions and five existing JVM
+  configuration regressions pass with the corrected import-fix wording.
+* `import-choice-rust-7.log`: all 13 original methods, the two Maven regressions
+  and existing project-manager regressions pass.
+* `import-choice-maven-natures-oracle-final-11.log`: all five advanced handler
+  methods pass with the original Maven build-support predicate assertions.
+* `import-choice-full-suite-final-3.log`: 99 targets, 1,684 passed, zero failures
+  and 12 ignored, including the optional external Javadoc corpus.
+* `import-choice-browser-final-2.log`: both `/` and `/index2.html` show the type
+  error, display and apply **Import 'ArrayList' (java.util)**, clear the
+  missing-type error and clear all errors after correcting the assignment.
+  No console errors or failed requests. Screenshots are
+  `import-choice-web-{main,adapter}-{menu,fixed}.png`. The first browser script's
+  exact typed-whitespace assertion timed out because Monaco auto-indented the
+  keyboard input; the final assertions verify the observed diagnostic and edit
+  flow without assuming the editor's indentation policy.
+
+The ledger is now 874 ports, 863 passing, 11 ignored and 1,213 unported.
+
+Save actions, cleanup integration and the remaining unported tests still require
+work before full Eclipse feature parity can be claimed.
