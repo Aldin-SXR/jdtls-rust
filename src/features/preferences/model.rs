@@ -38,6 +38,7 @@ pub const JAVA_COMPILE_NULLANALYSIS_NONNULL: &str = "java.compile.nullAnalysis.n
 pub const JAVA_COMPILE_NULLANALYSIS_NULLABLE: &str = "java.compile.nullAnalysis.nullable";
 pub const JAVA_COMPILE_NULLANALYSIS_NONNULLBYDEFAULT: &str = "java.compile.nullAnalysis.nonnullbydefault";
 pub const JAVA_COMPILE_NULLANALYSIS_MODE: &str = "java.compile.nullAnalysis.mode";
+pub const JAVA_PROJECT_ENCODING: &str = "java.project.encoding";
 
 pub const IMPORTS_ONDEMANDTHRESHOLD_DEFAULT: i32 = 99;
 pub const IMPORTS_STATIC_ONDEMANDTHRESHOLD_DEFAULT: i32 = 99;
@@ -72,6 +73,29 @@ impl FeatureStatus {
             FeatureStatus::Disabled => "disabled",
             FeatureStatus::Interactive => "interactive",
             FeatureStatus::Automatic => "automatic",
+        }
+    }
+}
+
+/// `ProjectEncodingMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectEncodingMode {
+    /// Ignore project encoding settings.
+    Ignore,
+    /// Show a warning if a project has no explicit encoding set.
+    Warning,
+    /// Set the default workspace encoding.
+    SetDefault,
+}
+
+impl ProjectEncodingMode {
+    /// `ProjectEncodingMode.fromString`: case-insensitive, else `default`.
+    pub fn from_string(value: Option<&str>, default: Self) -> Self {
+        match value.map(str::to_uppercase).as_deref() {
+            Some("IGNORE") => Self::Ignore,
+            Some("WARNING") => Self::Warning,
+            Some("SETDEFAULT") => Self::SetDefault,
+            _ => default,
         }
     }
 }
@@ -181,6 +205,7 @@ pub struct Preferences {
     nullable_types: Vec<String>,
     nonnullbydefault_types: Vec<String>,
     null_analysis_mode: FeatureStatus,
+    project_encoding: ProjectEncodingMode,
 }
 
 impl Default for Preferences {
@@ -227,6 +252,7 @@ impl Preferences {
             nullable_types: Vec::new(),
             nonnullbydefault_types: Vec::new(),
             null_analysis_mode: FeatureStatus::Disabled,
+            project_encoding: ProjectEncodingMode::Ignore,
         }
     }
 
@@ -395,6 +421,12 @@ impl Preferences {
             prefs.null_analysis_mode = FeatureStatus::from_string(
                 get_string(c, JAVA_COMPILE_NULLANALYSIS_MODE, None).as_deref(),
                 existing.null_analysis_mode,
+            );
+        }
+        if contains_key(c, JAVA_PROJECT_ENCODING) {
+            prefs.project_encoding = ProjectEncodingMode::from_string(
+                get_string(c, JAVA_PROJECT_ENCODING, None).as_deref(),
+                existing.project_encoding,
             );
         }
         if contains_key(c, JAVA_TELEMETRY_ENABLED_KEY) {
@@ -649,6 +681,13 @@ impl Preferences {
     }
     pub fn get_null_analysis_mode(&self) -> FeatureStatus {
         self.null_analysis_mode
+    }
+    pub fn set_project_encoding(&mut self, mode: ProjectEncodingMode) -> &mut Self {
+        self.project_encoding = mode;
+        self
+    }
+    pub fn get_project_encoding(&self) -> ProjectEncodingMode {
+        self.project_encoding
     }
 }
 

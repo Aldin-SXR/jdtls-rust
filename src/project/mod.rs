@@ -209,6 +209,9 @@ pub struct Project {
     /// Managed resource filters, excluding the default project.
     pub resource_filters: resource_filters::ResourceFilters,
     pub runtime: Option<runtime::VmInstall>,
+    /// The encoding the build sets for the project (m2e: the POM's
+    /// `project.build.sourceEncoding`).
+    pub encoding: Option<String>,
 }
 
 impl Project {
@@ -230,7 +233,19 @@ impl Project {
             selected_profiles: String::new(),
             resource_filters: resource_filters::ResourceFilters::default(),
             runtime: None,
+            encoding: None,
         }
+    }
+
+    /// `IProject.getDefaultCharset(false)`: the project's explicit encoding,
+    /// from its build or `.settings/org.eclipse.core.resources.prefs`
+    /// (`encoding/<project>`).
+    pub fn explicit_encoding(&self) -> Option<String> {
+        if let Some(e) = &self.encoding {
+            return Some(e.clone());
+        }
+        let prefs = prefs::read_properties(&self.location.join(".settings").join("org.eclipse.core.resources.prefs"))?;
+        prefs.get("encoding/<project>").filter(|e| !e.is_empty()).cloned()
     }
 
     pub fn is_java(&self) -> bool {

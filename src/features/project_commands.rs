@@ -603,6 +603,8 @@ pub fn watcher_registration(ws: &Workspace, referenced_libraries: &[String]) -> 
 /// `(uri, diagnostics)` for each project with markers, and its build files.
 pub fn project_marker_diagnostics(ws: &Workspace) -> Vec<(String, Vec<Value>)> {
     let mut out = Vec::new();
+    let encoding_warnings = crate::features::preferences::current().get_project_encoding()
+        == crate::features::preferences::model::ProjectEncodingMode::Warning;
     for p in ws.sorted_projects() {
         let to_diag = |m: &crate::project::Marker| {
             let (line, sc, ec) = m.range.unwrap_or((0, 0, 0));
@@ -618,7 +620,18 @@ pub fn project_marker_diagnostics(ws: &Workspace) -> Vec<(String, Vec<Value>)> {
         let mut project_markers: Vec<&crate::project::Marker> =
             p.markers.iter().filter(|m| m.resource.is_none()).collect();
         project_markers.sort_by_key(|m| !m.message.starts_with("The project cannot be built"));
-        let project_markers: Vec<Value> = project_markers.into_iter().map(to_diag).collect();
+        let mut project_markers: Vec<Value> = project_markers.into_iter().map(to_diag).collect();
+        // Core resources' ValidateProjectEncoding marker, which
+        // WorkspaceDiagnosticsHandler ignores unless `java.project.encoding`
+        // is `warning` (with `setDefault` every project gets the default).
+        if encoding_warnings && p.kind != crate::project::ProjectKind::Default && p.explicit_encoding().is_none()
+        {
+            project_markers.push(to_diag(&crate::project::Marker::project(
+                format!("Project '{}' has no explicit encoding set", p.name),
+                2,
+                "0",
+            )));
+        }
         let mut files: BTreeMap<PathBuf, Vec<Value>> = BTreeMap::new();
         for m in p.markers.iter().filter(|m| m.resource.is_some()) {
             files

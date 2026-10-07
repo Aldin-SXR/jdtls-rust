@@ -84,7 +84,6 @@ fn manager_write() -> std::sync::RwLockWriteGuard<'static, manager::PreferenceMa
 }
 
 /// `PreferenceManager.getPreferences()` (a snapshot).
-#[allow(dead_code)]
 pub fn current() -> model::Preferences {
     MANAGER.read().unwrap_or_else(|e| e.into_inner()).get_preferences().clone()
 }

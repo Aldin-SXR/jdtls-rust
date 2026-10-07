@@ -290,9 +290,13 @@ fn dependencies(script: &str) -> (Vec<Library>, Vec<String>) {
                 continue;
             };
             let jar =
-                gradle_cache_jar(&d.group, &d.artifact, v, d.classifier.as_deref()).or_else(|| {
-                    resolver.artifact_jar(&d.group, &d.artifact, v, d.classifier.as_deref())
-                });
+                gradle_cache_jar(&d.group, &d.artifact, v, d.classifier.as_deref())
+                    .or_else(|| resolver.artifact_jar(&d.group, &d.artifact, v, d.classifier.as_deref()))
+                    // Buildship lets Gradle resolve (download) the declared
+                    // dependencies; fetch the ones no local cache holds.
+                    .or_else(|| {
+                        resolver.download_artifact(&d.group, &d.artifact, v, d.classifier.as_deref(), "jar")
+                    });
             if let Some(jar) = jar {
                 if !libs.iter().any(|l: &Library| l.path == jar) {
                     let source = source_attachment(&jar)

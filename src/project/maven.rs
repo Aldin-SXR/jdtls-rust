@@ -966,6 +966,8 @@ fn to_project(
 ) -> Project {
     let mut project = Project::new(name, dir, ProjectKind::Maven);
     project.build_files = vec![dir.join(POM_FILE)];
+    // m2e sets the project encoding from `project.build.sourceEncoding`.
+    project.encoding = model.properties.get("project.build.sourceEncoding").cloned();
     if model.packaging == "pom" {
         project.natures = vec![super::MAVEN_NATURE.to_owned()];
         return project;
