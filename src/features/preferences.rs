@@ -10,6 +10,7 @@ use tower_lsp::lsp_types::InitializeParams;
 
 static SETTINGS: RwLock<Option<Value>> = RwLock::new(None);
 static ORGANIZE_IMPORT_FAVORITES: RwLock<Vec<String>> = RwLock::new(Vec::new());
+static CLEANUP_ACTIONS: RwLock<Vec<String>> = RwLock::new(Vec::new());
 static CLASS_FILE_CONTENTS: RwLock<bool> = RwLock::new(false);
 
 pub fn init(params: &InitializeParams) {
@@ -32,6 +33,8 @@ pub fn init(params: &InitializeParams) {
         } else {
             Vec::new()
         };
+    *CLEANUP_ACTIONS.write().unwrap_or_else(|e| e.into_inner()) =
+        settings.as_ref().map(cleanup_actions_from).unwrap_or_default();
     *SETTINGS.write().unwrap_or_else(|e| e.into_inner()) = settings;
     // `ClientPreferences.isClassFileContentSupported`
     let class_files = opts
@@ -44,6 +47,13 @@ pub fn init(params: &InitializeParams) {
 
 /// `workspace/didChangeConfiguration`.
 pub fn update(change: &Value) {
+    if lookup(change, &["java", "cleanup", "actions"]).is_some()
+        || lookup(change, &["java", "cleanup", "actionsOnSave"]).is_some()
+    {
+        // Preferences.updateFrom selects the list from this notification,
+        // defaulting absent aliases to empty rather than reviving an old list.
+        *CLEANUP_ACTIONS.write().unwrap_or_else(|e| e.into_inner()) = cleanup_actions_from(change);
+    }
     if lookup(change, &["java", "completion", "favoriteStaticMembers"]).is_some() {
         *ORGANIZE_IMPORT_FAVORITES.write().unwrap_or_else(|e| e.into_inner()) =
             super::completion::prefs::Prefs::load().favorite_members;
@@ -51,6 +61,18 @@ pub fn update(change: &Value) {
     let mut guard = SETTINGS.write().unwrap_or_else(|e| e.into_inner());
     let current = guard.get_or_insert_with(|| Value::Object(Default::default()));
     merge(current, change);
+}
+
+fn cleanup_actions_from(settings: &Value) -> Vec<String> {
+    let strings = |key| lookup(settings, &["java", "cleanup", key])
+        .and_then(|v| v.as_array().cloned()).unwrap_or_default()
+        .iter().filter_map(|v| v.as_str().map(str::to_owned)).collect::<Vec<_>>();
+    let actions = strings("actions");
+    if actions.is_empty() { strings("actionsOnSave") } else { actions }
+}
+
+pub fn cleanup_actions() -> Vec<String> {
+    CLEANUP_ACTIONS.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 pub fn organize_import_favorites() -> Vec<String> {

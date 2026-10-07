@@ -438,6 +438,11 @@ impl JavaLanguageServer {
         }
     }
 
+    pub async fn cleanup(&self, doc: TextDocumentIdentifier) -> LspResult<WorkspaceEdit> {
+        let env = self.format_env().await;
+        Ok(crate::features::save_actions::manual_cleanup(&env, &doc.uri).await)
+    }
+
     fn request_compile(&self) {
         let next = (*self.compile_tx.borrow()).wrapping_add(1);
         let _ = self.compile_tx.send(next);
@@ -1039,6 +1044,11 @@ impl LanguageServer for JavaLanguageServer {
             // Clear diagnostics for the closed virtual/external file
             self.client.publish_diagnostics(uri, vec![], None).await;
         }
+    }
+
+    async fn will_save_wait_until(&self, params: WillSaveTextDocumentParams) -> LspResult<Option<Vec<TextEdit>>> {
+        let env = self.format_env().await;
+        Ok(Some(crate::features::save_actions::will_save(&env, &params.text_document.uri).await))
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {

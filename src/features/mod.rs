@@ -19,6 +19,8 @@ pub mod hashcode;
 pub mod delegates;
 pub mod overrides;
 pub mod organize_imports;
+pub mod save_actions;
+pub mod cleanup;
 pub mod init;
 pub mod inlay_hint_filter;
 pub mod inlay_hints;

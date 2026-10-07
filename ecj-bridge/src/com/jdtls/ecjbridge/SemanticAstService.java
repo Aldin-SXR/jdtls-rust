@@ -43,6 +43,7 @@ final class SemanticAstService {
         public int[] pr;
         public int[][] ls;
         public AnnotationOut annotation;
+        public boolean constantExpression;
     }
 
     static final class BindingOut {
@@ -357,6 +358,9 @@ final class SemanticAstService {
         }
 
         private void resolve(ASTNode node, NodeOut out) {
+            if (node instanceof Expression e) {
+                out.constantExpression = e.resolveConstantExpressionValue() != null;
+            }
             if (node instanceof Name n) {
                 out.b = binding(n.resolveBinding());
                 out.tb = binding(n.resolveTypeBinding());

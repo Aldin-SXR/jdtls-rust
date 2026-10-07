@@ -209,6 +209,7 @@ pub struct NodeData {
     pub type_binding: Option<BindingId>,
     pub method_binding: Option<BindingId>,
     pub annotation: Option<annotation::Annotation>,
+    pub constant_expression: bool,
     pub flags: u32,
     pub props: Vec<(&'static str, PropValue)>,
 }
@@ -366,6 +367,7 @@ impl Ast {
                     type_binding: b(n.tb),
                     method_binding: b(n.mb),
                     annotation: n.annotation.as_ref().and_then(|a| annotation::decode(a, &s)),
+                    constant_expression: n.constant_expression,
                     flags: n.f as u32,
                     props,
                 }
@@ -642,6 +644,10 @@ impl<'a> Node<'a> {
 
     pub fn extended_length(&self) -> usize {
         self.d().extended_length
+    }
+
+    pub fn is_constant_expression(&self) -> bool {
+        self.d().constant_expression
     }
 
     pub fn flags(&self) -> u32 {

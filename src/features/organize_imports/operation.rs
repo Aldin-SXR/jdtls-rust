@@ -130,6 +130,15 @@ pub(crate) async fn organize(
     options: &BTreeMap<String, String>,
 ) -> anyhow::Result<Option<crate::correction::CuChange>> {
     let ctx = d.context_for(Some(uri)).await;
+    organize_with_context(d, uri, ctx, options).await
+}
+
+pub(crate) async fn organize_with_context(
+    d: &Dispatcher,
+    uri: &Url,
+    ctx: RequestContext,
+    options: &BTreeMap<String, String>,
+) -> anyhow::Result<Option<crate::correction::CuChange>> {
     rewrite_imports(d, uri, ctx, &HashSet::new(), false, options, None).await
 }
 

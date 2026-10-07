@@ -16,10 +16,10 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 874 | 41.9% |
-| Passing | 863 | 41.4% |
+| Ported | 881 | 42.2% |
+| Passing | 870 | 41.7% |
 | Ported but `#[ignore]`d | 11 | 0.5% |
-| Not ported yet | 1,213 | 58.1% |
+| Not ported yet | 1,206 | 57.8% |
 
 On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,684 passed,
 0 failed and 12 ignored across 99 test targets. That count also includes our own regression suite
@@ -34,6 +34,7 @@ On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,684 passed
 `tests/build_path_regressions.rs`, 9 tests;
 `tests/organize_imports_regressions.rs`, 18 tests;
 `tests/import_choice_regressions.rs`, 14 tests;
+`tests/save_action_regressions.rs`, 14 tests;
 `tests/paste_regressions.rs`, 9 tests;
 `tests/smart_detection_regressions.rs`, 13 tests;
 `tests/accessor_regressions.rs`, 18 tests;
@@ -62,7 +63,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 567 | 563 | 65% |
+| handlers | 871 | 571 | 567 | 65% |
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 23 | 23 | 38% |
 | managers | 211 | 134 | 127 | 60% |
@@ -71,7 +72,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | (root) | 71 | 7 | 7 | 10% |
 | preferences | 53 | 0 | 0 | 0% |
 | codemanipulation | 20 | 10 | 10 | 50% |
-| cleanup | 18 | 0 | 0 | 0% |
+| cleanup | 18 | 3 | 3 | 17% |
 | syntaxserver | 14 | 0 | 0 | 0% |
 | contentassist | 6 | 0 | 0 | 0% |
 | filesystem, protobuf, javafx, template | 8 | 0 | 0 | 0% |
@@ -118,6 +119,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | handlers/PrepareRenameHandlerTest | `handlers_prepare_rename_handler_test` | 15 | 15 | 0 | 15/15 |
 | handlers/ReferencesHandlerTest | `handlers_references_handler_test` | 7 | 7 | 0 | 7/7; restored System.out binary reference assertion verified |
 | handlers/RenameHandlerTest | `handlers_rename_handler_test` | 22 | 22 | 0 | 20/22; jdt.ls NPEs on JDK 25 (record field) and has no Lombok jar |
+| handlers/SaveActionHandlerTest | `handlers_save_action_handler_test` | 4 | 4 | 0 | 4/4; unchanged hello fixtures and recovered syntax |
 | handlers/SelectionRangeHandlerTest | `handlers_selection_range_handler_test` | 5 | 5 | 0 | 5/5 |
 | handlers/SemanticTokensHandlerTest | `handlers_semantic_tokens_handler_test` | 11 | 11 | 0 | 11/11 |
 | handlers/SignatureHelpHandlerTest | `handlers_signature_help_handler_test` | 56 | 55 | 1 | 54/55; `test_signature_help_erasure_type`, where jdt.ls returns no doc |
@@ -127,6 +129,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` | 1 | 1 | 0 | 1/1 (unknown-command error) |
 | handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 19 | 0 | 19/19; all three restored stub-JDK assertions verified |
 | correction/AssignToVariableRefactorTest | `correction_assign_to_variable_refactor_test` | 2 | 2 | 0 | 2/2 (advanced assignment commands) |
+| cleanup/CleanUpsTest | `cleanup_clean_ups_test` | 3 | 3 | 0 | 3/3; no cleanup, invert equals, organize imports; 15 methods remain unported |
 | correction/AbstractMethodQuickFixTest | `correction_abstract_method_quick_fix_test` | 8 | 8 | 0 | 8/8 |
 | correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 75 | 75 | 0 | 75/75 with `--test-threads=1`; 12 upstream methods remain unported |
 | correction/NonProjectFixTest | `correction_non_project_fix_test` | 2 | 2 | 0 | 2/2; original source, action order, titles and command arguments |
@@ -1729,3 +1732,69 @@ The ledger is now 874 ports, 863 passing, 11 ignored and 1,213 unported.
 
 Save actions, cleanup integration and the remaining unported tests still require
 work before full Eclipse feature parity can be claimed.
+
+## Save actions and initial cleanup integration
+
+`textDocument/willSaveWaitUntil` now delegates to the Rust SaveActionHandler
+port. Import organization uses the shared noninteractive operation, honors
+`java.saveActions.organizeImports` and the project save-participant import
+setting, and returns edits without requesting client application. The manual
+`java/cleanup` request returns `WorkspaceEdit.changes`, including an empty edit
+array when no cleanup changes the document.
+
+Cleanup selection honors `java.saveActions.cleanup`, `java.cleanup.actions`
+and its deprecated `actionsOnSave` fallback. The exact client capability is
+`canUseInternalSettings`: when enabled, the project `org.eclipse.jdt.ui` save
+participant preferences replace the LSP cleanup list. They are not merged.
+Disabled participant settings and disabled `sp_` keys are excluded, duplicate
+IDs are removed, and `renameFileToType` remains the separate lifecycle action.
+List updates select modern/deprecated IDs from the current notification, as
+`Preferences.updateFrom` does. Clearing the modern list cannot revive an old
+deprecated setting. The lifecycle rename action reads that same effective list.
+
+The initial registry implements `invertEquals` (and `cleanup.invert_equals`)
+and `organizeImports`. Rust selects invocations from their resolved signatures,
+recognizes safe non-null arguments, and computes DOM rewrites. The bridge adds
+only the compiler fact that an expression has a constant value. The invert
+finder preserves Eclipse's treatment of enum constants, String concatenation,
+`this`, primitive arguments, overloaded methods and parenthesized receivers.
+Selected invocations suppress recursive child visits, as in the original finder.
+Sequential cleanups reparse an isolated working copy and return one replacement
+of the original document, so their edits do not overlap. Editor state and disk
+content remain unchanged until the client applies the result.
+
+All four original `SaveActionHandlerTest` methods are ported: unused imports,
+favorite static imports, a missing formatter profile and the LSP/project cleanup
+conflict. The malformed source in the conflict case is preserved. Three original
+`CleanUpsTest` methods preserve the sources, trailing spaces, recovered syntax
+and exact edit-result assertions. The Maven setup uses the unchanged Java 22
+stub API and the existing isolated oracle TestVMType extension to avoid searching
+the machine's JDK alongside the test VM. No original assertion was weakened.
+
+Fourteen regressions cover enable/disable and cleanup-list updates, manual cleanup independent of
+save settings, project preference precedence, disabled internal preferences,
+deprecated settings, cleanup composition and alias deduplication, unknown and
+rename IDs, noninteractive save import resolution, CRLF/UTF-16 edit ranges,
+resolved equality signatures, exact enum-expression constant recognition and
+editor-only documents. Thirteen resource-backed
+cases pass against Eclipse; the `untitled:`, `inmemory:` and absent-file case is
+explicitly excluded from Oracle comparisons.
+
+Evidence in `target/parity-evidence/`:
+
+* `save-actions-rust-final-7.log`: seven original methods and all fourteen
+  regressions pass.
+* `save-actions-oracle-final-4.log`: all seven original methods and thirteen
+  resource-backed regressions pass; virtual documents are checked only in Rust.
+* `save-actions-browser-final-1.log`: both `/` and `/index2.html` show the
+  String-to-int error, display and apply **Import 'ArrayList' (java.util)**,
+  clear the missing-import error and clear all errors after correcting the
+  assignment. Console errors and failed requests: zero. Screenshots are
+  `save-actions-web-{main,adapter}-{menu,fixed}.png`.
+
+Fifteen original cleanup methods and the other registered cleanup operations
+remain unported. As upstream does, the save handler appends separate organize
+and cleanup results against the original working copy; enabling both can return
+overlapping edits if both operations change the same document. Cleanup registry
+composition itself returns one combined edit. Full Eclipse feature parity is
+still unfinished.

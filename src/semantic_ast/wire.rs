@@ -20,6 +20,8 @@ pub struct NodeOut {
     pub mb: i32,
     pub f: i32,
     pub annotation: Option<AnnotationOut>,
+    #[serde(default, rename = "constantExpression")]
+    pub constant_expression: bool,
     #[serde(default)]
     pub pr: Vec<i32>,
     #[serde(default)]

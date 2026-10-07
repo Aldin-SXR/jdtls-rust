@@ -876,21 +876,7 @@ pub fn build_status(errors: usize) -> u32 {
 /// `java.cleanup.actions` (or the deprecated `java.cleanup.actionsOnSave`)
 /// contains `renameFileToType` and `java.saveActions.cleanup` is on.
 fn rename_file_to_type_enabled() -> bool {
-    let list = |key: &str| -> Vec<String> {
-        crate::features::preferences::get(key)
-            .and_then(|v| {
-                v.as_array().map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(str::to_owned))
-                        .collect()
-                })
-            })
-            .unwrap_or_default()
-    };
-    let mut actions = list("java.cleanup.actions");
-    if actions.is_empty() {
-        actions = list("java.cleanup.actionsOnSave");
-    }
+    let actions = crate::features::preferences::cleanup_actions();
     crate::features::preferences::get_bool("java.saveActions.cleanup").unwrap_or(false)
         && actions.iter().any(|a| a == "renameFileToType")
 }
