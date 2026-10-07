@@ -18,6 +18,7 @@ pub mod item;
 pub mod javadoc_proposal;
 pub mod naming;
 pub mod overrides;
+pub mod postfix;
 pub mod prefs;
 pub mod proposal;
 pub mod replacement;

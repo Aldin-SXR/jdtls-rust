@@ -187,16 +187,16 @@ impl ScopeVariable {
 }
 
 #[derive(Debug, Clone)]
-struct Var {
-    name: String,
-    ty: String,
-    params: Vec<String>,
-    offsets: Vec<usize>,
+pub(crate) struct Var {
+    pub(crate) name: String,
+    pub(crate) ty: String,
+    pub(crate) params: Vec<String>,
+    pub(crate) offsets: Vec<usize>,
 }
 
 /// `TemplateTranslator.translate`: the pattern text with `$$` unescaped and
 /// variables (name, type, params) at their occurrence offsets.
-fn translate(pattern: &str) -> (Vec<String>, Vec<Var>) {
+pub(crate) fn translate(pattern: &str) -> (Vec<String>, Vec<Var>) {
     // segments: literal text interleaved with variable placeholders (by index)
     let mut segments: Vec<String> = Vec::new();
     let mut vars: Vec<Var> = Vec::new();
