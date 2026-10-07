@@ -7,6 +7,7 @@
 //! into LSP items happens here.
 
 pub mod accessors;
+pub mod chain;
 pub mod description;
 pub mod doc;
 pub mod guesser;

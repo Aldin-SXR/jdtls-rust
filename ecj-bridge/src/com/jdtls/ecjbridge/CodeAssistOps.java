@@ -64,6 +64,8 @@ final class CodeAssistOps {
                         q.has("unitPackage") && !q.get("unitPackage").isJsonNull() ? q.get("unitPackage").getAsString() : null);
             case "javadocTarget":
                 return javadocTarget(files, classpath, level, uri, offset);
+            case "chains":
+                return ChainCompletionService.compute(q, files, classpath, level, uri, offset);
             case "overrideBindings":
                 return OverrideBindings.compute(q, files, classpath, level, uri);
             default:

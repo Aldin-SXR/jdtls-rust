@@ -406,6 +406,17 @@ pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: 
     for p in result.proposals.clone() {
         collector.accept(p);
     }
+    // chain completions are added into collector while computing, so we need me compute before adding completion items to proposals.
+    if prefs.chain && trigger_kind != Some(2) {
+        let accepted = collector.proposals.clone();
+        let chains = super::chain::compute(
+            env, &ctx, &unit, offset, &context, &accepted, &tests, unit_package(env, uri), client.snippets,
+        )
+        .await;
+        for p in chains {
+            collector.accept(p);
+        }
+    }
     let kept = collector.sorted_limited();
     let is_complete = collector.is_complete;
     let collapsed = collector.collapsed.clone();

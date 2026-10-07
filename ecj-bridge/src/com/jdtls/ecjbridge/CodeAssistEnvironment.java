@@ -66,7 +66,58 @@ public class CodeAssistEnvironment extends SearchableEnvironment {
         env.excludeTestCode = excludeTestCode;
         env.index = new TypeIndex(files, testUris, classpath, sourceLevel, skipUri, excludeTestCode);
         env.binaries = new InMemoryNameEnvironment(Map.of(), classpath);
+        env.nameLookup = EnvNameLookup.create(env);
         return env;
+    }
+
+    /**
+     * The name lookup {@code Engine.mustQualifyType} asks whether a type
+     * exists in another on-demand imported package; answered from this
+     * environment. Model-only lookups (parameter names) find nothing.
+     */
+    static class EnvNameLookup extends org.eclipse.jdt.internal.core.NameLookup {
+        private CodeAssistEnvironment env;
+
+        /** Never run: instances are allocated without a constructor. */
+        private EnvNameLookup() {
+            super(null, null, null, null, null);
+        }
+
+        static EnvNameLookup create(CodeAssistEnvironment env) {
+            try {
+                Constructor<?> ctor = sun.reflect.ReflectionFactory.getReflectionFactory()
+                        .newConstructorForSerialization(EnvNameLookup.class, Object.class.getDeclaredConstructor());
+                EnvNameLookup lookup = (EnvNameLookup) ctor.newInstance();
+                lookup.env = env;
+                return lookup;
+            } catch (ReflectiveOperationException e) {
+                return null;
+            }
+        }
+
+        @Override
+        public Answer findType(String name, String packageName, boolean partialMatch, int acceptFlags,
+                boolean checkRestrictions) {
+            if (name == null || packageName == null || partialMatch) return null;
+            char[][] compound = CharOperation.arrayConcat(
+                    packageName.isEmpty() ? CharOperation.NO_CHAR_CHAR : CharOperation.splitOn('.', packageName.toCharArray()),
+                    name.toCharArray());
+            if (env.find(compound) == null) return null;
+            try {
+                Constructor<Answer> ctor = Answer.class.getDeclaredConstructor(org.eclipse.jdt.core.IType.class,
+                        org.eclipse.jdt.internal.compiler.env.AccessRestriction.class, org.eclipse.jdt.core.IClasspathEntry.class);
+                ctor.setAccessible(true);
+                return ctor.newInstance(null, null, null);
+            } catch (ReflectiveOperationException e) {
+                return null;
+            }
+        }
+
+        @Override
+        public Answer findType(String name, String packageName, boolean partialMatch, int acceptFlags,
+                boolean considerSecondaryTypes, boolean waitForIndexes, boolean checkRestrictions, IProgressMonitor monitor) {
+            return null;
+        }
     }
 
     TypeIndex index() {
