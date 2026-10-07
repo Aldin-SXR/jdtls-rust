@@ -4,6 +4,10 @@
 //! `workspace/didChangeConfiguration` the way `Preferences.updateFrom` does:
 //! only the keys present in the change are replaced.
 
+pub mod manager;
+pub mod map_flattener;
+pub mod model;
+
 use serde_json::Value;
 use std::sync::RwLock;
 use tower_lsp::lsp_types::InitializeParams;
@@ -35,6 +39,9 @@ pub fn init(params: &InitializeParams) {
         };
     *CLEANUP_ACTIONS.write().unwrap_or_else(|e| e.into_inner()) =
         settings.as_ref().map(cleanup_actions_from).unwrap_or_default();
+    // InitHandler: `preferenceManager.update(Preferences.createFrom(settings))`.
+    let preferences = model::Preferences::create_from(settings.as_ref().unwrap_or(&Value::Null));
+    manager_write().update(preferences);
     *SETTINGS.write().unwrap_or_else(|e| e.into_inner()) = settings;
     // `ClientPreferences.isClassFileContentSupported`
     let class_files = opts
@@ -58,9 +65,28 @@ pub fn update(change: &Value) {
         *ORGANIZE_IMPORT_FAVORITES.write().unwrap_or_else(|e| e.into_inner()) =
             super::completion::prefs::Prefs::load().favorite_members;
     }
+    {
+        let mut manager = manager_write();
+        let preferences = model::Preferences::update_from(manager.get_preferences(), change);
+        manager.update(preferences);
+    }
     let mut guard = SETTINGS.write().unwrap_or_else(|e| e.into_inner());
     let current = guard.get_or_insert_with(|| Value::Object(Default::default()));
     merge(current, change);
+}
+
+/// `JavaLanguageServerPlugin.getPreferencesManager()`.
+static MANAGER: once_cell::sync::Lazy<RwLock<manager::PreferenceManager>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(manager::PreferenceManager::new()));
+
+fn manager_write() -> std::sync::RwLockWriteGuard<'static, manager::PreferenceManager> {
+    MANAGER.write().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `PreferenceManager.getPreferences()` (a snapshot).
+#[allow(dead_code)]
+pub fn current() -> model::Preferences {
+    MANAGER.read().unwrap_or_else(|e| e.into_inner()).get_preferences().clone()
 }
 
 fn cleanup_actions_from(settings: &Value) -> Vec<String> {
@@ -230,13 +256,9 @@ pub fn import_order() -> Vec<String> {
 /// `java.sources.organizeImports.starThreshold` / `staticStarThreshold`
 /// (default 99; non-positive values reset to the default).
 pub fn import_thresholds() -> (i32, i32) {
-    let get_int = |k: &str| {
-        get(k).and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))).filter(|n| *n > 0).map(|n| n as i32)
-    };
-    (
-        get_int("java.sources.organizeImports.starThreshold").unwrap_or(99),
-        get_int("java.sources.organizeImports.staticStarThreshold").unwrap_or(99),
-    )
+    let manager = MANAGER.read().unwrap_or_else(|e| e.into_inner());
+    let preferences = manager.get_preferences();
+    (preferences.get_import_on_demand_threshold(), preferences.get_static_import_on_demand_threshold())
 }
 
 /// `Preferences.getJavaQuickFixShowAt()` (`java.quickfix.showAt`: `line` or
