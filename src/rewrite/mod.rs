@@ -217,6 +217,8 @@ pub struct ASTRewrite {
     tight_nodes: HashSet<NodeId>,
     /// Overrides from a feature's `TargetSourceRangeComputer`.
     source_ranges: std::collections::HashMap<NodeId, (usize, usize)>,
+    /// `NoCommentSourceRangeComputer`: every node's plain range.
+    no_comment_ranges: bool,
 }
 
 impl ASTRewrite {
@@ -229,6 +231,7 @@ impl ASTRewrite {
             insert_bound_to_previous: HashSet::new(),
             tight_nodes: HashSet::new(),
             source_ranges: std::collections::HashMap::new(),
+            no_comment_ranges: false,
         }
     }
 
@@ -368,11 +371,16 @@ impl ASTRewrite {
             return *range;
         }
         let node = self.ast.node(n);
-        if self.tight_nodes.contains(&n) {
+        if self.no_comment_ranges || self.tight_nodes.contains(&n) {
             (node.start(), node.length())
         } else {
             (node.extended_start(), node.extended_length())
         }
+    }
+
+    /// `setTargetSourceRangeComputer(new NoCommentSourceRangeComputer())`.
+    pub fn set_no_comment_source_ranges(&mut self) {
+        self.no_comment_ranges = true;
     }
 
     pub fn set_source_range(&mut self, n: NodeId, start: usize, length: usize) {

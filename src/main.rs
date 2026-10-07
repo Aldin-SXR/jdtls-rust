@@ -11,6 +11,8 @@ mod javadoc;
 mod lenient_uri;
 mod ordering;
 mod project;
+#[allow(dead_code)]
+mod refactoring;
 mod rewrite;
 mod semantic_ast;
 mod server;

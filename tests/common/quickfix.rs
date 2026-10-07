@@ -50,6 +50,9 @@ pub struct QuickFixTest {
     ignored_kinds: Vec<String>,
     only: Option<Vec<String>>,
     opened: Vec<String>,
+    /// `AbstractSelectionTest`: `getRange(cu, problem)` is the marked
+    /// `/*[*/ ... /*]*/` selection instead of the problem start.
+    selection: bool,
 }
 
 impl Default for QuickFixTest {
@@ -85,7 +88,13 @@ impl QuickFixTest {
             "generateDelegateMethodsPromptSupport": true
         });
         ws.settings = json!({ "java": { "codeGeneration": { "generateComments": true }, "quickfix": { "showAt": "problem" } } });
-        QuickFixTest { ws, ignored_commands: Vec::new(), ignored_kinds: vec!["source.*".to_owned()], only: None, opened: Vec::new() }
+        QuickFixTest { ws, ignored_commands: Vec::new(), ignored_kinds: vec!["source.*".to_owned()], only: None, opened: Vec::new(), selection: false }
+    }
+
+    /// `AbstractSelectionTest`: code actions are requested for the marked
+    /// selection (`CodeActionUtil.getRange(cu)`).
+    pub fn set_selection_test(&mut self) {
+        self.selection = true;
     }
 
     /// `setIgnoredCommands(..)` (regular expressions on titles).
@@ -119,10 +128,11 @@ impl QuickFixTest {
         let text = self.ws.read(uri);
         let mut result = Vec::new();
         if diagnostics.is_empty() {
-            result.extend(self.request_code_actions(uri, json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }), &diagnostics));
+            let range = if self.selection { get_selection_range(&text) } else { json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }) };
+            result.extend(self.request_code_actions(uri, range, &diagnostics));
         } else {
             for d in &diagnostics {
-                let range = problem_range(&text, d);
+                let range = if self.selection { get_selection_range(&text) } else { problem_range(&text, d) };
                 result.extend(self.request_code_actions(uri, range, &diagnostics));
             }
         }
