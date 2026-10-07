@@ -5,7 +5,9 @@ and the upstream test suite (`eclipse.jdt.ls/org.eclipse.jdt.ls.tests`) is repli
 exactly: same fixtures, same inputs, same expected outputs.
 
 The upstream sources are checked out (gitignored) at `eclipse.jdt.ls/` in the main
-checkout: `/Users/aldin-sxr/Documents/Code/jdtls-rust/eclipse.jdt.ls`. Read the upstream
+checkout (check out the `v1.58.0` tag). The jdt.core.manipulation sources, where most
+quick-fix, assist and refactoring processors live, can be checked out from
+`eclipse-jdt/eclipse.jdt.ui` into `.oracle/src/jdt.ui` (use the commit just before 2026-04-10). Read the upstream
 handler and its test before you implement anything.
 
 ## Architecture rules
@@ -39,7 +41,8 @@ byte for byte. Don't guess messages, labels, titles, sort order or edit shapes.
 
 * The reference server is jdt.ls 1.58.0, the same version as the `eclipse.jdt.ls/`
   checkout. It's unpacked at
-  `/Users/aldin-sxr/Documents/Code/jdtls-rust/.oracle/jdtls-1.58.0` (gitignored).
+  `.oracle/jdtls-1.58.0` (gitignored), from
+  `https://download.eclipse.org/jdtls/milestones/1.58.0/jdt-language-server-1.58.0-202604151538.tar.gz`.
   `scripts/oracle-jdtls.sh <data-dir>` launches it over stdio.
 * `JDTLS_ORACLE=1 cargo test --test <file>` runs any harness-based test against the
   real jdt.ls instead of ours. Use it to:
@@ -47,7 +50,7 @@ byte for byte. Don't guess messages, labels, titles, sort order or edit shapes.
   * capture the exact responses. Write a scratch test that prints the oracle's result,
     then replicate it.
   In a worktree, the script resolves `.oracle/` relative to the repo. Set
-  `JDTLS_ORACLE_HOME=/Users/aldin-sxr/Documents/Code/jdtls-rust/.oracle/jdtls-1.58.0`
+  `JDTLS_ORACLE_HOME=<main checkout>/.oracle/jdtls-1.58.0`
   if it isn't there.
 * The message strings in JDT, LTK and jdt.ls (refactoring errors, quick-fix labels)
   live in `*.properties` files inside the oracle's plugin jars, for example
@@ -97,4 +100,7 @@ byte for byte. Don't guess messages, labels, titles, sort order or edit shapes.
   the bridge by hand. JDT 3.44.0 is in `~/.m2`.
 * The bridge daemon is shared over a Unix socket that is versioned by the JAR's hash,
   so a rebuilt JAR always gets a fresh daemon.
+* The FernFlower decompiler comes from the JetBrains repository. Where that host is
+  unreachable, install the identical jar shipped with the oracle:
+  `scripts/install-decompiler-from-oracle.sh`.
 * `tests/lsp.rs` is the pre-existing regression suite. Keep it green.
