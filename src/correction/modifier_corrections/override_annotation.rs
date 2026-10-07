@@ -32,6 +32,40 @@ pub async fn remove_override_annotation(env: &Env<'_>, ctx: &Context, problem: &
     }
 }
 
+/// `JavadocTagsSubProcessorCore.getTagRanking(tagName)`.
+fn tag_ranking(tag: &str) -> usize {
+    let tag = if tag == "@exception" { "@throws" } else { tag };
+    const TAG_ORDER: [&str; 9] = ["@author", "@version", "@param", "@return", "@throws", "@see", "@since", "@serial", "@deprecated"];
+    TAG_ORDER.iter().position(|t| *t == tag).unwrap_or(TAG_ORDER.len())
+}
+
+/// `getOverridingDeprecatedMethodProposal(context, problem, proposals)`.
+pub fn overriding_deprecated_method(ctx: &Context, problem: &ProblemLocation, proposals: &mut Vec<Proposal>) {
+    let Some(decl) = problem.covering_node(ctx.ast()).filter(|n| n.is(NodeKind::MethodDeclaration)) else { return };
+    let mut rw = ASTRewrite::new(ctx.ast.clone());
+    let annotation = rw.new_node(NodeKind::MarkerAnnotation);
+    let name = rw.new_name("Deprecated");
+    rw.put_child(annotation, "typeName", name);
+    rw.list_insert_first(RNode::Orig(decl.id), "modifiers", annotation);
+    if let Some(javadoc) = decl.child("javadoc") {
+        let tag = rw.new_node(NodeKind::TagElement);
+        rw.put_simple(tag, "tagName", "@deprecated");
+        // JavadocTagsSubProcessorCore.insertTag(tags, newTag, null)
+        let ranking = tag_ranking("@deprecated");
+        let after = javadoc
+            .list("tags")
+            .into_iter()
+            .rev()
+            .find(|t| t.simple("tagName").is_none_or(|n| ranking > tag_ranking(n)));
+        match after {
+            Some(after) => rw.list_insert_after(RNode::Orig(javadoc.id), "tags", tag, RNode::Orig(after.id)),
+            None => rw.list_insert_first(RNode::Orig(javadoc.id), "tags", tag),
+        }
+    }
+    let label = messages::correction("ModifierCorrectionSubProcessor_overrides_deprecated_description").to_owned();
+    proposals.push(Proposal::rewrite(label, kind::QUICK_FIX, relevance::OVERRIDES_DEPRECATED, rw));
+}
+
 /// `Bindings.getAllSuperTypes(type)`.
 fn all_super_types(t: BindingRef<'_>) -> Vec<BindingRef<'_>> {
     fn visit<'a>(t: BindingRef<'a>, out: &mut Vec<BindingRef<'a>>, root: &str) {

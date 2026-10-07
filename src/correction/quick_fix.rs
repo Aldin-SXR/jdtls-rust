@@ -160,8 +160,12 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         | p::UnexpectedStaticModifierForMethod
         | p::IllegalModifierForInterfaceMethod18 => super::modifier_corrections::remove_invalid_modifiers(ctx, problem, proposals, super::relevance::REMOVE_INVALID_MODIFIERS),
         p::EnhancedSwitchMissingDefault | p::SwitchExpressionsYieldMissingDefaultCase => super::modifier_corrections::permitted_types(env, ctx, problem, proposals).await,
-        p::MethodMustOverride | p::MethodMustOverrideOrImplement =>super::modifier_corrections::remove_override_annotation(env, ctx, problem, proposals).await,
-        p::OuterLocalMustBeEffectivelyFinal =>super::modifier_corrections::make_final(ctx, problem, proposals, super::relevance::CHANGE_MODIFIER_TO_FINAL),
+        p::OverridingDeprecatedMethod
+        | p::OverridingDeprecatedSinceVersionMethod
+        | p::OverridingTerminallyDeprecatedMethod
+        | p::OverridingTerminallyDeprecatedSinceVersionMethod => super::modifier_corrections::overriding_deprecated_method(ctx, problem, proposals),
+        p::MethodMustOverride | p::MethodMustOverrideOrImplement => super::modifier_corrections::remove_override_annotation(env, ctx, problem, proposals).await,
+        p::OuterLocalMustBeEffectivelyFinal => super::modifier_corrections::make_final(ctx, problem, proposals, super::relevance::CHANGE_MODIFIER_TO_FINAL),
         p::MissingSynchronizedModifierInInheritedMethod => super::modifier_corrections::add_method_modifier(
             ctx,
             problem,

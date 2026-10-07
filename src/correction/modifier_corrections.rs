@@ -10,7 +10,7 @@ mod visibility;
 
 pub use invalid::remove_invalid_modifiers;
 pub use methods::{abstract_method, abstract_type, native_method, requires_body};
-pub use override_annotation::remove_override_annotation;
+pub use override_annotation::{overriding_deprecated_method, remove_override_annotation};
 pub use permitted::permitted_types;
 pub use sealed::{sealed_as_direct_super_type, sealed_missing_modifier, type_as_permitted_sub_type};
 pub use visibility::{add_method_modifier, change_overridden_modifier, make_final, non_accessible_reference};
