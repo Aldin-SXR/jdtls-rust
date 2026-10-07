@@ -16,10 +16,10 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 934 | 44.8% |
-| Passing | 923 | 44.2% |
-| Ported but `#[ignore]`d | 11 | 0.5% |
-| Not ported yet | 1,153 | 55.2% |
+| Ported | 1,025 | 49.1% |
+| Passing | 1,013 | 48.5% |
+| Ported but `#[ignore]`d | 12 | 0.6% |
+| Not ported yet | 1,062 | 50.9% |
 
 On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,684 passed,
 0 failed and 12 ignored across 99 test targets. That count also includes our own regression suite
@@ -67,7 +67,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 23 | 23 | 38% |
 | managers | 211 | 134 | 127 | 60% |
-| correction | 604 | 101 | 101 | 17% |
+| correction | 604 | 192 | 191 | 32% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 7 | 7 | 10% |
 | preferences | 53 | 53 | 53 | 100% |
@@ -137,6 +137,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
+| correction/UnresolvedMethodsQuickFixTest | `correction_unresolved_methods_quick_fix_test` | 91 | 90 | 1 | 91/91; the favorites tests resend settings once the server runs (jdt.ls copies live favorites) |
 | codemanipulation/OverrideMethodsTestCase | `codemanipulation_override_methods_test_case` | 10 | 10 | 0 | 10/10 |
 | JVMConfiguratorTest | `jvm_configurator_test` | 7 | 7 | 0 | 7/7 direct calls to the actual JVM/runtime APIs and unchanged upstream VM extension |
 | commands/BuildPathCommandTest | `commands_build_path_command_test` | 4 | 4 | 0 | 4/4; unchanged Gradle 8.5 fixture runs on Java 21 |
@@ -180,6 +181,7 @@ Rust run and is excluded from the upstream-port count.
 | Requires an installed JavaSE-1.8 or Java 26 VM | 4 | Eclipse `test_forbidden_reference`, `test_preview_features_disabled_by_default`; invisible `test_preview_features_enabled_by_default`; Maven `test_java26_project` |
 | Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
 | Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
+| Needs the unported `NotVisibleMethod` visibility proposal (ModifierCorrectionSubProcessor) | 1 | UnresolvedMethods `test_indirect_protected_method` |
 | Gradle model/update parity for an invalid build | 1 | ProjectsManager `test_sending_warning_project_status`; successful-update and reload-marker assertions now run with the compatible Gradle VM |
 
 ## Lifecycle/init integration evidence
@@ -368,6 +370,26 @@ All four `preferences` test classes are ported: 53 upstream methods, all passing
 * **Remaining:** the disable-test-classpath flag and multi-module directory update only
   the modelled m2e state, not the Maven classpath; completion snippets still read raw
   `java.templates.*` settings.
+
+## Unresolved-method correction evidence
+
+All 91 `UnresolvedMethodsQuickFixTest` methods are ported; 90 pass on Rust and all 91
+pass on jdt.ls 1.58.0.
+
+* `src/correction/unresolved_elements*` ports `UnresolvedElementsBaseSubProcessor` for
+  `UndefinedMethod`, `UndefinedConstructor`, `UndefinedAnnotationMember`,
+  `ParameterMismatch` and `NoMessageSendOnArrayType`: create method/constructor (other
+  files, outer types, abstract variants), "Change to" renames, add/remove/swap/change
+  arguments and parameters, argument casts, sender-type changes, qualification, missing
+  cast parentheses, static-import favorites, the `new` keyword fix, array access and
+  annotation members.
+* The bridge exports receiver and created-type member graphs, well-known types and a
+  cast-compatibility relation for units that need them.
+* `validate_all_open_buffers_on_changes` now defaults to `true`, as upstream.
+* **Remaining:** `test_indirect_protected_method` waits on the visibility proposal from
+  `ModifierCorrectionSubProcessor`. `ConvertLoopOperation.modifyBaseName`, the "Let type
+  implement interface"/"change constructor type" sender proposals and generated method
+  comments are simplified or missing; no upstream test covers them.
 
 ## Known differences from jdt.ls
 
