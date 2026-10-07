@@ -44,6 +44,15 @@ public class InMemoryNameEnvironment implements INameEnvironment {
         this.expectedPackages = expectedPackages;
     }
 
+    /** Package fragment of each source unit below a known source folder. */
+    private final Map<String, String> fragmentPackages;
+
+    /** The package a source unit defines: the requested one, else its package fragment. */
+    public String expectedPackage(String uri) {
+        String expected = expectedPackages == null ? null : expectedPackages.get(uri);
+        return expected != null ? expected : fragmentPackages.get(uri);
+    }
+
     /** Binary class name (e.g. "com/example/Foo") → bytecode, built as we compile */
     private final Map<String, byte[]> compiledClasses = new ConcurrentHashMap<>();
 
@@ -53,6 +62,15 @@ public class InMemoryNameEnvironment implements INameEnvironment {
     public InMemoryNameEnvironment(Map<String, String> sourceFiles, List<String> classpath) {
         this.sourceFiles = sourceFiles;
         this.classpathEntries = cachedClasspath(classpath);
+        this.fragmentPackages = SourceLayout.fragmentPackages(sourceFiles);
+        for (String fragment : fragmentPackages.values()) {
+            String pkg = fragment.replace('.', '/');
+            while (!pkg.isEmpty()) {
+                sourcePackages.add(pkg);
+                int slash = pkg.lastIndexOf('/');
+                pkg = slash < 0 ? "" : pkg.substring(0, slash);
+            }
+        }
         // ECJ asks whether a prefix is a package before resolving its source
         // type. Include units not compiled yet, regardless of compilation order.
         for (String source : sourceFiles.values()) {
@@ -195,8 +213,7 @@ public class InMemoryNameEnvironment implements INameEnvironment {
         for (Map.Entry<String, String> entry : sourceFiles.entrySet()) {
             String uriStr = entry.getKey();
             if (uriStr.replace('\\', '/').endsWith(binaryName + ".java")) {
-                return new InMemoryCompilationUnit(uriStr, entry.getValue(),
-                        expectedPackages == null ? null : expectedPackages.get(uriStr));
+                return new InMemoryCompilationUnit(uriStr, entry.getValue(), expectedPackage(uriStr));
             }
         }
         return null;

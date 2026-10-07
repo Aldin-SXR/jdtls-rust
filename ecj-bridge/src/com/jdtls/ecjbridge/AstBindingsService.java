@@ -204,6 +204,8 @@ final class AstBindingsService {
         synchronized (MIRRORS) {
             Map<String, String> written = MIRRORS.computeIfAbsent(key, k -> new HashMap<>());
             Files.createDirectories(root);
+            // Units are found through their package fragment (folder), like JDT.
+            Map<String, String> fragments = SourceLayout.fragmentPackages(files);
             for (Map.Entry<String, String> e : files.entrySet()) {
                 String uri = e.getKey();
                 String content = e.getValue();
@@ -223,6 +225,7 @@ final class AstBindingsService {
                     CompilationUnit unit = (CompilationUnit) syntax.createAST(null);
                     if (unit.getPackage() != null) pkg = unit.getPackage().getName().getFullyQualifiedName();
                 }
+                if (fragments.containsKey(uri)) pkg = fragments.get(uri);
                 Path dir = pkg.isEmpty() ? root : root.resolve(pkg.replace('.', '/'));
                 Path file = dir.resolve(name);
                 String stamp = file + "\u0000" + content.hashCode() + ":" + content.length();

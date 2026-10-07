@@ -1328,7 +1328,6 @@ fn test_type_mismatch_with_array_length() {
 }
 
 #[test]
-#[ignore = "needs folder-based type lookup: test2/E.java declares package test1, which JDT still resolves as test2.E through its package fragment; the bridge name environment resolves types by declared package"]
 fn test_type_mismatch_with_type_in_same_package() {
     let (mut t, root) = setup(&[]);
     let mut buf = String::new();

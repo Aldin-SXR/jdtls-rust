@@ -149,7 +149,7 @@ public class CompilationService {
                 .filter(e -> e.getKey().endsWith(".java") || (roots != null && roots.contains(e.getKey())))
                 .filter(e -> roots == null || roots.contains(e.getKey()))
                 .map(e -> (ICompilationUnit) new InMemoryCompilationUnit(e.getKey(), e.getValue(),
-                        expectedPackages == null ? null : expectedPackages.get(e.getKey())))
+                        nameEnv.expectedPackage(e.getKey())))
                 .toArray(ICompilationUnit[]::new);
 
         try {
