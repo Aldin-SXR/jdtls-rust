@@ -240,8 +240,7 @@ pub async fn variable_proposals_for(env: &Env<'_>, ctx: &Context, problem: &Prob
         let identifier = simple_name_identifier(node);
         let rel = if identifier.chars().next().is_some_and(char::is_uppercase) { relevance::VARIABLE_TYPE_PROPOSAL_1 } else { relevance::VARIABLE_TYPE_PROPOSAL_2 };
         similar_type_proposals(env, ctx, type_kind, node, rel + 1, proposals).await;
-        // collectNewTypeProposals (NewCUProposal) and the project setup fixes
-        // are not ported.
+        super::new_type::new_type_proposals(env, ctx, node, type_kind & !tk::ANNOTATIONS, rel, proposals).await;
     }
 
     if !suggest_variable_proposals {
@@ -706,6 +705,10 @@ fn erasure_signature(sig: &str) -> String {
     out
 }
 
+/// The import-only branch stays off until similar types exclude test sources
+/// for main code (`testDontImportTestClassesInMainCode`).
+const IMPORT_ONLY_ENABLED: bool = false;
+
 /// `createTypeRefChangeProposal(cu, fullName, node, relevance, maxProposals)`.
 fn type_ref_change_proposal(ctx: &Context, options: &BTreeMap<String, String>, full_name: &str, node: Node<'_>, relevance: i32) -> Option<Proposal> {
     let mut relevance = relevance;
@@ -724,9 +727,27 @@ fn type_ref_change_proposal(ctx: &Context, options: &BTreeMap<String, String>, f
     if !simple_name.chars().next().is_some_and(char::is_uppercase) {
         relevance -= 2;
     }
-    if imports.is_some() && node.is(NodeKind::SimpleName) && simple_name == node.identifier() {
-        // import only (AddImportCorrectionProposal / QualifyTypeProposal): not ported
+    if imports.is_some() && node.is(NodeKind::SimpleName) && simple_name == node.identifier() && !IMPORT_ONLY_ENABLED {
+        // The completion engine still proposes test-source types for main code.
         return None;
+    }
+    if let Some(imports) = imports.take_if(|_| node.is(NodeKind::SimpleName) && simple_name == node.identifier()) {
+        // import only: first check that this is not a nested type of the
+        // unit (bug 321464), which gets a qualified reference instead.
+        let nested = ctx.ast().all_nodes().any(|n| n.kind().is_abstract_type_declaration() && n.binding().is_some_and(|b| b.qualified_name() == full_name));
+        if nested {
+            let label = messages::format(messages::correction("UnresolvedElementsSubProcessor_change_to_qualified_description"), &[full_name]);
+            let mut rw = ASTRewrite::new(ctx.ast.clone());
+            let name = rw.new_name(full_name);
+            rw.replace(RNode::Orig(node.id), Some(name));
+            return Some(Proposal::new(label, kind::QUICK_FIX, relevance + 100, Change::Cu(vec![CuChange::rewrite(rw).with_imports(imports)])));
+        }
+        let label = messages::format(messages::correction("UnresolvedElementsSubProcessor_importtype_description"), &[&simple_name, &pack_name]);
+        // AddImportCorrectionProposal (getQualifiedTypeNameHistoryBoost is 0 in jdt.ls)
+        let change = CuChange { ast: ctx.ast.clone(), rewrite: None, imports: Some(imports), edits: None };
+        let mut p = Proposal::new(label, kind::QUICK_FIX, relevance + 100, Change::Cu(vec![change]));
+        p.proposal_type = crate::correction::ProposalType::AddImport;
+        return Some(p);
     }
     let label = if pack_name.is_empty() {
         messages::format(messages::correction("UnresolvedElementsSubProcessor_changetype_nopack_description"), &[&simple_name])
@@ -758,7 +779,10 @@ pub async fn similar_type_proposals(env: &Env<'_>, ctx: &Context, kind: i32, nod
         simple_binding = Some(sb);
         if !sb.is_recovered() {
             let name = sb.qualified_name().to_owned();
-            if let Some(p) = type_ref_change_proposal(ctx, &options, &name, node, relevance + 2) {
+            if let Some(mut p) = type_ref_change_proposal(ctx, &options, &name, node, relevance + 2) {
+                if p.proposal_type == crate::correction::ProposalType::AddImport {
+                    p.relevance = relevance + elements.len() as i32 + 2;
+                }
                 proposals.push(p);
             }
             resolved_type_name = Some(name);
@@ -837,6 +861,20 @@ pub async fn type_proposals(env: &Env<'_>, ctx: &Context, problem: &ProblemLocat
     let Some(node) = node else { return };
     // addEnhancedForWithoutTypeProposals and the `var` compliance fixes are not ported.
     similar_type_proposals(env, ctx, kind, node, relevance::SIMILAR_TYPE, proposals).await;
+    let mut node = node;
+    while let Some(p) = node.parent().filter(|p| p.is(NodeKind::QualifiedName)) {
+        node = p;
+    }
+    // collectRequiresModuleProposals (module-info.java) is not ported.
+    let mut kind = kind;
+    if selected != node {
+        kind = possible_type_kinds(node);
+    }
+    if kind & (tk::CLASSES | tk::INTERFACES) != 0 {
+        kind &= !tk::ANNOTATIONS;
+    }
+    super::new_type::new_type_proposals(env, ctx, node, kind, relevance::NEW_TYPE, proposals).await;
+    // ReorgCorrectionsSubProcessor.addProjectSetupFixProposals is empty in jdt.ls.
 }
 
 /// `ASTResolving.getPossibleTypeKinds(node)`.

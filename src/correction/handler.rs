@@ -393,6 +393,12 @@ pub fn is_superseded_legacy_action(title: &str) -> bool {
     const SUPERSEDED: &[&str] = &["Organize Imports", "Add serialVersionUID field", "Remove unnecessary cast", "Remove redundant superinterface"];
     // Unresolved variables: `UnresolvedElementsSubProcessor.getVariableProposals`.
     const SUPERSEDED_PREFIXES: &[&str] = &["Create local variable '", "Create parameter '", "Create field '", "Create constant '"];
+    // Unresolved types: `UnresolvedElementsSubProcessor.getTypeProposals`
+    // (import-only proposals, NewCUProposal) and `addAddAllMissingImportsProposal`.
+    const SUPERSEDED_TYPE_PREFIXES: &[&str] = &["Create class '", "Create interface '"];
+    if SUPERSEDED_TYPE_PREFIXES.iter().any(|p| title.starts_with(p)) {
+        return true;
+    }
     SUPERSEDED.contains(&title) || SUPERSEDED_PREFIXES.iter().any(|p| title.starts_with(p)) || title.starts_with("Generate Getter") || title.starts_with("Generate Setter") || title.starts_with("Generate Constructor") || title == "Generate constructor from fields" || title.starts_with("Generate toString()") || title.starts_with("Generate hashCode() and equals()") || title.starts_with("Generate Delegate Methods") || title.starts_with("Override/Implement Methods") || title.starts_with("Cast to '")
 }
 

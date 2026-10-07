@@ -199,6 +199,7 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::NoMessageSendOnArrayType => super::unresolved_elements::array_access_proposals(ctx, problem, proposals),
         p::UndefinedField | p::UndefinedName | p::UnresolvedVariable => super::unresolved_elements::variable_proposals(env, ctx, problem, proposals).await,
         p::UndefinedType | p::JavadocUndefinedType => super::unresolved_elements::type_proposals(env, ctx, problem, proposals).await,
+        p::AmbiguousType | p::JavadocAmbiguousType => super::unresolved_elements::ambiguous_type_proposals(env, ctx, problem, proposals).await,
         p::TypeMismatch | p::ReturnTypeMismatch => super::type_mismatch::type_mismatch(env, ctx, problem, proposals).await,
         p::IncompatibleTypesInForeach => super::type_mismatch::type_mismatch_in_for_each(env, ctx, problem, proposals).await,
         p::IncompatibleReturnType => super::type_mismatch::incompatible_return_type(env, ctx, problem, proposals).await,
@@ -210,7 +211,14 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
 
 /// `QuickFixProcessor.addAddAllMissingImportsProposal`: only when an
 /// `AddImportCorrectionProposal` is among the proposals.
-pub async fn add_all_missing_imports_proposal(_env: &Env<'_>, _req: &Request<'_>, _proposals: &mut Vec<Proposal>) {
-    // `AddImportCorrectionProposal`s (unresolved types) are not produced by
-    // the Rust processors yet, so there is nothing to add.
+pub async fn add_all_missing_imports_proposal(_env: &Env<'_>, req: &Request<'_>, proposals: &mut Vec<Proposal>) {
+    let min = proposals.iter().filter(|p| p.proposal_type == super::ProposalType::AddImport).map(|p| p.relevance).min();
+    let Some(min) = min else { return };
+    // OrganizeImportsHandler.getOrganizeImportsProposal: needs the unit's resource.
+    if crate::project::uri_to_path(&req.uri).is_none() {
+        return;
+    }
+    let label = super::messages::ls_correction("UnresolvedElementsSubProcessor_add_allMissing_imports_description");
+    let change = super::source_assist::OrganizeImports { uri: req.uri.clone(), restore: true, changes_only: false };
+    proposals.push(Proposal::new(label, super::kind::QUICK_FIX, min - 1, super::Change::Lazy(Box::new(change))));
 }

@@ -28,7 +28,6 @@ fn lines(l: &[&str]) -> String {
 }
 
 #[test]
-#[ignore = "needs the type half of getTypeProposals (AddTypeParameterProposal, import-only proposals) in Rust: not ported yet"]
 fn test_type_in_field_decl() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &lines(&["package test1;\n", "public class E {\n", "    Vector1 vec;\n", "}\n"]));
@@ -41,7 +40,6 @@ fn test_type_in_field_decl() {
 }
 
 #[test]
-#[ignore = "needs the type half of getTypeProposals (AddTypeParameterProposal, import-only proposals) in Rust: not ported yet"]
 fn test_type_in_method_arguments() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &lines(&["package test1;\n", "public class E {\n", "    void foo(Vect1or[] vec) {\n", "    }\n", "}\n"]));
@@ -55,7 +53,6 @@ fn test_type_in_method_arguments() {
 }
 
 #[test]
-#[ignore = "needs the type half of getTypeProposals (AddTypeParameterProposal, import-only proposals) in Rust: not ported yet"]
 fn test_type_in_method_return_type() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &lines(&["package test1;\n", "public class E {\n", "    Vect1or[] foo() {\n", "        return null;\n", "    }\n", "}\n"]));
@@ -79,7 +76,6 @@ fn test_type_in_exception_type() {
 }
 
 #[test]
-#[ignore = "needs the type half of getTypeProposals (AddTypeParameterProposal, import-only proposals) in Rust: not ported yet"]
 fn test_type_in_var_decl_with_wildcard() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(
@@ -122,7 +118,6 @@ fn test_type_in_statement() {
 }
 
 #[test]
-#[ignore = "needs the type half of getTypeProposals (AddTypeParameterProposal, import-only proposals) in Rust: not ported yet"]
 fn test_array_type_in_statement() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(
@@ -153,7 +148,6 @@ fn test_array_type_in_statement() {
 }
 
 #[test]
-#[ignore = "needs NewCUProposal (Create class/interface/enum/annotation) in Rust: not ported yet"]
 fn test_qualified_type() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &lines(&["package test1;\n", "public class E {\n", "    void foo() {\n", "        test2.Test t= null;\n", "    }\n", "}\n"]));
@@ -185,7 +179,6 @@ fn test_type_in_catch_block() {
 }
 
 #[test]
-#[ignore = "needs NewCUProposal (Create class/interface/enum/annotation) in Rust: not ported yet"]
 fn test_type_in_super_type() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &lines(&["package test1;\n", "public class E extends XXX {\n", "}\n"]));
@@ -210,7 +203,6 @@ fn test_new_cu_no_leading_blank_line() {
 }
 
 #[test]
-#[ignore = "needs NewCUProposal (Create class/interface/enum/annotation) in Rust: not ported yet"]
 fn test_type_creation() {
     let (mut t, root) = setup();
     // `clientPreferences.isResourceOperationSupported()` returns true.
@@ -228,7 +220,6 @@ fn test_type_creation() {
 }
 
 #[test]
-#[ignore = "needs NewCUProposal (Create class/interface/enum/annotation) in Rust: not ported yet"]
 fn test_type_in_super_interface() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &lines(&["package test1;\n", "public interface E extends XXX {\n", "}\n"]));
@@ -258,7 +249,6 @@ fn test_type_in_annotation_bug153881() {
 }
 
 #[test]
-#[ignore = "needs the type half of getTypeProposals (AddTypeParameterProposal, import-only proposals) in Rust: not ported yet"]
 fn test_primitive_type_in_field_decl() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &lines(&["package test1;\n", "public class E {\n", "    floot vec= 1.0;\n", "}\n"]));
@@ -271,7 +261,6 @@ fn test_primitive_type_in_field_decl() {
 }
 
 #[test]
-#[ignore = "needs the type half of getTypeProposals (AddTypeParameterProposal, import-only proposals) in Rust: not ported yet"]
 fn test_type_in_type_arguments1() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(
@@ -297,7 +286,6 @@ fn test_type_in_type_arguments1() {
 }
 
 #[test]
-#[ignore = "needs the type half of getTypeProposals (AddTypeParameterProposal, import-only proposals) in Rust: not ported yet"]
 fn test_type_in_type_arguments2() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(
@@ -363,7 +351,6 @@ fn test_type_in_type_arguments2() {
 }
 
 #[test]
-#[ignore = "needs NewCUProposal (Create class/interface/enum/annotation) in Rust: not ported yet"]
 fn test_parameterized_type1() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &lines(&["package test1;\n", "\n", "public class E {\n", "    void foo(XXY<String> b) {\n", "        b.foo();\n", "    }\n", "}\n"]));

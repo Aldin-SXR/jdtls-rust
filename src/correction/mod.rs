@@ -185,6 +185,9 @@ pub enum ProposalType {
     NewElement,
     /// `ChangeToRequiredCompilerCompliance` (kept without edits).
     ChangeCompliance,
+    /// `AddImportCorrectionProposalCore` (an import-only quick fix; it enables
+    /// `QuickFixProcessor.addAddAllMissingImportsProposal`).
+    AddImport,
 }
 
 /// A correction proposal with its code action kind (`ProposalKindWrapper`).

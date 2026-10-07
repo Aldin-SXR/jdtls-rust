@@ -51,6 +51,7 @@ pub async fn source_actions(
             Change::Lazy(Box::new(OrganizeImports {
                 uri: req.uri.clone(),
                 restore,
+                changes_only: true,
             })),
         );
         if let Some(mut entry) = super::handler::code_action_from_proposal(
@@ -92,15 +93,17 @@ pub async fn source_actions(
     out
 }
 
-struct OrganizeImports {
-    uri: Url,
-    restore: bool,
+pub(crate) struct OrganizeImports {
+    pub uri: Url,
+    pub restore: bool,
+    /// SourceAssistProcessor converts its text edits to `WorkspaceEdit.changes`.
+    pub changes_only: bool,
 }
 
 #[tower_lsp::async_trait]
 impl LazyChange for OrganizeImports {
     fn changes_only(&self) -> bool {
-        true
+        self.changes_only
     }
 
     async fn compute(&self, env: &Env<'_>) -> anyhow::Result<Vec<CuChange>> {

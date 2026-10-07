@@ -589,6 +589,19 @@ fn possible_type_kinds(mut node: Node<'_>) -> u8 {
     kinds & mask
 }
 
+/// Fully qualified names of the visible types named `simple_name` in the
+/// search scope of `uri` (`SearchEngine.searchAllTypeNames`).
+pub(crate) async fn types_named(d: &Dispatcher, uri: &Url, simple_name: &str) -> Vec<String> {
+    let ctx = d.context_for(Some(uri)).await;
+    search_types(d, uri, &ctx)
+        .await
+        .0
+        .iter()
+        .filter(|t| t.name == simple_name)
+        .map(full_name)
+        .collect()
+}
+
 async fn search_types(d: &Dispatcher, uri: &Url, ctx: &RequestContext) -> SearchTypes {
     let ws = d
         .workspace
