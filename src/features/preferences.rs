@@ -288,6 +288,12 @@ pub fn add_final_for_new_declaration() -> String {
 
 static EXTENDED: RwLock<Option<Value>> = RwLock::new(None);
 
+/// An `extendedClientCapabilities` list containing `item` (e.g.
+/// `ClientPreferences.isExtractVariableInferSelectionSupported`).
+pub fn extended_capability_list_contains(name: &str, item: &str) -> bool {
+    EXTENDED.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|v| v.get(name)).and_then(Value::as_array).is_some_and(|l| l.iter().any(|v| v.as_str() == Some(item)))
+}
+
 /// An `extendedClientCapabilities` flag (`ClientPreferences`).
 pub fn extended_capability(name: &str) -> bool {
     EXTENDED.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|v| v.get(name)).is_some_and(|v| {

@@ -392,7 +392,7 @@ impl super::LazyChange for IgnoreProblems {
 pub fn is_superseded_legacy_action(title: &str) -> bool {
     const SUPERSEDED: &[&str] = &["Organize Imports", "Add serialVersionUID field", "Remove unnecessary cast", "Remove redundant superinterface"];
     // Unresolved variables: `UnresolvedElementsSubProcessor.getVariableProposals`.
-    const SUPERSEDED_PREFIXES: &[&str] = &["Create local variable '", "Create parameter '", "Create field '", "Create constant '"];
+    const SUPERSEDED_PREFIXES: &[&str] = &["Extract to local variable", "Extract to constant '", "Create local variable '", "Create parameter '", "Create field '", "Create constant '"];
     // Unresolved types: `UnresolvedElementsSubProcessor.getTypeProposals`
     // (import-only proposals, NewCUProposal) and `addAddAllMissingImportsProposal`.
     const SUPERSEDED_TYPE_PREFIXES: &[&str] = &["Create class '", "Create interface '"];

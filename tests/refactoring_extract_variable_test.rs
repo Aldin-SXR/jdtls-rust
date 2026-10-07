@@ -18,7 +18,6 @@ fn setup() -> (QuickFixTest, std::path::PathBuf) {
 }
 
 #[test]
-#[ignore = "ExtractTemp/ExtractConstant ported in src/refactoring but not yet wired into the code action pipeline"]
 fn test_extract_variable() {
     let (mut t, root) = setup();
     let mut buf = String::new();
@@ -65,7 +64,6 @@ fn test_extract_variable() {
 }
 
 #[test]
-#[ignore = "ExtractTemp/ExtractConstant ported in src/refactoring but not yet wired into the code action pipeline"]
 fn test_extract_variable1() {
     let (mut t, root) = setup();
     let mut buf = String::new();
@@ -128,7 +126,6 @@ fn test_extract_variable1() {
 }
 
 #[test]
-#[ignore = "ExtractTemp/ExtractConstant ported in src/refactoring but not yet wired into the code action pipeline"]
 fn test_extract_variable2() {
     let (mut t, root) = setup();
     let mut buf = String::new();
