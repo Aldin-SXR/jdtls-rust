@@ -198,6 +198,28 @@ pub fn guess_binding_for_reference(node: Node<'_>) -> Option<BindingRef<'_>> {
     normalize(possible_reference_binding(node))
 }
 
+/// The array guesses of `getPossibleReferenceBinding` (`createArrayType(1)`)
+/// whose array type binding the AST does not know: the element type and the
+/// number of dimensions to add.
+pub fn guess_array_reference(node: Node<'_>) -> Option<(BindingRef<'_>, usize)> {
+    let parent = node.parent()?;
+    match parent.kind() {
+        NodeKind::ArrayAccess if !node.location_is("index") => {
+            let (b, d) = match possible_reference_binding(parent) {
+                Some(b) => (b, 0),
+                None => guess_array_reference(parent).or_else(|| well_known(node.ast, "java.lang.Object").map(|o| (o, 0)))?,
+            };
+            Some((b, d + 1))
+        }
+        NodeKind::EnhancedForStatement if node.location_is("expression") => {
+            let t = parent.child("parameter").and_then(|p| p.child("type")).and_then(|t| t.binding())?;
+            Some((t, 1))
+        }
+        NodeKind::ParenthesizedExpression => guess_array_reference(parent),
+        _ => None,
+    }
+}
+
 fn possible_reference_binding(node: Node<'_>) -> Option<BindingRef<'_>> {
     let parent = node.parent()?;
     let ast = node.ast;

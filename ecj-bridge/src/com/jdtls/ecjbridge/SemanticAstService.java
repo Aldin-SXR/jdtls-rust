@@ -556,29 +556,32 @@ final class SemanticAstService {
          */
         private boolean unresolvedInvocations() {
             boolean found = false;
+            java.util.Set<Integer> starts = new java.util.HashSet<>();
             for (IProblem p : cu.getProblems()) {
                 int id = p.getID();
                 if (id == IProblem.UndefinedMethod || id == IProblem.ParameterMismatch || id == IProblem.UndefinedConstructor
                         || id == IProblem.UndefinedAnnotationMember || id == IProblem.NoMessageSendOnArrayType) {
                     found = true;
+                    starts.add(p.getSourceStart());
                 }
             }
             for (ASTNode node : order) {
                 ITypeBinding receiver = null;
                 boolean unresolved = false;
+                boolean atProblem = starts.contains(node.getStartPosition());
                 try {
-                    if (node instanceof MethodInvocation m && m.resolveMethodBinding() == null) {
+                    if (node instanceof MethodInvocation m && (m.resolveMethodBinding() == null || starts.contains(m.getName().getStartPosition()))) {
                         unresolved = true;
                         if (m.getExpression() != null) receiver = m.getExpression().resolveTypeBinding();
-                    } else if (node instanceof SuperMethodInvocation m && m.resolveMethodBinding() == null) {
+                    } else if (node instanceof SuperMethodInvocation m && (m.resolveMethodBinding() == null || starts.contains(m.getName().getStartPosition()))) {
                         unresolved = true;
-                    } else if (node instanceof ClassInstanceCreation c && c.resolveConstructorBinding() == null) {
+                    } else if (node instanceof ClassInstanceCreation c && (c.resolveConstructorBinding() == null || atProblem)) {
                         unresolved = true;
                         receiver = c.getType().resolveBinding();
                         constructorMembers(receiver);
-                    } else if (node instanceof ConstructorInvocation c && c.resolveConstructorBinding() == null) {
+                    } else if (node instanceof ConstructorInvocation c && (c.resolveConstructorBinding() == null || atProblem)) {
                         unresolved = true;
-                    } else if (node instanceof SuperConstructorInvocation c && c.resolveConstructorBinding() == null) {
+                    } else if (node instanceof SuperConstructorInvocation c && (c.resolveConstructorBinding() == null || atProblem)) {
                         unresolved = true;
                     }
                 } catch (RuntimeException e) {

@@ -943,7 +943,7 @@ impl LazyChange for ChangeSignature {
 /// `TypeMismatchBaseSubProcessor.collectChangeSenderTypeProposals`.
 pub fn change_sender_type(ctx: &Context, units: &Units, node_to_cast: Node<'_>, cast_type: BindingRef<'_>, is_assigned: bool, relevance: i32, proposals: &mut Vec<Proposal>) {
     let ast = ctx.ast();
-    let Some(caller) = names::resolve_expression_binding(node_to_cast) else { return };
+    let Some(caller) = names::resolve_expression_binding(node_to_cast, false) else { return };
     let mut target: Option<Option<String>> = None;
     let mut declaring_type: Option<BindingRef<'_>> = None;
     let mut caller_decl = caller;

@@ -355,6 +355,18 @@ impl NewMethod {
                     let node = source.node(self.invocation);
                     if node.parent().is_some_and(|p| p.is(NodeKind::ExpressionStatement)) {
                         (rw.new_primitive_type("void"), None)
+                    } else if let Some((element, dims)) = scope::guess_array_reference(node) {
+                        let element = imports.add_import_type(element, rw, context, TypeLocation::ReturnType);
+                        let array = rw.new_node(NodeKind::ArrayType);
+                        rw.put_child(array, "elementType", element);
+                        let dimensions = (0..dims)
+                            .map(|_| {
+                                let d = rw.new_node(NodeKind::Dimension);
+                                rw.put_list(d, "annotations", Vec::new())
+                            })
+                            .collect();
+                        rw.put_list(array, "dimensions", dimensions);
+                        (array, Some("null"))
                     } else {
                         match guess_type_for_reference(rw, node) {
                             Some((t, primitive)) => (t, Some(match primitive.as_deref() {

@@ -37,7 +37,7 @@ pub fn base_name_from_expression(expression: Node<'_>) -> Option<String> {
     let name = match e.kind() {
         NodeKind::SimpleName | NodeKind::QualifiedName => {
             if let Some(b) = e.binding().filter(|b| b.is_variable()) {
-                return Some(b.name().to_owned());
+                return Some(variable_base_name(b));
             }
             let simple = if e.is(NodeKind::QualifiedName) { e.child("name")? } else { e };
             return Some(simple.identifier());
@@ -177,11 +177,31 @@ pub fn argument_name_suggestions(binding: BindingRef<'_>, excluded: &[String], o
     }
 }
 
+/// `StubUtility.getBaseName(variableBinding, project)`
+/// (`NamingConventions.getBaseName`): constants become camel case.
+pub fn variable_base_name(b: BindingRef<'_>) -> String {
+    let static_final = crate::semantic_ast::modifier::STATIC | crate::semantic_ast::modifier::FINAL;
+    if b.is_field() && b.modifiers() & static_final == static_final {
+        let mut out = String::new();
+        for part in b.name().split('_').filter(|p| !p.is_empty()) {
+            let mut chars = part.chars();
+            if let Some(first) = chars.next() {
+                out.extend(first.to_uppercase());
+                out.push_str(&chars.as_str().to_lowercase());
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+    b.name().to_owned()
+}
+
 /// `UnresolvedElementsBaseSubProcessor.getExpressionBaseName`.
 pub fn expression_base_name(expression: Node<'_>) -> Option<String> {
-    let binding = resolve_expression_binding(expression);
+    let binding = resolve_expression_binding(expression, true);
     if let Some(b) = binding.filter(|b| b.is_variable()) {
-        return Some(b.name().to_owned());
+        return Some(variable_base_name(b));
     }
     if expression.is(NodeKind::SimpleName) {
         return Some(expression.identifier());
@@ -189,13 +209,15 @@ pub fn expression_base_name(expression: Node<'_>) -> Option<String> {
     None
 }
 
-/// `Bindings.resolveExpressionBinding(expression, allowTypeBinding)`.
-pub fn resolve_expression_binding(expression: Node<'_>) -> Option<BindingRef<'_>> {
+/// `Bindings.resolveExpressionBinding(expression, goIntoCast)`.
+pub fn resolve_expression_binding(expression: Node<'_>, go_into_cast: bool) -> Option<BindingRef<'_>> {
     match expression.kind() {
         NodeKind::SimpleName | NodeKind::QualifiedName => expression.binding(),
         NodeKind::FieldAccess | NodeKind::SuperFieldAccess => expression.child("name").and_then(|n| n.binding()),
-        NodeKind::MethodInvocation | NodeKind::SuperMethodInvocation => expression.method_binding(),
-        NodeKind::ParenthesizedExpression => expression.child("expression").and_then(resolve_expression_binding),
+        NodeKind::MethodInvocation | NodeKind::SuperMethodInvocation | NodeKind::ClassInstanceCreation => expression.method_binding(),
+        NodeKind::ArrayAccess => expression.child("array").and_then(|e| resolve_expression_binding(e, go_into_cast)),
+        NodeKind::CastExpression if go_into_cast => expression.child("expression").and_then(|e| resolve_expression_binding(e, true)),
+        NodeKind::ParenthesizedExpression => expression.child("expression").and_then(|e| resolve_expression_binding(e, go_into_cast)),
         _ => None,
     }
 }
