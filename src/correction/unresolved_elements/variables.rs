@@ -140,7 +140,15 @@ fn new_variable_proposal(ctx: &Context, label: String, kind: VariableKind, node:
 
 /// `UnresolvedElementsSubProcessor.getVariableProposals(context, problem, null, proposals)`.
 pub async fn variable_proposals(env: &Env<'_>, ctx: &Context, problem: &ProblemLocation, proposals: &mut Vec<Proposal>) {
+    variable_proposals_for(env, ctx, problem, None, proposals).await
+}
+
+/// `UnresolvedElementsSubProcessor.collectVariableProposals(context, problem, resolvedField, proposals)`
+/// (`resolved_field` is the key of the field binding, from
+/// `ModifierCorrectionSubProcessor.addNonAccessibleReferenceProposal`).
+pub async fn variable_proposals_for(env: &Env<'_>, ctx: &Context, problem: &ProblemLocation, resolved_field: Option<&str>, proposals: &mut Vec<Proposal>) {
     let ast = ctx.ast();
+    let resolved_field = resolved_field.and_then(|k| ast.binding_by_key(k));
     let Some(selected) = problem.covered_node(ast) else { return };
     let Some(declaring_type) = parent_type_context_binding(selected) else { return };
     let mut suggest_variable_proposals = true;
@@ -251,18 +259,23 @@ pub async fn variable_proposals(env: &Env<'_>, ctx: &Context, problem: &ProblemL
     let is_write = is_write_access(node);
 
     // similar variables
-    similar_variable_proposals(ctx, binding, simple_name, is_write, proposals);
+    similar_variable_proposals(ctx, binding, resolved_field, simple_name, is_write, proposals);
 
     if binding.is_none() {
         proposals::static_import_favorites(env, ctx, simple_name, false, proposals).await;
     }
 
-    // resolvedField is always null here
-    let options = env.options(&ast.uri).await;
-    let units = Units::load(env, &ast.uri).await;
-    new_field_proposals(ctx, &units, &options, binding, declaring_type, simple_name, is_write, proposals);
-    if binding.is_none() && !is_parent_switch_case(simple_name) {
-        new_variable_proposals(ctx, &options, node, simple_name, proposals);
+    let needs_new = match (resolved_field, binding) {
+        (Some(f), Some(b)) => f.declaring_class().is_none_or(|c| c != declaration(b)) && f.modifiers() & crate::semantic_ast::modifier::PRIVATE != 0,
+        _ => true,
+    };
+    if needs_new {
+        let options = env.options(&ast.uri).await;
+        let units = Units::load(env, &ast.uri).await;
+        new_field_proposals(ctx, &units, &options, binding, declaring_type, simple_name, is_write, proposals);
+        if binding.is_none() && !is_parent_switch_case(simple_name) {
+            new_variable_proposals(ctx, &options, node, simple_name, proposals);
+        }
     }
 }
 
@@ -435,8 +448,8 @@ fn has_field_with_name(t: BindingRef<'_>, name: &str) -> bool {
     t.superclass().is_some_and(|s| has_method_with_name(s, name))
 }
 
-/// `addSimilarVariableProposals` (with `resolvedField == null`).
-fn similar_variable_proposals(ctx: &Context, binding: Option<BindingRef<'_>>, node: Node<'_>, is_write: bool, proposals: &mut Vec<Proposal>) {
+/// `addSimilarVariableProposals`.
+fn similar_variable_proposals(ctx: &Context, binding: Option<BindingRef<'_>>, resolved_field: Option<BindingRef<'_>>, node: Node<'_>, is_write: bool, proposals: &mut Vec<Proposal>) {
     let ast = ctx.ast();
     let in_scope = scope::declarations_in_scope(node, !is_write);
     if !in_scope.is_empty() {
@@ -480,6 +493,9 @@ fn similar_variable_proposals(ctx: &Context, binding: Option<BindingRef<'_>>, no
             if curr.is_variable() {
                 let curr_name = curr.name();
                 if other_name_in_assign.as_deref() == Some(curr_name) {
+                    continue;
+                }
+                if resolved_field.is_some_and(|f| f.key() == curr.key()) {
                     continue;
                 }
                 let is_final = curr.modifiers() & crate::semantic_ast::modifier::FINAL != 0;

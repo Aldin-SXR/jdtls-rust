@@ -223,7 +223,7 @@ fn test_invisible_field_requested_in_same_package1() {
 }
 
 #[test]
-#[ignore = "needs UnresolvedElementsSubProcessor.collectVariableProposals (UnresolvedVariablesQuickFixTest scope) and GetterSetterCorrectionSubProcessor (GetterSetterQuickFixTest scope)"]
+#[ignore = "needs GetterSetterCorrectionSubProcessor (GetterSetterQuickFixTest scope): 'Create getter and setter for' proposal"]
 fn test_invisible_field_requested_in_same_package2() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class C {\n    private int test;\n}\npublic class E extends C {\n    public void foo () {\n         test = 1;\n    }\n}\n");

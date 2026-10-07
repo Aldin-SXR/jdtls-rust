@@ -259,8 +259,17 @@ pub async fn non_accessible_reference(env: &Env<'_>, ctx: &Context, problem: &Pr
         }
     }
     // getVariableProposals (UnresolvedElementsSubProcessor.collectVariableProposals)
-    // for TO_VISIBLE variables and TO_STATIC instance fields in a super
-    // constructor call is not ported yet.
+    if binding_decl.is_variable() {
+        let super_ctor_arg = kind == TO_STATIC
+            && problem.problem_id == p::InstanceFieldDuringConstructorInvocation
+            && selected.is(NodeKind::SimpleName)
+            && selected.location_is("arguments")
+            && selected.parent().is_some_and(|p| p.is(NodeKind::SuperConstructorInvocation));
+        if kind == TO_VISIBLE || super_ctor_arg {
+            let key = binding_decl.key().to_owned();
+            crate::correction::unresolved_elements::variable_proposals_for(env, ctx, problem, Some(&key), proposals).await;
+        }
+    }
 }
 
 /// `Bindings.isSubsignature(overriding, overridden)`.

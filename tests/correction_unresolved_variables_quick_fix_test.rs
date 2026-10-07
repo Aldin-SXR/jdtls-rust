@@ -2182,7 +2182,6 @@ fn test_var_of_shadowed_type() {
 }
 
 #[test]
-#[ignore = "needs ModifierCorrectionSubProcessor.getNonAccessibleReferenceProposal (NotVisibleField), ported separately in correction::modifier_corrections"]
 fn test_var_parameter_access() {
     let (mut t, root) = setup();
     let base_code = "package test1;\npublic class Base {\n    protected int myField;\n}\n";

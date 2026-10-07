@@ -10,7 +10,7 @@ mod scope;
 mod types;
 mod variables;
 
-pub use variables::{type_proposals, variable_proposals};
+pub use variables::{type_proposals, variable_proposals, variable_proposals_for};
 
 pub(crate) use new_method::method_body_content;
 
