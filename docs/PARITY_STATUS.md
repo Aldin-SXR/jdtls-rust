@@ -17,8 +17,8 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 | | Tests | Share of upstream |
 |---|---:|---:|
 | Ported | 1,069 | 51.2% |
-| Passing | 1,054 | 50.5% |
-| Ported but `#[ignore]`d | 15 | 0.7% |
+| Passing | 1,057 | 50.6% |
+| Ported but `#[ignore]`d | 12 | 0.6% |
 | Not ported yet | 1,018 | 48.8% |
 
 On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,684 passed,
@@ -67,7 +67,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | javadoc | 32 | 32 | 32 | 100% |
 | commands | 60 | 23 | 23 | 38% |
 | managers | 211 | 134 | 127 | 60% |
-| correction | 604 | 236 | 232 | 38% |
+| correction | 604 | 236 | 235 | 39% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 7 | 7 | 10% |
 | preferences | 53 | 53 | 53 | 100% |
@@ -134,7 +134,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 75 | 75 | 0 | 75/75 with `--test-threads=1`; 12 upstream methods remain unported |
 | correction/NonProjectFixTest | `correction_non_project_fix_test` | 2 | 2 | 0 | 2/2; original source, action order, titles and command arguments |
 | correction/OrganizeImportsActionTest | `correction_organize_imports_action_test` | 6 | 6 | 0 | 6/6; original sources and edit assertions |
-| correction/TypeMismatchQuickFixTest | `correction_type_mismatch_quick_fix_test` | 44 | 41 | 3 | 44/44 |
+| correction/TypeMismatchQuickFixTest | `correction_type_mismatch_quick_fix_test` | 44 | 44 | 0 | 44/44 |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -183,9 +183,6 @@ Rust run and is excluded from the upstream-port count.
 | Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
 | Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
 | Needs the unported `NotVisibleMethod` visibility proposal (ModifierCorrectionSubProcessor) | 1 | UnresolvedMethods `test_indirect_protected_method` |
-| ParameterMismatch type-change proposals not yet linked into the unresolved-method processor | 1 | TypeMismatch `test_type_mismatch_for_interface2` |
-| Needs the Java50Fix raw-type fix (InferTypeArguments solver) | 1 | TypeMismatch `test_type_mismatch_for_parameterized_type` |
-| Bridge resolves types by declared package, JDT also by folder | 1 | TypeMismatch `test_type_mismatch_with_type_in_same_package` |
 | Gradle model/update parity for an invalid build | 1 | ProjectsManager `test_sending_warning_project_status`; successful-update and reload-marker assertions now run with the compatible Gradle VM |
 
 ## Lifecycle/init integration evidence
@@ -397,8 +394,7 @@ pass on jdt.ls 1.58.0.
 
 ## Type-mismatch correction evidence
 
-All 44 `TypeMismatchQuickFixTest` methods are ported; 41 pass on Rust and all 44 on
-jdt.ls 1.58.0.
+All 44 `TypeMismatchQuickFixTest` methods are ported and pass on Rust and on jdt.ls 1.58.0.
 
 * `src/correction/type_mismatch*` ports `TypeMismatchBaseSubProcessor`: add/change cast,
   Optional wrapping, method return type changes (with the `@return` tag), receiver and
@@ -407,8 +403,16 @@ jdt.ls 1.58.0.
   compatibility is computed in Rust over the binding graph.
 * The bridge exports primitive well-known types for every AST and bindings for
   annotation type members. The legacy bridge "Cast to" action is filtered out.
-* **Remaining:** the three ignored cases above; candidate subtypes for the constructor
-  type proposal (upstream runs code completion); removing type annotations on type change.
+* Parameter mismatches reuse the sender-type proposals ("Let 'X' implement 'Y'",
+  "Change 'X' to compatible type").
+* The bridge resolves source types through their package fragment (folder), as JDT does,
+  via `SourceLayout`, even when the declared package differs.
+* The Java50Fix raw-type "Add type arguments" fix is ported with the InferTypeArguments
+  solver (`src/correction/infer_type_arguments*`). Type sets are "any" or finite over seen
+  types rather than JDT's symbolic subtype sets.
+* **Remaining:** candidate subtypes for the constructor type proposal (upstream runs code
+  completion); removing type annotations on type change; the "type arguments from
+  context" and deprecated-field proposals sharing the raw-type dispatch entry.
 
 ## Known differences from jdt.ls
 
