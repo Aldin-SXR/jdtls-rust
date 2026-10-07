@@ -82,7 +82,7 @@ fn is_inside_modifiers(node: Node<'_>) -> bool {
 }
 
 /// `ASTResolving.isWriteAccess(selectedNode)`.
-fn is_write_access(node: Node<'_>) -> bool {
+pub(crate) fn is_write_access(node: Node<'_>) -> bool {
     let mut curr = node;
     while let Some(parent) = curr.parent() {
         match parent.kind() {

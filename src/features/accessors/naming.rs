@@ -32,7 +32,7 @@ fn trim_affixes(name: &str, prefixes: &[&str], suffixes: &[&str]) -> String {
         .unwrap_or("");
     name[..name.len() - suffix.len()].into()
 }
-pub(super) fn base(field: &FieldDecl, options: &Options, lower: bool) -> String {
+pub(crate) fn base(field: &FieldDecl, options: &Options, lower: bool) -> String {
     let kind = if field.flags & (flags::STATIC | flags::FINAL) == flags::STATIC | flags::FINAL {
         "staticFinalField"
     } else if field.flags & flags::STATIC != 0 {
@@ -116,7 +116,7 @@ fn accessor(base: &str) -> String {
 fn is_boolean_name(base: &str) -> bool {
     base.starts_with("is") && base[2..].chars().next().is_some_and(is_upper)
 }
-pub(super) fn getter(t: &TypeDecl, f: &FieldDecl, options: &Options, use_is: bool) -> String {
+pub(crate) fn getter(t: &TypeDecl, f: &FieldDecl, options: &Options, use_is: bool) -> String {
     if t.kind == TypeKind::Record && f.flags & flags::STATIC == 0 {
         return f.name.clone();
     }
@@ -131,7 +131,7 @@ pub(super) fn getter(t: &TypeDecl, f: &FieldDecl, options: &Options, use_is: boo
         format!("get{}", accessor(&base))
     }
 }
-pub(super) fn setter(f: &FieldDecl, options: &Options, use_is: bool) -> String {
+pub(crate) fn setter(f: &FieldDecl, options: &Options, use_is: bool) -> String {
     let base_name = base(f, options, false);
     if use_is && f.type_label.as_deref() == Some("boolean") && is_boolean_name(&base_name) {
         let mut stripped = f.clone();

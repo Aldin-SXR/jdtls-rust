@@ -11,12 +11,12 @@ use crate::semantic_ast::{modifier as m, problem as p, Ast, BindingKind, Binding
 
 /// `ASTResolving.findCompilationUnitForBinding`: `Some(None)` is the
 /// invocation's unit, `Some(Some(uri))` another unit of the project.
-pub(super) struct Units {
+pub(crate) struct Units {
     files: Vec<String>,
 }
 
 impl Units {
-    pub(super) async fn load(env: &Env<'_>, uri: &str) -> Units {
+    pub(crate) async fn load(env: &Env<'_>, uri: &str) -> Units {
         let files = match tower_lsp::lsp_types::Url::parse(uri) {
             Ok(u) => env.dispatcher.context_for(Some(&u)).await.files.into_keys().collect(),
             Err(_) => Vec::new(),
@@ -24,7 +24,7 @@ impl Units {
         Units { files }
     }
 
-    pub(super) fn find(&self, ast: &Ast, binding: BindingRef<'_>) -> Option<Option<String>> {
+    pub(crate) fn find(&self, ast: &Ast, binding: BindingRef<'_>) -> Option<Option<String>> {
         if !binding.is_from_source() || binding.is_type_variable() || binding.is_wildcard_type() {
             return None;
         }

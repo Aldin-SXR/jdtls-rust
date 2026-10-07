@@ -13,6 +13,8 @@ mod variables;
 pub use variables::{type_proposals, variable_proposals, variable_proposals_for};
 
 pub(crate) use new_method::method_body_content;
+pub(crate) use variables::is_write_access;
+pub(crate) use types::find_method_in_hierarchy;
 
 /// `StubUtility.getVariableNameSuggestions(VK_PARAMETER, project, name, 0, taken, true)`.
 pub(crate) fn variable_name_suggestions(base: &str, excluded: &[String], options: &std::collections::BTreeMap<String, String>) -> Vec<String> {

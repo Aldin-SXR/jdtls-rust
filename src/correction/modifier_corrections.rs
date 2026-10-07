@@ -14,6 +14,8 @@ pub use override_annotation::{overriding_deprecated_method, remove_override_anno
 pub use permitted::permitted_types;
 pub use sealed::{sealed_as_direct_super_type, sealed_missing_modifier, type_as_permitted_sub_type};
 pub use visibility::{add_method_modifier, change_overridden_modifier, make_final, non_accessible_reference};
+pub(crate) use split::rewrite_field_modifiers;
+pub(crate) use visibility::Units;
 
 pub const TO_STATIC: i32 = 1;
 pub const TO_VISIBLE: i32 = 2;

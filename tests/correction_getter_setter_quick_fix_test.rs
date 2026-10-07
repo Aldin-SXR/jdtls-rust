@@ -57,31 +57,30 @@ fn invisible_field(statement: &str, replaced: &str) {
 }
 
 #[test]
-#[ignore = "needs GetterSetterCorrectionSubProcessor (SelfEncapsulateFieldRefactoring) in Rust: not ported yet"]
+#[ignore = "SEF proposal not offered yet: field binding is_from_source() is false for the bridge field binding (availability check)"]
 fn test_invisible_field_to_getter_setter() {
     invisible_field("        ++c.test;\n", "        c.setTest(c.getTest() + 1);\n");
 }
 
 #[test]
-#[ignore = "needs GetterSetterCorrectionSubProcessor (SelfEncapsulateFieldRefactoring) in Rust: not ported yet"]
+#[ignore = "SEF proposal not offered yet: field binding is_from_source() is false for the bridge field binding (availability check)"]
 fn test_invisible_field_to_getter_setter_2() {
     invisible_field("        c.test += 1 + 2;\n", "        c.setTest(c.getTest() + (1 + 2));\n");
 }
 
 #[test]
-#[ignore = "needs GetterSetterCorrectionSubProcessor (SelfEncapsulateFieldRefactoring) in Rust: not ported yet"]
+#[ignore = "SEF proposal not offered yet: field binding is_from_source() is false for the bridge field binding (availability check)"]
 fn test_invisible_field_to_getter_setter_3() {
     invisible_field("        c.test -= 1 + 2;\n", "        c.setTest(c.getTest() - (1 + 2));\n");
 }
 
 #[test]
-#[ignore = "needs GetterSetterCorrectionSubProcessor (SelfEncapsulateFieldRefactoring) in Rust: not ported yet"]
+#[ignore = "SEF proposal not offered yet: field binding is_from_source() is false for the bridge field binding (availability check)"]
 fn test_invisible_field_to_getter_setter_4() {
     invisible_field("        c.test *= 1 + 2;\n", "        c.setTest(c.getTest() * (1 + 2));\n");
 }
 
 #[test]
-#[ignore = "needs GetterSetterCorrectionSubProcessor (SelfEncapsulateFieldRefactoring) in Rust: not ported yet"]
 fn test_invisible_field_to_getter_setter_5() {
     let (mut t, root) = setup();
     let accessors = [
@@ -114,7 +113,7 @@ fn test_invisible_field_to_getter_setter_5() {
 }
 
 #[test]
-#[ignore = "needs GetterSetterCorrectionSubProcessor (SelfEncapsulateFieldRefactoring) in Rust: not ported yet"]
+#[ignore = "SEF proposal not offered yet: field binding is_from_source() is false for the bridge field binding (availability check)"]
 fn test_create_field_using_sef() {
     let (mut t, root) = setup();
     let cu = t.ws.create_cu(

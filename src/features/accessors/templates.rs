@@ -102,6 +102,58 @@ pub(super) fn stub(
     } else {
         f.name.clone()
     };
+    let vars = AccessorVars {
+        field: &f.name,
+        field_access: &field,
+        bare_field_name: &bare,
+        field_type: type_name,
+        param: &param,
+        method: &method,
+        enclosing_type,
+    };
+    let mut stub = String::new();
+    if comments {
+        if let Some(comment) = accessor_comment(getter, &vars, options, profile, ast)? {
+            stub.push_str(&comment);
+            stub.push('\n');
+        }
+    }
+    stub.push_str("public ");
+    if is_static {
+        stub.push_str("static ");
+    }
+    if getter {
+        stub.push_str(&format!("{type_name} {method}() {{\n"));
+        stub.push_str(&accessor_body(true, &vars, options, profile, ast)?);
+    } else {
+        stub.push_str(&format!("void {method}({type_name} {param}) {{\n"));
+        stub.push_str(&accessor_body(false, &vars, options, profile, ast)?);
+    }
+    stub.push('}');
+    Ok(stub)
+}
+
+/// The variables of the getter / setter code templates.
+pub(crate) struct AccessorVars<'a> {
+    /// The field name (`${field}` in comments).
+    pub field: &'a str,
+    /// The field access used in bodies (`${field}` in bodies).
+    pub field_access: &'a str,
+    pub bare_field_name: &'a str,
+    pub field_type: &'a str,
+    pub param: &'a str,
+    pub method: &'a str,
+    pub enclosing_type: &'a str,
+}
+
+fn expand_accessor(
+    template: &str,
+    body: bool,
+    vars: &AccessorVars<'_>,
+    options: &BTreeMap<String, String>,
+    profile: &Profile,
+    ast: &Ast,
+) -> anyhow::Result<String> {
     let file_name = tower_lsp::lsp_types::Url::parse(&ast.uri)
         .ok()
         .map(|u| crate::classfile::percent_decode(u.path().rsplit('/').next().unwrap_or("")))
@@ -113,12 +165,12 @@ pub(super) fn stub(
         .map(|n| n.identifier())
         .unwrap_or_default();
     let replacements = [
-        ("field", f.name.as_str()),
-        ("bare_field_name", bare.as_str()),
-        ("field_type", type_name),
-        ("param", param.as_str()),
-        ("enclosing_type", enclosing_type),
-        ("enclosing_method", method.as_str()),
+        ("field", vars.field),
+        ("bare_field_name", vars.bare_field_name),
+        ("field_type", vars.field_type),
+        ("param", vars.param),
+        ("enclosing_type", vars.enclosing_type),
+        ("enclosing_method", vars.method),
         ("file_name", file_name.as_str()),
         ("package_name", package.as_str()),
         ("project_name", profile.project_name.as_str()),
@@ -127,76 +179,65 @@ pub(super) fn stub(
         .get("org.eclipse.jdt.core.compiler.taskTags")
         .and_then(|s| s.split(',').next())
         .unwrap_or("XXX");
-    let expand = |template: &str, body: bool| {
-        expand_template(template, |key| {
-            match key {
-                "dollar" => Some("$"),
-                "todo" => Some(todo),
-                "field" if body => Some(field.as_str()),
-                _ => replacements
-                    .iter()
-                    .find(|(k, _)| *k == key)
-                    .and_then(|(_, value)| {
-                        // Bodies don't register compilation-unit or comment-only variables.
-                        (!body
-                            || matches!(
-                                key,
-                                "field" | "param" | "enclosing_type" | "enclosing_method"
-                            ))
-                        .then_some(*value)
-                    }),
-            }
-        })
-    };
-    let mut stub = String::new();
-    if comments {
-        let markdown = profile.use_markdown
-            && options
-                .get("org.eclipse.jdt.core.compiler.compliance")
-                .and_then(|s| s.parse::<u32>().ok())
-                .is_some_and(|n| n >= 23);
-        let comment = if markdown {
-            if getter {
-                profile.template("markdowngettercomment", "")
-            } else {
-                profile.template("markdownsettercomment", "")
-            }
-        } else if getter {
-            profile.template(
-                "gettercomment",
-                "/**\n * @return the ${bare_field_name}\n */",
-            )
+    expand_template(template, |key| match key {
+        "dollar" => Some("$"),
+        "todo" => Some(todo),
+        "field" if body => Some(vars.field_access),
+        _ => replacements
+            .iter()
+            .find(|(k, _)| *k == key)
+            .and_then(|(_, value)| {
+                // Bodies don't register compilation-unit or comment-only variables.
+                (!body || matches!(key, "field" | "param" | "enclosing_type" | "enclosing_method"))
+                    .then_some(*value)
+            }),
+    })
+}
+
+/// `CodeGeneration.getGetterComment` / `getSetterComment`: `None` when the
+/// template expands to whitespace only.
+pub(crate) fn accessor_comment(
+    getter: bool,
+    vars: &AccessorVars<'_>,
+    options: &BTreeMap<String, String>,
+    profile: &Profile,
+    ast: &Ast,
+) -> anyhow::Result<Option<String>> {
+    let markdown = profile.use_markdown
+        && options
+            .get("org.eclipse.jdt.core.compiler.compliance")
+            .and_then(|s| s.parse::<u32>().ok())
+            .is_some_and(|n| n >= 23);
+    let comment = if markdown {
+        if getter {
+            profile.template("markdowngettercomment", "")
         } else {
-            profile.template(
-                "settercomment",
-                "/**\n * @param ${param} the ${bare_field_name} to set\n */",
-            )
-        };
-        let comment = expand(comment, false)?;
-        if !comment.trim().is_empty() {
-            stub.push_str(&comment);
-            stub.push('\n');
+            profile.template("markdownsettercomment", "")
         }
-    }
-    stub.push_str("public ");
-    if is_static {
-        stub.push_str("static ");
-    }
-    if getter {
-        stub.push_str(&format!("{type_name} {method}() {{\n"));
-        stub.push_str(&expand(
-            profile.template("getterbody", "return ${field};\n"),
-            true,
-        )?);
+    } else if getter {
+        profile.template("gettercomment", "/**\n * @return the ${bare_field_name}\n */")
     } else {
-        stub.push_str(&format!("void {method}({type_name} {param}) {{\n"));
-        stub.push_str(&expand(
-            profile.template("setterbody", "${field} = ${param};\n"),
-            true,
-        )?);
-    }
-    stub.push('}');
-    Ok(stub)
+        profile.template("settercomment", "/**\n * @param ${param} the ${bare_field_name} to set\n */")
+    };
+    let comment = expand_accessor(comment, false, vars, options, profile, ast)?;
+    Ok((!comment.trim().is_empty()).then_some(comment))
+}
+
+/// `CodeGeneration.getGetterMethodBodyContent` / `getSetterMethodBodyContent`:
+/// the expanded `getterbody` / `setterbody` template.
+pub(crate) fn accessor_body(
+    getter: bool,
+    vars: &AccessorVars<'_>,
+    options: &BTreeMap<String, String>,
+    profile: &Profile,
+    ast: &Ast,
+) -> anyhow::Result<String> {
+    let template = if getter {
+        profile.template("getterbody", "return ${field};\n")
+    } else {
+        profile.template("setterbody", "${field} = ${param};\n")
+    };
+    expand_accessor(template, true, vars, options, profile, ast)
 }
 
 /// TemplateTranslator's dollar escapes, named variables and resolver aliases.

@@ -166,6 +166,18 @@ fn needs_parentheses_in_infix<'a>(
     if location == "leftOperand" {
         return false;
     }
+    infix_operand_needs_parentheses(expression, op, left, parent_type, same)
+}
+
+/// The associativity part of `needsParenthesesInInfixExpression` for the
+/// right operand (or an extended operand).
+fn infix_operand_needs_parentheses<'a>(
+    expression: Node<'a>,
+    op: &str,
+    left: Option<BindingRef<'a>>,
+    parent_type: Option<BindingRef<'a>>,
+    same: bool,
+) -> bool {
     if !is_associative(op, parent_type, same) {
         return true;
     }
@@ -211,6 +223,39 @@ pub fn needs_parentheses<'a>(expression: Node<'a>, parent: Node<'a>, location: &
 /// `needsParenthesesForRightOperand(rightOperand, infixExpression, leftOperandType)`.
 pub fn needs_parentheses_for_right_operand<'a>(right: Node<'a>, infix: Node<'a>, left_type: Option<BindingRef<'a>>) -> bool {
     needs_parentheses_impl(right, infix, "rightOperand", left_type)
+}
+
+/// `needsParenthesesForRightOperand(rightOperand, infixExpression, leftOperandType)`
+/// where `infixExpression` is a new node (no bindings, no extended operands)
+/// with operator `op`.
+pub fn needs_parentheses_for_right_operand_of_new_infix<'a>(right: Node<'a>, op: &str, left_type: Option<BindingRef<'a>>) -> bool {
+    if !expression_type_needs_parentheses(right.kind()) {
+        return false;
+    }
+    if right.is(NodeKind::SwitchExpression) {
+        return needs_parentheses_for_switch_expression(NodeKind::InfixExpression);
+    }
+    if right.is(NodeKind::PrefixExpression) {
+        let inner = right.simple("operator").unwrap_or("");
+        return (op == "+" && (inner == "+" || inner == "++")) || (op == "-" && (inner == "-" || inner == "--"));
+    }
+    if right.is(NodeKind::ArrayCreation) {
+        return false;
+    }
+    let ep = expression_precedence(right);
+    let pp = expression_precedence_of(NodeKind::InfixExpression, Some(op));
+    if ep != pp {
+        return ep < pp;
+    }
+    // The new infix has no bindings: without a left operand type, nothing is known.
+    let (left, parent_type, same) = match left_type {
+        None => (None, None, false),
+        Some(l) => {
+            let r = right.type_binding();
+            (Some(l), infix_type(op, Some(l), r), Some(l) == r)
+        }
+    };
+    infix_operand_needs_parentheses(right, op, left, parent_type, same)
 }
 
 fn needs_parentheses_impl<'a>(expression: Node<'a>, parent: Node<'a>, location: &str, left_type: Option<BindingRef<'a>>) -> bool {
