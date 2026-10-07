@@ -11,71 +11,42 @@ suite. For how the port is done, see [PORTING.md](PORTING.md).
 
 ## Summary
 
-The upstream suite has 2,087 `@Test` methods in 206 classes
-(`org.eclipse.jdt.ls.tests` and `org.eclipse.jdt.ls.tests.syntaxserver`).
+The upstream suite at the `v1.58.0` tag has 2,117 tests (`@Test` and
+`@ParameterizedTest` methods) in 198 classes (`org.eclipse.jdt.ls.tests` and
+`org.eclipse.jdt.ls.tests.syntaxserver`). All counts on this page come from
+`scripts/parity-count.py`; an earlier hand count of 2,087 missed tests, among them 39
+of `CompletionHandlerTest`'s 156.
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 1,069 | 51.2% |
-| Passing | 1,057 | 50.6% |
-| Ported but `#[ignore]`d | 12 | 0.6% |
-| Not ported yet | 1,018 | 48.8% |
+| Ported | 1,168 | 55.2% |
+| Passing | 1,150 | 54.3% |
+| Ported but `#[ignore]`d | 18 | 0.9% |
+| Not ported yet | 949 | 44.8% |
 
-On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,684 passed,
-0 failed and 12 ignored across 99 test targets. That count also includes our own regression suite
-(`tests/lsp.rs`, 95 tests; `tests/lifecycle_regressions.rs`, 3 tests;
-`tests/binary_editor_regressions.rs`, 6 tests;
-`tests/content_provider_regressions.rs`, 4 tests;
-`tests/correction_regressions.rs`, 3 tests;
-`tests/completion_regressions.rs`, 6 tests;
-`tests/project_download_regressions.rs`, 2 tests;
-`tests/projects_manager_regressions.rs`, 16 tests;
-`tests/jvm_configuration_regressions.rs`, 5 tests;
-`tests/build_path_regressions.rs`, 9 tests;
-`tests/organize_imports_regressions.rs`, 18 tests;
-`tests/import_choice_regressions.rs`, 14 tests;
-`tests/save_action_regressions.rs`, 14 tests;
-`tests/paste_regressions.rs`, 9 tests;
-`tests/smart_detection_regressions.rs`, 13 tests;
-`tests/accessor_regressions.rs`, 18 tests;
-`tests/constructor_regressions.rs`, 24 tests;
-`tests/tostring_regressions.rs`, 28 tests;
-`tests/hashcode_regressions.rs`, 30 tests;
-`tests/delegate_regressions.rs`, 40 tests;
-`tests/override_regressions.rs`, 33 tests;
-`tests/method_correction_regressions.rs`, 29 tests;
-`tests/dead_code_regressions.rs`, 26 tests;
-`tests/unused_code_regressions.rs`, 32 tests;
-`tests/exception_correction_regressions.rs`, 22 tests;
-`tests/expression_correction_regressions.rs`, 35 tests;
-`tests/type_import_regressions.rs`, 37 tests;
-`tests/nullness_generation_regressions.rs`, 39 tests;
-`tests/uncaught_exception_regressions.rs`, 18 tests;
-`tests/allocation_correction_regressions.rs`, 24 tests) and unit
-tests that aren't ports. Six project-manager port targets and the additional
-project-manager regression target also compile the project module's 11 unit tests.
-JVMConfigurator recompiles those same 11 unit tests.
-BasicFileDetector recompiles its detector unit test.
-ContentProviderManager also reuses three class-file URI unit tests.
-Those duplicate runs are excluded from the upstream-port counts.
+Our own regression suites (`tests/lsp.rs`, `tests/*_regressions.rs`) and unit tests that
+are not ports are excluded from these counts.
 
 ## By upstream area
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 871 | 571 | 567 | 65% |
-| javadoc | 32 | 32 | 32 | 100% |
-| commands | 60 | 23 | 23 | 38% |
+| handlers | 868 | 670 | 660 | 76% |
+| correction | 610 | 236 | 235 | 38% |
 | managers | 211 | 134 | 127 | 60% |
-| correction | 604 | 236 | 235 | 39% |
-| refactoring | 119 | 0 | 0 | 0% |
-| (root) | 71 | 7 | 7 | 10% |
+| refactoring | 118 | 0 | 0 | 0% |
+| (root) | 72 | 7 | 7 | 9% |
+| commands | 60 | 23 | 23 | 38% |
 | preferences | 53 | 53 | 53 | 100% |
-| codemanipulation | 20 | 10 | 10 | 50% |
-| cleanup | 18 | 3 | 3 | 17% |
+| javadoc | 32 | 32 | 32 | 100% |
+| codemanipulation | 30 | 10 | 10 | 33% |
+| filesystem | 21 | 0 | 0 | 0% |
+| cleanup | 18 | 3 | 3 | 16% |
 | syntaxserver | 14 | 0 | 0 | 0% |
 | contentassist | 6 | 0 | 0 | 0% |
-| filesystem, protobuf, javafx, template | 8 | 0 | 0 | 0% |
+| framework/protobuf | 2 | 0 | 0 | 0% |
+| corext | 1 | 0 | 0 | 0% |
+| javafx | 1 | 0 | 0 | 0% |
 
 ## Ported classes
 
@@ -89,7 +60,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 10 | 0 | 10/10; restored stub-JDK source-location assertion verified |
 | handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 11 | 11 | 0 | 11/11 |
 | handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 14 | 0 | 14/14; restored two-lens binary assertion verified |
-| handlers/CompletionHandlerTest | `handlers_completion_handler_test` | 57 | 57 | 0 | 56/57 verified, including both restored stub-JDK tests; existing `test_snippet_ctor` product template mismatch remains |
+| handlers/CompletionHandlerTest | `handlers_completion_handler_test` | 156 | 150 | 6 | all active ports verified on the oracle in targeted runs; see the completion evidence |
 | handlers/DocumentHighlightHandlerTest | `handlers_document_highlight_handler_test` | 5 | 5 | 0 | pass |
 | handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` | 19 | 19 | 0 | 19/19 |
 | handlers/DocumentSymbolHandlerTest | `handlers_document_symbol_handler_test` | 14 | 13 | 1 | 13/13 active |
@@ -175,7 +146,9 @@ Rust run and is excluded from the upstream-port count.
 
 | Reason | Count | Tests |
 |---|---:|---|
-| Lombok not supported | 1 | `test_lombok_show_generated_code_symbols` |
+| Lombok not supported | 3 | `test_lombok_show_generated_code_symbols`; completion `test_completion_lombok`, `test_completion_lombok2` (both pass on the oracle with `-javaagent`) |
+| `@Disabled` upstream | 3 | completion `test_snippet_inner_record`, `test_snippet_sibling_inner_record`, `test_snippet_nested_inner_record` |
+| Needs `repository.aspose.com`, unreachable here (oracle fails the same way) | 1 | completion `test_completion_invalid_javadoc` |
 | Kotlin not supported | 1 | `test_kotlin` |
 | Direct completion-requestor state access | 1 | `test_signature_help_for_selected_completion_proposal` selects the first raw proposal directly, whose ordering differs from LSP items; the public selection flow is implemented and oracle verified separately |
 | The upstream test assumes a Java 10 JDK | 1 | `test_hover_on_java10var` |
@@ -316,6 +289,29 @@ unit tests are excluded from the upstream count. Completion is still incomplete:
 42 CompletionHandlerTest cases, plus the dedicated lazy-resolve, chain and postfix
 classes, remain unported. The old postfix helper remains available during bridge
 startup; the JDT completion path does not yet include that provider.
+
+## CompletionHandlerTest completion (2026-10-07)
+
+All 156 `CompletionHandlerTest` methods are ported: 150 pass, 6 are ignored (above).
+Every newly ported active test passed on the oracle in targeted runs. A full oracle run
+under heavy machine load showed timing failures in a few constructor/Javadoc cases that
+pass when run alone; recheck on an idle machine.
+
+* Inputs and assertions are upstream's. 25 tests use upstream's rtstubs test JDK,
+  preferences are set before the server starts, and `makeConsistent`/`getAST(WAIT_YES)`
+  become a wait for diagnostics. `dataFieldURI`, `dataFieldExecutionTime` and
+  `selectSnippetItem` assert jdt.ls's internal response cache; their ports check the same
+  behaviour through `completionItem/resolve` and `java.completion.onDidSelect`, so they
+  are not exact ports.
+* Getter/setter proposals keep relevance 1 (upstream computes but never sets one);
+  anonymous-type bodies get upstream's `;` handling.
+* The bridge installs a job-less JDT index manager so subtype search after `new ` no
+  longer fails with an NPE (it finds nothing: constructors of implementing types are
+  still not proposed), and reads `CompletionEngine.lookupEnvironment` directly, fixing
+  diamond and constructor type arguments.
+* `src/features/completion/import_context.rs` ports `ContextSensitiveImportRewriteContext`
+  and `ScopeAnalyzer.getDeclarationsInScope` for completion resolve. The `java.lang`
+  same-package conflict check only sees package types already fetched.
 
 ## Project-manager integration evidence
 
@@ -489,7 +485,7 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 | Work | Upstream tests | Share of suite |
 |---|---:|---:|
 | Remaining quick fixes and assists (`correction`) | 536 | 26% |
-| Remaining completion (CompletionHandlerTest 42, LazyResolve 20, Chain 12, Postfix 29) | 103 | 5% |
+| Remaining completion (LazyResolve 20, Chain 12, Postfix 29, ranking/resolve/insert-replace 9) | 70 | 3% |
 | Remaining project managers | 77 | 4% |
 | Refactoring | 119 | 6% |
 | Remaining handlers outside completion: code actions, generation, imports, save actions, markers and lifecycle/init | 206 | 10% |
@@ -497,20 +493,13 @@ is now integrated and verified. No saved WIP branch remains unmerged.
 
 ## Updating this file
 
-Ported and ignored counts come from the test files:
-
-```sh
-for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|*_regressions) continue ;; esac
-  echo "$b $(grep -c '#\[test\]' "$f") $(grep -c '#\[ignore' "$f")"; done
-```
-
-Add the ports that live as unit tests in `src/` (InlayHintFilterManagerTest 7,
-JavaDoc2Markdown 19, JavaDoc2PlainText 2, JavaDocImageExtraction 1, InitHandler 2,
-ClientPreferencesTest 16, PreferencesTest 16, PreferenceManagerTest 15).
-Exclude `tests/lsp.rs`, all `tests/*_regressions.rs` files, and empty placeholders
-(these are not ports). Upstream counts come from `@Test` methods in
-`eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
-Update this file whenever a branch is merged into `jdtls-parity`.
+Run `scripts/parity-count.py` (missing tests per class plus the totals and the area
+table), `--all` to list every class, or `--markdown` for a table of ported classes.
+It counts `#[test]`/`#[ignore` in `tests/<pkg>_<class_snake>.rs` and in `mod
+<class_snake>` blocks under `src/` (unit ports), plus the few irregular unit ports
+listed in its `EXTRA` table. Keep `tests/lsp.rs` and `tests/*_regressions.rs` for our own
+regressions; they are never counted. Update this file whenever a branch is merged into
+`jdtls-parity`.
 
 ## Paste integration evidence
 
