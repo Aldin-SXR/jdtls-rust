@@ -159,7 +159,7 @@ Rust run and is excluded from the upstream-port count.
 | Kotlin not supported | 1 | `test_kotlin` |
 | Direct completion-requestor state access | 1 | `test_signature_help_for_selected_completion_proposal` selects the first raw proposal directly, whose ordering differs from LSP items; the public selection flow is implemented and oracle verified separately |
 | The upstream test assumes a Java 10 JDK | 1 | `test_hover_on_java10var` |
-| Requires an installed JavaSE-1.8 or Java 26 VM | 4 | Eclipse `test_forbidden_reference`, `test_preview_features_disabled_by_default`; invisible `test_preview_features_enabled_by_default`; Maven `test_java26_project` |
+| Requires an installed Java 26 VM (no JDK 26 package or download is reachable in the container) | 3 | Eclipse `test_preview_features_disabled_by_default`; invisible `test_preview_features_enabled_by_default`; Maven `test_java26_project` |
 | Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
 | Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
 | Needs the getter/setter ("Create getter and setter for") proposal | 2 | ModifierCorrections `test_invisible_field_requested_in_same_package1`, `test_invisible_field_requested_in_same_package2` |
@@ -485,7 +485,8 @@ Run `scripts/parity-count.py` for the per-class gap. The largest remaining items
 * Postfix completion (29), the remaining correction classes (null annotations, Javadoc,
   convert-to-record, reorg, lambda, ...), Gradle importer (45), `ProjectCommandTest` (28),
   core utilities, syntax server and filesystem tests.
-* Environment for running the suite in a Linux container: install JDK 25 and set
+* Environment for running the suite in a Linux container: install JDK 8 (for
+  `test_forbidden_reference`) and JDK 25, and set
   `JAVA_HOME` to it for tests (JDK 21 stays the default `java` for Gradle 8.5);
   `scripts/install-decompiler-from-oracle.sh` when the JetBrains repository is unreachable.
   Downloads honour `HTTPS_PROXY`/`NO_PROXY` and `SSL_CERT_FILE`. Rust does not yet fall

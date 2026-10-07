@@ -256,7 +256,6 @@ fn do_not_duplicate_import_project() {
 }
 
 #[test]
-#[ignore = "requires an installed JavaSE-1.8 VM; upstream assumes one (Assumptions.assumeFalse) and skips otherwise, only JDK 25 is installed here"]
 fn test_forbidden_reference() {
     let name = "forbiddenreference";
     let mut ws = workspace();
