@@ -19,10 +19,10 @@ of `CompletionHandlerTest`'s 156.
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 1,258 | 59.4% |
-| Passing | 1,239 | 58.5% |
-| Ported but `#[ignore]`d | 19 | 0.9% |
-| Not ported yet | 859 | 40.6% |
+| Ported | 1,299 | 61.4% |
+| Passing | 1,247 | 58.9% |
+| Ported but `#[ignore]`d | 52 | 2.5% |
+| Not ported yet | 818 | 38.6% |
 
 Our own regression suites (`tests/lsp.rs`, `tests/*_regressions.rs`) and unit tests that
 are not ports are excluded from these counts.
@@ -32,7 +32,7 @@ are not ports are excluded from these counts.
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
 | handlers | 868 | 670 | 660 | 76% |
-| correction | 610 | 326 | 324 | 53% |
+| correction | 610 | 367 | 332 | 54% |
 | managers | 211 | 134 | 127 | 60% |
 | refactoring | 118 | 0 | 0 | 0% |
 | (root) | 72 | 7 | 7 | 9% |
@@ -108,6 +108,8 @@ are not ports are excluded from these counts.
 | correction/OrganizeImportsActionTest | `correction_organize_imports_action_test` | 6 | 6 | 0 | 6/6; original sources and edit assertions |
 | correction/TypeMismatchQuickFixTest | `correction_type_mismatch_quick_fix_test` | 44 | 44 | 0 | 44/44 |
 | correction/UnresolvedVariablesQuickFixTest | `correction_unresolved_variables_quick_fix_test` | 48 | 48 | 0 | 48/48 |
+| correction/UnresolvedTypesQuickFixTest | `correction_unresolved_types_quick_fix_test` | 35 | 8 | 27 | 31/33 non-disabled; `test_add_all_missing_imports` and `test_type_in_sealed_type_declaration` fail on the oracle too |
+| correction/GetterSetterQuickFixTest | `correction_getter_setter_quick_fix_test` | 6 | 0 | 6 | 6/6 |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -158,6 +160,8 @@ Rust run and is excluded from the upstream-port count.
 | Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
 | Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
 | Needs the getter/setter ("Create getter and setter for") proposal | 2 | ModifierCorrections `test_invisible_field_requested_in_same_package1`, `test_invisible_field_requested_in_same_package2` |
+| Unported type proposals: ambiguous-type "Explicitly import" (7), type parameters / import-only type change (8), `NewCUProposal` create type (8), add-all-missing-imports (2); `@Disabled` upstream (2) | 27 | `correction_unresolved_types_quick_fix_test` |
+| Unported `GetterSetterCorrectionSubProcessor` / `SelfEncapsulateFieldRefactoring` (`src/correction/getter_setter.rs` is a stub) | 6 | `correction_getter_setter_quick_fix_test` |
 | Gradle model/update parity for an invalid build | 1 | ProjectsManager `test_sending_warning_project_status`; successful-update and reload-marker assertions now run with the compatible Gradle VM |
 
 ## Lifecycle/init integration evidence
