@@ -156,7 +156,98 @@ final class AstBindingsService {
         parser.setCompilerOptions(parserOptions);
         parser.setUnitName(classFile == null ? unitName(req.uri) : ClassFileService.unitName(classFile));
         BridgeOptions.configureEnvironment(parser, cp, sourcepath);
+        if (classFile == null) {
+            String fragment = SourceLayout.fragmentPackages(req.files).get(req.uri);
+            inPackageFragments(parser, fragment != null && !fragment.equals(InMemorySourceClasspath.packageOf(source)) ? fragment : null);
+        }
         return (CompilationUnit) parser.createAST(null);
+    }
+
+    /**
+     * JDT resolves a working copy in its package fragment (the folder), not its
+     * package declaration: the Java model's source unit carries the fragment
+     * name, so ECJ binds the unit's types there (and reports the mismatch). A
+     * raw-source ASTParser has no fragment, so the parser's unit resolver is
+     * wrapped to hand ECJ the unit with its fragment's package name
+     * ({@code fragment}, when it differs from the declaration), and the source
+     * units its classpath finds with the package they were looked up in.
+     */
+    private static void inPackageFragments(ASTParser parser, String fragment) {
+        try {
+            java.lang.reflect.Field field = ASTParser.class.getDeclaredField("unitResolver");
+            field.setAccessible(true);
+            Object delegate = field.get(parser);
+            Class<?> type = Class.forName("org.eclipse.jdt.internal.core.dom.ICompilationUnitResolver");
+            Object proxy = java.lang.reflect.Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] { type },
+                    (p, method, args) -> {
+                        if (method.getName().equals("toCompilationUnit") && args != null && args.length > 3) {
+                            if (fragment != null && args[0] instanceof org.eclipse.jdt.internal.compiler.env.ICompilationUnit unit) {
+                                args[0] = inPackage(unit, fragment);
+                            }
+                            if (args[3] instanceof List<?> classpaths) {
+                                List<Object> wrapped = new ArrayList<>();
+                                for (Object classpath : classpaths) {
+                                    wrapped.add(sourcesInLookupPackage(classpath));
+                                }
+                                args[3] = wrapped;
+                            }
+                        }
+                        try {
+                            return method.invoke(delegate, args);
+                        } catch (java.lang.reflect.InvocationTargetException e) {
+                            throw e.getCause();
+                        }
+                    });
+            unsafePut(parser, field, proxy);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            // keep the declared package
+        }
+    }
+
+    private static org.eclipse.jdt.internal.compiler.env.ICompilationUnit inPackage(
+            org.eclipse.jdt.internal.compiler.env.ICompilationUnit unit, String pkg) {
+        char[][] packageName = pkg.isEmpty()
+                ? new char[0][]
+                : org.eclipse.jdt.core.compiler.CharOperation.splitOn('.', pkg.toCharArray());
+        return new org.eclipse.jdt.internal.core.BasicCompilationUnit(unit.getContents(), packageName,
+                new String(unit.getFileName()), (org.eclipse.jdt.core.IJavaElement) null);
+    }
+
+    /** A classpath entry whose source answers carry the package they were found in. */
+    private static Object sourcesInLookupPackage(Object classpath) {
+        Class<?> type = org.eclipse.jdt.internal.compiler.batch.FileSystem.Classpath.class;
+        if (!type.isInstance(classpath)) {
+            return classpath;
+        }
+        return java.lang.reflect.Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] { type }, (p, method, args) -> {
+            Object result;
+            try {
+                result = method.invoke(classpath, args);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                throw e.getCause();
+            }
+            if (method.getName().equals("findClass") && args != null && args.length > 1 && args[1] instanceof String qualifiedPackageName
+                    && result instanceof org.eclipse.jdt.internal.compiler.env.NameEnvironmentAnswer answer
+                    && answer.getCompilationUnit() != null) {
+                org.eclipse.jdt.internal.compiler.env.ICompilationUnit unit = answer.getCompilationUnit();
+                String pkg = qualifiedPackageName.replace('/', '.');
+                if (!pkg.equals(InMemorySourceClasspath.packageOf(new String(unit.getContents())))) {
+                    return new org.eclipse.jdt.internal.compiler.env.NameEnvironmentAnswer(inPackage(unit, pkg),
+                            answer.getAccessRestriction(), answer.moduleName());
+                }
+            }
+            if (method.getName().equals("equals") && args != null && args.length == 1) {
+                return p == args[0];
+            }
+            return result;
+        });
+    }
+
+    private static void unsafePut(Object target, java.lang.reflect.Field field, Object value) throws ReflectiveOperationException {
+        java.lang.reflect.Field theUnsafe = Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe");
+        theUnsafe.setAccessible(true);
+        sun.misc.Unsafe unsafe = (sun.misc.Unsafe) theUnsafe.get(null);
+        unsafe.putObject(target, unsafe.objectFieldOffset(field), value);
     }
 
     private static boolean hasBootClasses(String[] classpath) {
