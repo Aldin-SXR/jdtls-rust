@@ -34,6 +34,9 @@ walkdir = "2"
 futures = "0.3"
 tower-service = "0.3" # wrap the LSP service (lenient document URIs)
 ureq = { version = "2", default-features = false, features = ["tls"] } # Maven artifact downloads
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] } # extra CA roots (SSL_CERT_FILE)
+rustls-pki-types = { version = "1", features = ["std"] }
+webpki-roots = "0.26"
 
 [build-dependencies]
 # nothing needed unless we add JAR embedding later

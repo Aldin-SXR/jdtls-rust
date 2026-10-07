@@ -431,6 +431,8 @@ dependencies = [
  "regex",
  "ropey",
  "roxmltree",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -445,6 +447,7 @@ dependencies = [
  "ureq",
  "url",
  "walkdir",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
