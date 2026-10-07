@@ -112,13 +112,25 @@ pub async fn cast_proposal(env: &Env<'_>, ast: &Arc<Ast>, label: String, node_to
 /// `binding` is a declaration binding of `ast`; the change applies to `target`.
 pub async fn type_change_proposal(
     env: &Env<'_>,
-    ast: &Arc<Ast>,
     target: &Arc<Ast>,
     binding: BindingRef<'_>,
     new_type: BindingRef<'_>,
+    offer_super_type_proposals: bool,
     relevance: i32,
     display_name: Option<String>,
 ) -> Option<Proposal> {
+    let new_type = if offer_super_type_proposals {
+        // `getRelaxingTypes` + `sortTypes`: the first proposed type.
+        let mut types = bindings::relaxing_types(new_type);
+        let old = if binding.kind() == BindingKind::Method { binding.return_type() } else { binding.var_type() };
+        if let Some(old) = old.filter(|o| o.is_parameterized_type()) {
+            let declaration = old.type_declaration().unwrap_or(old);
+            types.sort_by_key(|t| if t.type_declaration().unwrap_or(*t) == declaration { 0 } else { 1 });
+        }
+        types[0]
+    } else {
+        new_type
+    };
     let options = env.options(&target.uri).await;
     let decl = declaring_node(target, binding)?;
     let type_name = if bindings::contains_nested_capture(Some(new_type), false) {

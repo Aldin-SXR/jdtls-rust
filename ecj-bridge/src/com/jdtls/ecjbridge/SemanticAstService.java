@@ -379,6 +379,8 @@ final class SemanticAstService {
                 out.b = binding(d.resolveBinding());
             } else if (node instanceof MethodDeclaration d) {
                 out.b = binding(d.resolveBinding());
+            } else if (node instanceof AnnotationTypeMemberDeclaration d) {
+                out.b = binding(d.resolveBinding());
             } else if (node instanceof VariableDeclaration d) {
                 out.b = binding(d.resolveBinding());
             } else if (node instanceof EnumConstantDeclaration d) {

@@ -368,7 +368,36 @@ pub fn is_cast_compatible(cast: Ty<'_>, expression: BindingRef<'_>) -> bool {
     }
 }
 
+fn is_concrete_argument(b: BindingRef<'_>) -> bool {
+    !(b.is_wildcard_type() || b.is_capture() || b.is_type_variable())
+}
+
+/// Two parameterizations of the same generic type with different concrete
+/// type arguments are provably distinct (JLS 4.5), so no cast exists.
+fn provably_distinct(sub: BindingRef<'_>, sup: BindingRef<'_>) -> bool {
+    if !sup.is_parameterized_type() {
+        return false;
+    }
+    let declaration = sup.type_declaration().unwrap_or(sup);
+    let Some(parameterization) = find_type_in_hierarchy(sub, declaration.qualified_name()) else { return false };
+    if !parameterization.is_parameterized_type() {
+        return false;
+    }
+    let (a, b) = (parameterization.type_arguments(), sup.type_arguments());
+    a.len() == b.len() && a.iter().zip(b.iter()).any(|(x, y)| is_concrete_argument(*x) && is_concrete_argument(*y) && x != y)
+}
+
 fn reference_cast_compatible(cast: BindingRef<'_>, expression: BindingRef<'_>) -> bool {
+    if !expression.is_array() && !cast.is_array() {
+        let (c, e) = (erased(cast), erased(expression));
+        if is_subtype_erasure(e, c.qualified_name()) {
+            if provably_distinct(expression, cast) {
+                return false;
+            }
+        } else if is_subtype_erasure(c, e.qualified_name()) && provably_distinct(cast, expression) {
+            return false;
+        }
+    }
     if expression.is_array() || cast.is_array() {
         if expression.is_array() && cast.is_array() {
             let (Some(c), Some(e)) = (cast.component_type(), expression.component_type()) else { return false };
@@ -720,6 +749,45 @@ fn append_type_label(b: BindingRef<'_>, type_parameters: bool, out: &mut String)
                 }
             }
         }
+    }
+}
+
+/// `ASTResolving.getRelaxingTypes(ast, type)`.
+pub fn relaxing_types(typ: BindingRef<'_>) -> Vec<BindingRef<'_>> {
+    let mut res = vec![typ];
+    if typ.is_array() {
+        for name in ARRAY_SUPERTYPES {
+            if let Some(b) = well_known(typ.ast, name) {
+                res.push(b);
+            }
+        }
+    } else if typ.is_primitive() {
+        const CODE_ORDER: [&str; 6] = ["char", "short", "int", "long", "float", "double"];
+        if let Some(i) = CODE_ORDER.iter().position(|c| *c == typ.name()) {
+            for name in &CODE_ORDER[i + 1..] {
+                if let Some(b) = well_known(typ.ast, name) {
+                    res.push(b);
+                }
+            }
+        }
+    } else {
+        collect_relaxing_types(&mut res, typ);
+    }
+    res
+}
+
+fn collect_relaxing_types<'a>(res: &mut Vec<BindingRef<'a>>, typ: BindingRef<'a>) {
+    for interface in typ.interfaces() {
+        if !res.contains(&interface) {
+            res.push(interface);
+        }
+        collect_relaxing_types(res, interface);
+    }
+    if let Some(superclass) = typ.superclass() {
+        if !res.contains(&superclass) {
+            res.push(superclass);
+        }
+        collect_relaxing_types(res, superclass);
     }
 }
 

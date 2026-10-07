@@ -150,7 +150,7 @@ fn is_type_returned(node: Node<'_>) -> bool {
 }
 
 /// `collectCastProposals(context, castTypeBinding, nodeToCast, relevance)`.
-async fn create_cast_proposal(env: &Env<'_>, ast: &Arc<Ast>, cast_type: Ty<'_>, node_to_cast: Node<'_>, relevance: i32) -> Proposal {
+pub async fn create_cast_proposal(env: &Env<'_>, ast: &Arc<Ast>, cast_type: Ty<'_>, node_to_cast: Node<'_>, relevance: i32) -> Proposal {
     let label_type = match cast_type {
         Ty::Binding(b) => type_label(b),
         Ty::Named(n) => n.rsplit('.').next().unwrap_or(n).to_owned(),
@@ -178,7 +178,7 @@ async fn change_return_type_proposal(env: &Env<'_>, ast: &Arc<Ast>, curr: Bindin
 }
 
 /// `TypeMismatchBaseSubProcessor.collectChangeSenderTypeProposals`.
-async fn change_sender_type_proposals(
+pub async fn change_sender_type_proposals(
     env: &Env<'_>,
     ctx: &Context,
     node_to_cast: Node<'_>,
@@ -225,7 +225,7 @@ async fn change_sender_type_proposals(
     }
     if let (Some(target), Some(caller_decl)) = (&target, caller_decl) {
         if is_useable_type_in_context(cast_type, Some(caller_decl), false) {
-            if let Some(p) = type_change_proposal(env, ast, target, caller_decl, cast_type, relevance, None).await {
+            if let Some(p) = type_change_proposal(env, target, caller_decl, cast_type, is_assigned_node, relevance, None).await {
                 proposals.push(p);
             }
         }
@@ -272,12 +272,12 @@ pub async fn incompatible_return_type(env: &Env<'_>, ctx: &Context, problem: &Pr
     let bounds = overridden_return_type.type_bounds();
     if decl.list("typeParameters").is_empty() || bounds.is_empty() || bounds.iter().all(|b| b.type_arguments().is_empty()) {
         let erasure = overridden_return_type.erasure().unwrap_or(overridden_return_type);
-        if let Some(p) = type_change_proposal(env, ast, ast, method_decl, erasure, relevance::CHANGE_RETURN_TYPE, None).await {
+        if let Some(p) = type_change_proposal(env, ast, method_decl, erasure, false, relevance::CHANGE_RETURN_TYPE, None).await {
             proposals.push(p);
         }
     }
     if overridden_return_type.is_type_variable() {
-        if let Some(p) = type_change_proposal(env, ast, ast, method_decl, overridden_return_type, relevance::CHANGE_RETURN_TYPE, None).await {
+        if let Some(p) = type_change_proposal(env, ast, method_decl, overridden_return_type, false, relevance::CHANGE_RETURN_TYPE, None).await {
             proposals.push(p);
         }
     }
@@ -292,7 +292,7 @@ pub async fn incompatible_return_type(env: &Env<'_>, ctx: &Context, problem: &Pr
                     "TypeMismatchSubProcessor_changereturnofoverridden_description"
                 };
                 let name = correction(key, &[overridden_decl.name()]);
-                if let Some(p) = type_change_proposal(env, ast, &target, overridden_decl, return_type, relevance::CHANGE_RETURN_TYPE_OF_OVERRIDDEN, Some(name)).await {
+                if let Some(p) = type_change_proposal(env, &target, overridden_decl, return_type, false, relevance::CHANGE_RETURN_TYPE_OF_OVERRIDDEN, Some(name)).await {
                     proposals.push(p);
                 }
             }
