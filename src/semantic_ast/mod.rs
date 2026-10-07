@@ -264,6 +264,8 @@ pub struct Binding {
     pub method_subsignatures: Vec<BindingId>,
     pub method_overrides: Vec<BindingId>,
     pub assignment_targets: Vec<BindingId>,
+    /// `isCastCompatible` targets (exported for unresolved invocations).
+    pub cast_targets: Vec<BindingId>,
     pub functional_method: Option<BindingId>,
     pub name_offset: i32,
     pub source_offset: i32,
@@ -425,6 +427,7 @@ impl Ast {
                 method_subsignatures: bl(&o.ss).unwrap_or_default(),
                 method_overrides: bl(&o.ov).unwrap_or_default(),
                 assignment_targets: bl(&o.assign).unwrap_or_default(),
+                cast_targets: bl(&o.cast).unwrap_or_default(),
                 functional_method: b(o.fim),
             })
             .collect();

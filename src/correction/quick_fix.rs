@@ -139,6 +139,11 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::BodyForNativeMethod => super::modifier_corrections::native_method(ctx, problem, proposals),
         p::MethodRequiresBody => super::modifier_corrections::requires_body(ctx, problem, proposals),
         p::AbstractMethodMustBeImplemented | p::EnumConstantMustImplementAbstractMethod => super::unimplemented::proposals(ctx, problem, proposals),
+        p::UndefinedMethod => super::unresolved_elements::method_proposals(env, ctx, problem, false, proposals).await,
+        p::UndefinedConstructor => super::unresolved_elements::constructor_proposals(env, ctx, problem, proposals).await,
+        p::UndefinedAnnotationMember => super::unresolved_elements::annotation_member_proposals(env, ctx, problem, proposals).await,
+        p::ParameterMismatch => super::unresolved_elements::method_proposals(env, ctx, problem, true, proposals).await,
+        p::NoMessageSendOnArrayType => super::unresolved_elements::array_access_proposals(ctx, problem, proposals),
         _ => {}
     }
 }

@@ -273,9 +273,10 @@ pub fn generate_comments() -> bool {
 }
 
 /// `Preferences.isValidateAllOpenBuffersOnChanges()`
-/// (`java.edit.validateAllOpenBuffersOnChanges`; default `false`).
+/// (`java.edit.validateAllOpenBuffersOnChanges`; `Preferences` defaults it
+/// to `true`).
 pub fn validate_all_open_buffers_on_changes() -> bool {
-    get_bool("java.edit.validateAllOpenBuffersOnChanges").unwrap_or(false)
+    get_bool("java.edit.validateAllOpenBuffersOnChanges").unwrap_or(true)
 }
 
 /// `Preferences.getCodeGenerationAddFinalForNewDeclaration()`

@@ -56,6 +56,7 @@ final class SemanticAstService {
         public int er = -1, td = -1, dc = -1, dm = -1, sc = -1, el = -1, cmp = -1, bound = -1, gt = -1, wc = -1;
         public int dim;
         public int[] it, ta, tp, tbs, dmeth, dfld, dtyp, ctors, assign;
+        public int[] cast;     // ITypeBinding.isCastCompatible targets (unresolved invocations only)
         public int fim = -1;
         public int module = -1;
         // variable
@@ -244,9 +245,10 @@ final class SemanticAstService {
                     binding(cu.getAST().resolveWellKnownType(name));
                 }
             }
+            boolean unresolved = unresolvedInvocations();
             namespaceAnnotations();
             memberSourceData();
-            if (conditional || order.stream().anyMatch(n -> n instanceof ExpressionStatement)) typeRelations();
+            if (unresolved || conditional || order.stream().anyMatch(n -> n instanceof ExpressionStatement)) typeRelations(unresolved);
             methodRelations();
             List<Integer> comments = new ArrayList<>();
             for (Object o : cu.getCommentList()) {
@@ -546,9 +548,80 @@ final class SemanticAstService {
         // Assignment relations and functional-method bindings are compiler data.
         // Export expression, parameter and return types for conditional expressions
         // and standalone-expression corrections, excluding unrelated member types.
+        /**
+         * Unresolved method / constructor invocations (the unresolved-element
+         * quick fixes): member graphs of receivers and created types, the
+         * well-known types those processors resolve, and (later) assignment and
+         * cast relations between the involved types.
+         */
+        private boolean unresolvedInvocations() {
+            boolean found = false;
+            for (IProblem p : cu.getProblems()) {
+                int id = p.getID();
+                if (id == IProblem.UndefinedMethod || id == IProblem.ParameterMismatch || id == IProblem.UndefinedConstructor
+                        || id == IProblem.UndefinedAnnotationMember || id == IProblem.NoMessageSendOnArrayType) {
+                    found = true;
+                }
+            }
+            for (ASTNode node : order) {
+                ITypeBinding receiver = null;
+                boolean unresolved = false;
+                try {
+                    if (node instanceof MethodInvocation m && m.resolveMethodBinding() == null) {
+                        unresolved = true;
+                        if (m.getExpression() != null) receiver = m.getExpression().resolveTypeBinding();
+                    } else if (node instanceof SuperMethodInvocation m && m.resolveMethodBinding() == null) {
+                        unresolved = true;
+                    } else if (node instanceof ClassInstanceCreation c && c.resolveConstructorBinding() == null) {
+                        unresolved = true;
+                        receiver = c.getType().resolveBinding();
+                        constructorMembers(receiver);
+                    } else if (node instanceof ConstructorInvocation c && c.resolveConstructorBinding() == null) {
+                        unresolved = true;
+                    } else if (node instanceof SuperConstructorInvocation c && c.resolveConstructorBinding() == null) {
+                        unresolved = true;
+                    }
+                } catch (RuntimeException e) {
+                    // recovered nodes
+                }
+                if (receiver != null) {
+                    java.util.Set<String> seen = new java.util.HashSet<>();
+                    hierarchyGraph(receiver, seen);
+                    hierarchyGraph(receiver.getTypeDeclaration(), seen);
+                    if (receiver.isArray()) hierarchyGraph(cu.getAST().resolveWellKnownType("java.lang.Object"), seen);
+                }
+                found |= unresolved;
+            }
+            if (found) {
+                for (String name : new String[] {"boolean", "byte", "char", "short", "int", "long", "float", "double", "void",
+                        "java.lang.Boolean", "java.lang.Byte", "java.lang.Character", "java.lang.Short", "java.lang.Integer",
+                        "java.lang.Long", "java.lang.Float", "java.lang.Double", "java.lang.Object", "java.lang.String",
+                        "java.lang.Exception", "java.io.Serializable", "java.lang.Cloneable"}) {
+                    binding(cu.getAST().resolveWellKnownType(name));
+                }
+            }
+            return found;
+        }
+
         private void typeRelations() {
+            typeRelations(false);
+        }
+
+        private void typeRelations(boolean cast) {
             java.util.Set<Integer> types = new java.util.LinkedHashSet<>();
             for (NodeOut node : nodes) if (node.tb >= 0) types.add(node.tb);
+            if (cast) {
+                for (NodeOut node : nodes) if (node.b >= 0 && typeBindings.containsKey(node.b)) types.add(node.b);
+                for (BindingOut b : new ArrayList<>(bindings)) {
+                    if (b.k == IBinding.VARIABLE && b.type >= 0) types.add(b.type);
+                }
+                for (String name : new String[] {"boolean", "byte", "char", "short", "int", "long", "float", "double",
+                        "java.lang.Boolean", "java.lang.Byte", "java.lang.Character", "java.lang.Short", "java.lang.Integer",
+                        "java.lang.Long", "java.lang.Float", "java.lang.Double", "java.lang.Object", "java.lang.String"}) {
+                    types.add(binding(cu.getAST().resolveWellKnownType(name)));
+                }
+                types.remove(-1);
+            }
             for (IMethodBinding method : new ArrayList<>(methodBindings.values())) {
                 for (ITypeBinding parameter : method.getParameterTypes()) types.add(binding(parameter));
                 if (!method.isConstructor()) types.add(binding(method.getReturnType()));
@@ -574,6 +647,19 @@ final class SemanticAstService {
                     }
                 }
                 bindings.get(first).assign = targets.stream().mapToInt(Integer::intValue).toArray();
+                if (cast) {
+                    List<Integer> casts = new ArrayList<>();
+                    for (int second : types) {
+                        ITypeBinding target = typeBindings.get(second);
+                        if (target == null) continue;
+                        try {
+                            if (source.isCastCompatible(target)) casts.add(second);
+                        } catch (RuntimeException e) {
+                            // Recovered bindings may not have a valid conversion.
+                        }
+                    }
+                    bindings.get(first).cast = casts.stream().mapToInt(Integer::intValue).toArray();
+                }
             }
         }
 
