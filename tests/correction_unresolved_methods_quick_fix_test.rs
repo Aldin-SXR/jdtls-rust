@@ -857,7 +857,6 @@ fn test_static_import_favorite2() {
 }
 
 #[test]
-#[ignore = "needs ModifierCorrectionSubProcessor.addNonAccessibleReferenceProposal (NotVisibleMethod visibility change), which is not ported yet"]
 fn test_indirect_protected_method() {
     let (mut t, root) = setup();
     t.ws.create_cu(&root, "src", "test1", "A.java", "package test1;\npublic class A {\n    protected void method() {\n    }\n}\n");

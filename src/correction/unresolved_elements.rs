@@ -8,6 +8,13 @@ mod proposals;
 mod scope;
 mod types;
 
+pub(crate) use new_method::method_body_content;
+
+/// `StubUtility.getVariableNameSuggestions(VK_PARAMETER, project, name, 0, taken, true)`.
+pub(crate) fn variable_name_suggestions(base: &str, excluded: &[String], options: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    names::suggestions(base, 0, excluded, options, true)
+}
+
 use std::sync::Arc;
 
 use super::edit::Env;

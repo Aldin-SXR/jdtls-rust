@@ -127,6 +127,55 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::NeedToEmulateFieldReadAccess | p::NeedToEmulateFieldWriteAccess | p::NeedToEmulateMethodAccess | p::NeedToEmulateConstructorAccess => {
             super::modifier_corrections::non_accessible_reference(env, ctx, problem, proposals, super::modifier_corrections::TO_NON_PRIVATE, super::relevance::CHANGE_VISIBILITY_TO_NON_PRIVATE).await
         }
+        p::SealedMissingClassModifier | p::SealedMissingInterfaceModifier => super::modifier_corrections::sealed_missing_modifier(ctx, problem, proposals),
+        p::SealedNotDirectSuperInterface | p::SealedNotDirectSuperClass => super::modifier_corrections::sealed_as_direct_super_type(env, ctx, problem, proposals).await,
+        p::SealedSuperClassDoesNotPermit | p::SealedSuperInterfaceDoesNotPermit => super::modifier_corrections::type_as_permitted_sub_type(env, ctx, problem, proposals).await,
+        p::InheritedMethodReducesVisibility | p::MethodReducesVisibility | p::OverridingNonVisibleMethod => {
+            super::modifier_corrections::change_overridden_modifier(env, ctx, problem, proposals, super::modifier_corrections::TO_VISIBLE).await
+        }
+        p::FinalMethodCannotBeOverridden => super::modifier_corrections::change_overridden_modifier(env, ctx, problem, proposals, super::modifier_corrections::TO_NON_FINAL).await,
+        p::CannotOverrideAStaticMethodWithAnInstanceMethod => {
+            super::modifier_corrections::change_overridden_modifier(env, ctx, problem, proposals, super::modifier_corrections::TO_NON_STATIC).await
+        }
+        p::CannotHideAnInstanceMethodWithAStaticMethod
+        | p::IllegalModifierForInterfaceMethod
+        | p::IllegalModifierForInterface
+        | p::IllegalModifierForClass
+        | p::IllegalModifierForInterfaceField
+        | p::UnexpectedStaticModifierForField
+        | p::IllegalModifierCombinationFinalVolatileForField
+        | p::IllegalModifierForMemberInterface
+        | p::IllegalModifierForMemberClass
+        | p::IllegalModifierForLocalClass
+        | p::IllegalModifierForArgument
+        | p::IllegalModifierForField
+        | p::IllegalModifierForMethod
+        | p::IllegalModifierForConstructor
+        | p::IllegalModifierForVariable
+        | p::IllegalModifierForEnum
+        | p::IllegalModifierForEnumConstant
+        | p::IllegalModifierForEnumConstructor
+        | p::IllegalModifierForMemberEnum
+        | p::IllegalVisibilityModifierForInterfaceMemberType
+        | p::UnexpectedStaticModifierForMethod
+        | p::IllegalModifierForInterfaceMethod18 => super::modifier_corrections::remove_invalid_modifiers(ctx, problem, proposals, super::relevance::REMOVE_INVALID_MODIFIERS),
+        p::EnhancedSwitchMissingDefault | p::SwitchExpressionsYieldMissingDefaultCase => super::modifier_corrections::permitted_types(env, ctx, problem, proposals).await,
+        p::MethodMustOverride | p::MethodMustOverrideOrImplement =>super::modifier_corrections::remove_override_annotation(env, ctx, problem, proposals).await,
+        p::OuterLocalMustBeEffectivelyFinal =>super::modifier_corrections::make_final(ctx, problem, proposals, super::relevance::CHANGE_MODIFIER_TO_FINAL),
+        p::MissingSynchronizedModifierInInheritedMethod => super::modifier_corrections::add_method_modifier(
+            ctx,
+            problem,
+            proposals,
+            crate::semantic_ast::modifier::SYNCHRONIZED,
+            "ModifierCorrectionSubProcessor_addsynchronized_description",
+        ),
+        p::MethodCanBeStatic | p::MethodCanBePotentiallyStatic => super::modifier_corrections::add_method_modifier(
+            ctx,
+            problem,
+            proposals,
+            crate::semantic_ast::modifier::STATIC,
+            "ModifierCorrectionSubProcessor_addstatic_description",
+        ),
         p::SuperfluousSemicolon => super::local_corrections::superfluous_semicolon(ctx, problem, proposals),
         p::UnnecessaryCast => super::local_corrections::unnecessary_cast(ctx, problem, proposals),
         p::UnqualifiedFieldAccess => {

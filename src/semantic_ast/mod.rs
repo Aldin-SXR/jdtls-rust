@@ -74,22 +74,22 @@ pub mod modifier {
         }
     }
 
-    /// Keywords of the flags in `flags`, in `Modifier.ModifierKeyword` order
+    /// Keywords of the flags in `flags`, in `AST.newModifiers` order
     /// (`ASTNodeFactory.newModifiers`).
     pub fn keywords(flags: i32) -> Vec<&'static str> {
         let order: [(&str, i32); 14] = [
             ("public", PUBLIC),
             ("protected", PROTECTED),
             ("private", PRIVATE),
-            ("static", STATIC),
             ("abstract", ABSTRACT),
+            ("default", DEFAULT),
+            ("static", STATIC),
             ("final", FINAL),
-            ("native", NATIVE),
             ("synchronized", SYNCHRONIZED),
+            ("native", NATIVE),
+            ("strictfp", STRICTFP),
             ("transient", TRANSIENT),
             ("volatile", VOLATILE),
-            ("strictfp", STRICTFP),
-            ("default", DEFAULT),
             ("sealed", SEALED),
             ("non-sealed", NON_SEALED),
         ];
