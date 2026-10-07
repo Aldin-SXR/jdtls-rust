@@ -20,8 +20,8 @@ of `CompletionHandlerTest`'s 156.
 | | Tests | Share of upstream |
 |---|---:|---:|
 | Ported | 1,335 | 63.1% |
-| Passing | 1,280 | 60.5% |
-| Ported but `#[ignore]`d | 55 | 2.6% |
+| Passing | 1,295 | 61.2% |
+| Ported but `#[ignore]`d | 40 | 1.9% |
 | Not ported yet | 782 | 36.9% |
 
 Our own regression suites (`tests/lsp.rs`, `tests/*_regressions.rs`) and unit tests that
@@ -32,8 +32,8 @@ are not ports are excluded from these counts.
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
 | handlers | 868 | 702 | 692 | 79% |
-| correction | 610 | 367 | 332 | 54% |
-| managers | 211 | 134 | 127 | 60% |
+| correction | 610 | 367 | 346 | 56% |
+| managers | 211 | 134 | 128 | 60% |
 | refactoring | 118 | 4 | 1 | 0% |
 | (root) | 72 | 7 | 7 | 9% |
 | commands | 60 | 23 | 23 | 38% |
@@ -110,8 +110,8 @@ are not ports are excluded from these counts.
 | correction/OrganizeImportsActionTest | `correction_organize_imports_action_test` | 6 | 6 | 0 | 6/6; original sources and edit assertions |
 | correction/TypeMismatchQuickFixTest | `correction_type_mismatch_quick_fix_test` | 44 | 44 | 0 | 44/44 |
 | correction/UnresolvedVariablesQuickFixTest | `correction_unresolved_variables_quick_fix_test` | 48 | 48 | 0 | 48/48 |
-| correction/UnresolvedTypesQuickFixTest | `correction_unresolved_types_quick_fix_test` | 35 | 8 | 27 | 31/33 non-disabled; `test_add_all_missing_imports` and `test_type_in_sealed_type_declaration` fail on the oracle too |
-| correction/GetterSetterQuickFixTest | `correction_getter_setter_quick_fix_test` | 6 | 0 | 6 | 6/6 |
+| correction/UnresolvedTypesQuickFixTest | `correction_unresolved_types_quick_fix_test` | 35 | 21 | 14 | 31/33 non-disabled; `test_add_all_missing_imports` and `test_type_in_sealed_type_declaration` fail on the oracle too |
+| correction/GetterSetterQuickFixTest | `correction_getter_setter_quick_fix_test` | 6 | 1 | 5 | 6/6 |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -476,6 +476,16 @@ jdt.ls 1.58.0.
   Method side-effect lookup currently only sees the current file.
 
 ## Next steps
+
+* Unresolved types: `NewCUProposal` and `AddTypeParameterProposalCore` are ported
+  (`unresolved_elements/new_type.rs`). Still ignored: the 7 ambiguous-type tests (dispatch
+  written, unproven), add-all-missing-imports, two annotation cases and the sealed case. The
+  import-only proposal is written but disabled (`IMPORT_ONLY_ENABLED`) until the
+  similar-type search skips test-source types for main code.
+* Getter/setter: `src/correction/getter_setter.rs` has a self-encapsulate port; only
+  `test_invisible_field_to_getter_setter_5` passes. The proposal is blocked because the
+  bridge's field binding reports `is_from_source() == false`; check the declaring class
+  instead, then verify the never-run `sef` path against the oracle.
 
 Run `scripts/parity-count.py` for the per-class gap. The largest remaining items:
 
