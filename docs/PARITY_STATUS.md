@@ -20,8 +20,8 @@ of `CompletionHandlerTest`'s 156.
 | | Tests | Share of upstream |
 |---|---:|---:|
 | Ported | 1,335 | 63.1% |
-| Passing | 1,295 | 61.2% |
-| Ported but `#[ignore]`d | 40 | 1.9% |
+| Passing | 1,298 | 61.3% |
+| Ported but `#[ignore]`d | 37 | 1.7% |
 | Not ported yet | 782 | 36.9% |
 
 Our own regression suites (`tests/lsp.rs`, `tests/*_regressions.rs`) and unit tests that
@@ -34,7 +34,7 @@ are not ports are excluded from these counts.
 | handlers | 868 | 702 | 692 | 79% |
 | correction | 610 | 367 | 346 | 56% |
 | managers | 211 | 134 | 128 | 60% |
-| refactoring | 118 | 4 | 1 | 0% |
+| refactoring | 118 | 4 | 4 | 3% |
 | (root) | 72 | 7 | 7 | 9% |
 | commands | 60 | 23 | 23 | 38% |
 | preferences | 53 | 53 | 53 | 100% |
@@ -117,7 +117,7 @@ are not ports are excluded from these counts.
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
 | correction/UnresolvedMethodsQuickFixTest | `correction_unresolved_methods_quick_fix_test` | 91 | 91 | 0 | 91/91; the favorites tests resend settings once the server runs (jdt.ls copies live favorites) |
 | codemanipulation/OverrideMethodsTestCase | `codemanipulation_override_methods_test_case` | 10 | 10 | 0 | 10/10 |
-| refactoring/ExtractVariableTest | `refactoring_extract_variable_test` | 4 of 5 (one is commented out upstream) | 1 | 3 | 4/4 |
+| refactoring/ExtractVariableTest | `refactoring_extract_variable_test` | 4 of 5 (one is commented out upstream) | 4 | 0 | 4/4 |
 | JVMConfiguratorTest | `jvm_configurator_test` | 7 | 7 | 0 | 7/7 direct calls to the actual JVM/runtime APIs and unchanged upstream VM extension |
 | commands/BuildPathCommandTest | `commands_build_path_command_test` | 4 | 4 | 0 | 4/4; unchanged Gradle 8.5 fixture runs on Java 21 |
 | commands/DiagnosticsCommandTest | `commands_diagnostics_command_test` | 2 | 2 | 0 | 2/2 |
@@ -165,7 +165,6 @@ Rust run and is excluded from the upstream-port count.
 | Needs the getter/setter ("Create getter and setter for") proposal | 2 | ModifierCorrections `test_invisible_field_requested_in_same_package1`, `test_invisible_field_requested_in_same_package2` |
 | Unported type proposals: ambiguous-type "Explicitly import" (7), type parameters / import-only type change (8), `NewCUProposal` create type (8), add-all-missing-imports (2); `@Disabled` upstream (2) | 27 | `correction_unresolved_types_quick_fix_test` |
 | Unported `GetterSetterCorrectionSubProcessor` / `SelfEncapsulateFieldRefactoring` (`src/correction/getter_setter.rs` is a stub) | 6 | `correction_getter_setter_quick_fix_test` |
-| Rust extract refactorings not yet wired into the code-action pipeline | 3 | `refactoring_extract_variable_test` |
 | Gradle model/update parity for an invalid build | 1 | ProjectsManager `test_sending_warning_project_status`; successful-update and reload-marker assertions now run with the compatible Gradle VM |
 
 ## Lifecycle/init integration evidence
@@ -491,7 +490,7 @@ Run `scripts/parity-count.py` for the per-class gap. The largest remaining items
 
 * Type quick fixes (`NewCUProposal`, add import / add-all-missing-imports, ambiguous
   types, type parameters) and getter/setter self-encapsulation: 33 ported tests wait on them.
-* Refactoring (118 tests): wire the extract ports, then the remaining classes.
+* Refactoring (118 tests): extract variable/constant are wired (`quick_assist::refactor_proposals`); next ExtractField/ExtractMethod and the remaining classes.
 * Postfix completion (29), the remaining correction classes (null annotations, Javadoc,
   convert-to-record, reorg, lambda, ...), Gradle importer (45), `ProjectCommandTest` (28),
   core utilities, syntax server and filesystem tests.
