@@ -1,0 +1,2244 @@
+//! Port of `org.eclipse.jdt.ls.core.internal.correction.UnresolvedVariablesQuickFixTest`.
+#![allow(unused_variables, unused_mut)]
+
+mod common;
+
+use std::path::PathBuf;
+
+use common::jdtls::test_default_options;
+use common::quickfix::{get_range, Expected, QuickFixTest};
+use serde_json::json;
+
+/// `UnresolvedVariablesQuickFixTest.setup`: `newEmptyProject()` with the
+/// test options plus `COMPILER_PB_UNUSED_IMPORT = ignore` and
+/// `COMPILER_PB_UNCHECKED_TYPE_OPERATION = ignore`.
+fn setup_with(favorites: &[&str], add_final: Option<&str>) -> (QuickFixTest, PathBuf) {
+    let mut t = QuickFixTest::new();
+    if !favorites.is_empty() {
+        t.ws.settings["java"]["completion"] = json!({ "favoriteStaticMembers": favorites });
+    }
+    if let Some(f) = add_final {
+        // `preferences.setCodeGenerationAddFinalForNewDeclaration(..)`.
+        t.ws.settings["java"]["codeGeneration"]["addFinalForNewDeclaration"] = json!(f);
+    }
+    let mut options = test_default_options();
+    options.insert("org.eclipse.jdt.core.compiler.problem.unusedImport".into(), "ignore".into());
+    options.insert("org.eclipse.jdt.core.compiler.problem.uncheckedTypeOperation".into(), "ignore".into());
+    let root = t.ws.new_empty_project(&options);
+    if !favorites.is_empty() {
+        // `PreferenceManager.getPrefs(null).setJavaCompletionFavoriteMembers`
+        // changes the live preferences: they reach the running server with a
+        // configuration change.
+        t.ws.client();
+        let settings = t.ws.settings.clone();
+        t.ws.update_settings(settings);
+    }
+    (t, root)
+}
+
+fn setup() -> (QuickFixTest, PathBuf) {
+    setup_with(&[], None)
+}
+
+#[test]
+fn test_var_in_assignment() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        Iterator iter = vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private Iterator iter;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec, Iterator iter) {\n");
+    buf.push_str("        iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Remove assignment", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+fn test_var_assingment_in_if_body() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        if (vec != null)\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        Iterator iter;\n");
+    buf.push_str("        if (vec != null)\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private Iterator iter;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        if (vec != null)\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec, Iterator iter) {\n");
+    buf.push_str("        if (vec != null)\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        if (vec != null) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Remove assignment", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+fn test_var_assingment_in_then_body() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        if (vec == null) {\n");
+    buf.push_str("        } else\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        Iterator iter;\n");
+    buf.push_str("        if (vec == null) {\n");
+    buf.push_str("        } else\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private Iterator iter;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        if (vec == null) {\n");
+    buf.push_str("        } else\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec, Iterator iter) {\n");
+    buf.push_str("        if (vec == null) {\n");
+    buf.push_str("        } else\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector vec) {\n");
+    buf.push_str("        if (vec == null) {\n");
+    buf.push_str("        } else {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Remove assignment", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+fn test_var_in_assignment_with_generics() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        Iterator<String> iter = vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private Iterator<String> iter;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec, Iterator<String> iter) {\n");
+    buf.push_str("        iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Remove assignment", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+fn test_var_assigned_by_wildcard1() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<?> vec) {\n");
+    buf.push_str("        elem = vec.get(0);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<?> vec) {\n");
+    buf.push_str("        Object elem = vec.get(0);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'elem'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_assigned_by_wildcard2() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<? super Number> vec) {\n");
+    buf.push_str("        elem = vec.get(0);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<? super Number> vec) {\n");
+    buf.push_str("        Object elem = vec.get(0);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'elem'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_assigned_by_wildcard3() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<? extends Number> vec) {\n");
+    buf.push_str("        elem = vec.get(0);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<? extends Number> vec) {\n");
+    buf.push_str("        Number elem = vec.get(0);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'elem'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_assigned_to_wildcard1() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<? super Number> vec) {\n");
+    buf.push_str("        vec.add(elem);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<? super Number> vec, Number elem) {\n");
+    buf.push_str("        vec.add(elem);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create parameter 'elem'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_assigned_to_wildcard2() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<? extends Number> vec) {\n");
+    buf.push_str("        vec.add(elem);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<? extends Number> vec, Object elem) {\n");
+    buf.push_str("        vec.add(elem);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create parameter 'elem'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_assigned_to_wildcard3() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<?> vec) {\n");
+    buf.push_str("        vec.add(elem);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<?> vec, Object elem) {\n");
+    buf.push_str("        vec.add(elem);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create parameter 'elem'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_assingment_in_if_body_with_generics() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        if (vec != null)\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        Iterator<String> iter;\n");
+    buf.push_str("        if (vec != null)\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private Iterator<String> iter;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        if (vec != null)\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec, Iterator<String> iter) {\n");
+    buf.push_str("        if (vec != null)\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        if (vec != null) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Remove assignment", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+fn test_var_assingment_in_then_body_with_generics() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        if (vec == null) {\n");
+    buf.push_str("        } else\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        Iterator<String> iter;\n");
+    buf.push_str("        if (vec == null) {\n");
+    buf.push_str("        } else\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private Iterator<String> iter;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        if (vec == null) {\n");
+    buf.push_str("        } else\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Iterator;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec, Iterator<String> iter) {\n");
+    buf.push_str("        if (vec == null) {\n");
+    buf.push_str("        } else\n");
+    buf.push_str("            iter= vec.iterator();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'iter'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.Vector;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Vector<String> vec) {\n");
+    buf.push_str("        if (vec == null) {\n");
+    buf.push_str("        } else {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Remove assignment", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+fn test_var_in_var_args1() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("import java.util.Arrays;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo() {\n");
+    buf.push_str("        Arrays.<Number>asList(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "pack", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("import java.util.Arrays;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo() {\n");
+    buf.push_str("        Number x;\n");
+    buf.push_str("        Arrays.<Number>asList(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("import java.util.Arrays;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private Number x;\n");
+    buf.push_str("\n");
+    buf.push_str("    public void foo() {\n");
+    buf.push_str("        Arrays.<Number>asList(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("import java.util.Arrays;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo(Number x) {\n");
+    buf.push_str("        Arrays.<Number>asList(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("import java.util.Arrays;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final Number x = null;\n");
+    buf.push_str("\n");
+    buf.push_str("    public void foo() {\n");
+    buf.push_str("        Arrays.<Number>asList(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Create constant 'x'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+fn test_var_in_var_args2() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("import java.io.File;\n");
+    buf.push_str("import java.util.Arrays;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo(String name) {\n");
+    buf.push_str("        Arrays.<File>asList( new File(name), new XXX(name) );\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "pack", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("import java.io.File;\n");
+    buf.push_str("import java.util.Arrays;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo(String name) {\n");
+    buf.push_str("        Arrays.<File>asList( new File(name), new File(name) );\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Change to 'File' (java.io)", &buf);
+    // buf = new StringBuilder();
+    // buf.append("package pack;\n");
+    // buf.append("\n");
+    // buf.append("import java.io.File;\n");
+    // buf.append("\n");
+    // buf.append("public class XXX extends File {\n");
+    // buf.append("\n");
+    // buf.append("}\n");
+    // Expected e2 = new Expected("Add Javadoc comment", buf.toString());
+    t.assert_code_actions(&cu, &[e1]);
+}
+
+#[test]
+fn test_var_in_for_initializer() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        for (i= 0;;) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        for (int i = 0;;) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'i'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private int i;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        for (i= 0;;) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'i'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(int i) {\n");
+    buf.push_str("        for (i= 0;;) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'i'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3]);
+}
+
+#[test]
+fn test_var_in_for_initializer2() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    /**\n");
+    buf.push_str("     * @return Returns a number\n");
+    buf.push_str("     */\n");
+    buf.push_str("    int foo() {\n");
+    buf.push_str("        for (i= new int[] { 1 };;) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("        return 0;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    /**\n");
+    buf.push_str("     * @return Returns a number\n");
+    buf.push_str("     */\n");
+    buf.push_str("    int foo() {\n");
+    buf.push_str("        for (int[] i = new int[] { 1 };;) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("        return 0;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'i'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private int[] i;\n");
+    buf.push_str("\n");
+    buf.push_str("    /**\n");
+    buf.push_str("     * @return Returns a number\n");
+    buf.push_str("     */\n");
+    buf.push_str("    int foo() {\n");
+    buf.push_str("        for (i= new int[] { 1 };;) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("        return 0;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'i'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    /**\n");
+    buf.push_str("     * @param i \n");
+    buf.push_str("     * @return Returns a number\n");
+    buf.push_str("     */\n");
+    buf.push_str("    int foo(int[] i) {\n");
+    buf.push_str("        for (i= new int[] { 1 };;) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("        return 0;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'i'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3]);
+}
+
+#[test]
+fn test_var_in_initializer() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private int i= k;\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private int k;\n");
+    buf.push_str("    private int i= k;\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create field 'k'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final int k = 0;\n");
+    buf.push_str("    private int i= k;\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create constant 'k'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2]);
+}
+
+#[test]
+fn test_var_in_other_type() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    void foo(E e) {\n");
+    buf.push_str("         e.var2= 2;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "F.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    protected int var1;\n");
+    buf.push_str("}\n");
+    t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    protected int var1;\n");
+    buf.push_str("    public int var2;\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create field 'var2' in type 'E'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    void foo(E e) {\n");
+    buf.push_str("         e.var1= 2;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Change to 'var1'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2]);
+}
+
+#[test]
+fn test_var_in_super_field_access() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class F extends E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("         super.var2= 2;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "F.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    protected int var1;\n");
+    buf.push_str("}\n");
+    t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    protected int var1;\n");
+    buf.push_str("    public int var2;\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create field 'var2' in type 'E'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class F extends E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("         super.var1= 2;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Change to 'var1'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2]);
+}
+
+#[test]
+fn test_var_in_super() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import test3.E;\n");
+    buf.push_str("public class F extends E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("         this.color= baz();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "F.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test2;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("}\n");
+    t.ws.create_cu(&root, "src", "test2", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    protected Object olor;\n");
+    buf.push_str("    public test2.E baz() {\n");
+    buf.push_str("        return null;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    t.ws.create_cu(&root, "src", "test3", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import test3.E;\n");
+    buf.push_str("public class F extends E {\n");
+    buf.push_str("    private test2.E color;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("         this.color= baz();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create field 'color' in type 'F'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import test3.E;\n");
+    buf.push_str("public class F extends E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("         this.olor= baz();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Change to 'olor'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2]);
+}
+
+#[test]
+fn test_var_in_anonymous() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo(int fcount) {\n");
+    buf.push_str("        new Runnable() {\n");
+    buf.push_str("            public void run() {\n");
+    buf.push_str("                fCount= 7;\n");
+    buf.push_str("            }\n");
+    buf.push_str("        };\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo(int fcount) {\n");
+    buf.push_str("        new Runnable() {\n");
+    buf.push_str("            public void run() {\n");
+    buf.push_str("                fcount= 7;\n");
+    buf.push_str("            }\n");
+    buf.push_str("        };\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Change to 'fcount'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo(int fcount) {\n");
+    buf.push_str("        new Runnable() {\n");
+    buf.push_str("            public void run() {\n");
+    buf.push_str("                int fCount = 7;\n");
+    buf.push_str("            }\n");
+    buf.push_str("        };\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create local variable 'fCount'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo(int fcount) {\n");
+    buf.push_str("        new Runnable() {\n");
+    buf.push_str("            private int fCount;\n");
+    buf.push_str("\n");
+    buf.push_str("            public void run() {\n");
+    buf.push_str("                fCount= 7;\n");
+    buf.push_str("            }\n");
+    buf.push_str("        };\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create field 'fCount'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    protected int fCount;\n");
+    buf.push_str("\n");
+    buf.push_str("    public void foo(int fcount) {\n");
+    buf.push_str("        new Runnable() {\n");
+    buf.push_str("            public void run() {\n");
+    buf.push_str("                fCount= 7;\n");
+    buf.push_str("            }\n");
+    buf.push_str("        };\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Create field 'fCount' in type 'E'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo(int fcount) {\n");
+    buf.push_str("        new Runnable() {\n");
+    buf.push_str("            public void run(int fCount) {\n");
+    buf.push_str("                fCount= 7;\n");
+    buf.push_str("            }\n");
+    buf.push_str("        };\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e5 = Expected::new("Create parameter 'fCount'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public void foo(int fcount) {\n");
+    buf.push_str("        new Runnable() {\n");
+    buf.push_str("            public void run() {\n");
+    buf.push_str("            }\n");
+    buf.push_str("        };\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e6 = Expected::new("Remove assignment", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4, e5, e6]);
+}
+
+#[test]
+fn test_var_in_annotation1() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public @interface Annot {\n");
+    buf.push_str("        String value();\n");
+    buf.push_str("    }\n");
+    buf.push_str("    \n");
+    buf.push_str("    @Annot(x)\n");
+    buf.push_str("    public void foo() {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "pack", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public @interface Annot {\n");
+    buf.push_str("        String value();\n");
+    buf.push_str("    }\n");
+    buf.push_str("\n");
+    buf.push_str("    private static final String x = null;\n");
+    buf.push_str("    \n");
+    buf.push_str("    @Annot(x)\n");
+    buf.push_str("    public void foo() {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create constant 'x'", &buf);
+    t.assert_code_actions(&cu, &[e1]);
+}
+
+#[test]
+fn test_var_in_annotation2() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public @interface Annot {\n");
+    buf.push_str("        float value();\n");
+    buf.push_str("    }\n");
+    buf.push_str("    \n");
+    buf.push_str("    @Annot(value=x)\n");
+    buf.push_str("    public void foo() {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "pack", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public @interface Annot {\n");
+    buf.push_str("        float value();\n");
+    buf.push_str("    }\n");
+    buf.push_str("\n");
+    buf.push_str("    private static final float x = 0;\n");
+    buf.push_str("    \n");
+    buf.push_str("    @Annot(value=x)\n");
+    buf.push_str("    public void foo() {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create constant 'x'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_in_annotation3() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public @interface Annot {\n");
+    buf.push_str("        float[] value();\n");
+    buf.push_str("    }\n");
+    buf.push_str("    \n");
+    buf.push_str("    @Annot(value={x})\n");
+    buf.push_str("    class Inner {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "pack", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public @interface Annot {\n");
+    buf.push_str("        float[] value();\n");
+    buf.push_str("    }\n");
+    buf.push_str("\n");
+    buf.push_str("    private static final float x = 0;\n");
+    buf.push_str("    \n");
+    buf.push_str("    @Annot(value={x})\n");
+    buf.push_str("    class Inner {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create constant 'x'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_static_import_favorite1() {
+    let (mut t, root) = setup_with(&["java.lang.Math.*"], None);
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private float foo() {\n");
+    buf.push_str("        return PI;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "pack", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package pack;\n");
+    buf.push_str("\n");
+    buf.push_str("import static java.lang.Math.PI;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private float foo() {\n");
+    buf.push_str("        return PI;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Add static import for 'Math.PI'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_long_var_ref() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    public int mash;\n");
+    buf.push_str("    void foo(E e) {\n");
+    buf.push_str("         e.var.hash= 2;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "F.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public F var;\n");
+    buf.push_str("}\n");
+    t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    public int mash;\n");
+    buf.push_str("    private int hash;\n");
+    buf.push_str("    void foo(E e) {\n");
+    buf.push_str("         e.var.hash= 2;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create field 'hash' in type 'F'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    public int mash;\n");
+    buf.push_str("    void foo(E e) {\n");
+    buf.push_str("         e.var.mash= 2;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Change to 'mash'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2]);
+}
+
+#[test]
+fn test_var_and_type_ref() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.io.File;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        char ch= Fixe.pathSeparatorChar;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "F.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.io.File;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    private static final String Fixe = null;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        char ch= Fixe.pathSeparatorChar;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create constant 'Fixe'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.io.File;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        Object Fixe;\n");
+    buf.push_str("        char ch= Fixe.pathSeparatorChar;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create local variable 'Fixe'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.io.File;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        char ch= File.pathSeparatorChar;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Change to 'File' (java.io)", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.io.File;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    private Object Fixe;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        char ch= Fixe.pathSeparatorChar;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Create field 'Fixe'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.io.File;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    void foo(Object Fixe) {\n");
+    buf.push_str("        char ch= Fixe.pathSeparatorChar;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e5 = Expected::new("Create parameter 'Fixe'", &buf);
+    // buf = new StringBuilder();
+    // buf.append("package test1;\n");
+    // buf.append("\n");
+    // buf.append("public class Fixe {\n");
+    // buf.append("\n");
+    // buf.append("}\n");
+    // Expected e5 = new Expected("Add all missing tags", buf.toString());
+    // 
+    // buf = new StringBuilder();
+    // buf.append("package test1;\n");
+    // buf.append("\n");
+    // buf.append("public interface Fixe {\n");
+    // buf.append("\n");
+    // buf.append("}\n");
+    // Expected e6 = new Expected("Add all missing tags", buf.toString());
+    // 
+    // buf = new StringBuilder();
+    // buf.append("package test1;\n");
+    // buf.append("\n");
+    // buf.append("public enum Fixe {\n");
+    // buf.append("\n");
+    // buf.append("}\n");
+    // Expected e7 = new Expected("Add all missing tags", buf.toString());
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4, e5]);
+}
+
+#[test]
+fn test_var_with_generic_type() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.ArrayList;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    void foo(E e) {\n");
+    buf.push_str("         e.var2= new ArrayList<String>();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "F.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    protected int var1;\n");
+    buf.push_str("}\n");
+    t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("\n");
+    buf.push_str("import java.util.ArrayList;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    protected int var1;\n");
+    buf.push_str("    public ArrayList<String> var2;\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create field 'var2' in type 'E'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("import java.util.ArrayList;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    void foo(E e) {\n");
+    buf.push_str("         e.var1= new ArrayList<String>();\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Change to 'var1'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2]);
+}
+
+#[test]
+fn test_similar_variable_names1() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public int foo() {\n");
+    buf.push_str("        return count;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test3", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public int foo() {\n");
+    buf.push_str("        int count;\n");
+    buf.push_str("        return count;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'count'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    private int count;\n");
+    buf.push_str("    public int foo() {\n");
+    buf.push_str("        return count;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'count'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public int foo(int count) {\n");
+    buf.push_str("        return count;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'count'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private static final int count = 0;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public int foo() {\n");
+    buf.push_str("        return count;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Create constant 'count'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public int foo() {\n");
+    buf.push_str("        return cout;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e5 = Expected::new("Change to 'cout'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public int foo() {\n");
+    buf.push_str("        return CON1;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e6 = Expected::new("Change to 'CON1'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4, e5, e6]);
+}
+
+#[test]
+fn test_similar_variable_names2() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private static short var1= 1;\n");
+    buf.push_str("    private static float var2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public void foo(int x) {\n");
+    buf.push_str("        count= x;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test3", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private static short var1= 1;\n");
+    buf.push_str("    private static float var2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public void foo(int x) {\n");
+    buf.push_str("        int count = x;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'count'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private static short var1= 1;\n");
+    buf.push_str("    private static float var2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    private int count;\n");
+    buf.push_str("    public void foo(int x) {\n");
+    buf.push_str("        count= x;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'count'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private static short var1= 1;\n");
+    buf.push_str("    private static float var2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public void foo(int x, int count) {\n");
+    buf.push_str("        count= x;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'count'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private static short var1= 1;\n");
+    buf.push_str("    private static float var2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public void foo(int x) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Remove assignment", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private static short var1= 1;\n");
+    buf.push_str("    private static float var2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public void foo(int x) {\n");
+    buf.push_str("        cout= x;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e5 = Expected::new("Change to 'cout'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final short CON1= 1;\n");
+    buf.push_str("    private static final float CON2= 1.0f;\n");
+    buf.push_str("    private static short var1= 1;\n");
+    buf.push_str("    private static float var2= 1.0f;\n");
+    buf.push_str("    private String bla;\n");
+    buf.push_str("    private String cout;\n");
+    buf.push_str("    public void foo(int x) {\n");
+    buf.push_str("        var2= x;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e6 = Expected::new("Change to 'var2'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4, e5, e6]);
+}
+
+#[test]
+fn test_similar_variable_names_multiple_occ() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private int cout;\n");
+    buf.push_str("    public void setCount(int x) {\n");
+    buf.push_str("        count= x;\n");
+    buf.push_str("        count++;\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public int getCount() {\n");
+    buf.push_str("        return count;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test3", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private int cout;\n");
+    buf.push_str("    public void setCount(int x) {\n");
+    buf.push_str("        int count = x;\n");
+    buf.push_str("        count++;\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public int getCount() {\n");
+    buf.push_str("        return count;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'count'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private int cout;\n");
+    buf.push_str("    private int count;\n");
+    buf.push_str("    public void setCount(int x) {\n");
+    buf.push_str("        count= x;\n");
+    buf.push_str("        count++;\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public int getCount() {\n");
+    buf.push_str("        return count;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'count'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private int cout;\n");
+    buf.push_str("    public void setCount(int x) {\n");
+    buf.push_str("        cout= x;\n");
+    buf.push_str("        cout++;\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public int getCount() {\n");
+    buf.push_str("        return cout;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Change to 'cout'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private int cout;\n");
+    buf.push_str("    public void setCount(int x, int count) {\n");
+    buf.push_str("        count= x;\n");
+    buf.push_str("        count++;\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public int getCount() {\n");
+    buf.push_str("        return count;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Create parameter 'count'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test3;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private int cout;\n");
+    buf.push_str("    public void setCount(int x) {\n");
+    buf.push_str("        count++;\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public int getCount() {\n");
+    buf.push_str("        return count;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e5 = Expected::new("Remove assignment", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4, e5]);
+}
+
+#[test]
+fn test_var_multiple_occurances1() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        for (i= 0; i > 9; i++) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        for (int i = 0; i > 9; i++) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'i'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_multiple_occurances2() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        for (i= 0; i > 9;) {\n");
+    buf.push_str("            i++;\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        for (int i = 0; i > 9;) {\n");
+    buf.push_str("            i++;\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'i'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_multiple_occurances3() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        for (i = 0; i > 9;) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("        i= 9;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        int i;\n");
+    buf.push_str("        for (i = 0; i > 9;) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("        i= 9;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'i'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_in_array() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Object[] arr) {\n");
+    buf.push_str("        for (int i = 0; i > arr.lenght; i++) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Object[] arr) {\n");
+    buf.push_str("        for (int i = 0; i > arr.length; i++) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Change to 'length'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_var_in_enum_switch() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public enum Colors {\n");
+    buf.push_str("    RED\n");
+    buf.push_str("}\n");
+    t.ws.create_cu(&root, "src", "test1", "Colors.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Colors c) {\n");
+    buf.push_str("        switch (c) {\n");
+    buf.push_str("            case BLUE:\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public enum Colors {\n");
+    buf.push_str("    RED, BLUE\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create enum constant 'BLUE' in 'Colors'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(Colors c) {\n");
+    buf.push_str("        switch (c) {\n");
+    buf.push_str("            case RED:\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Change to 'RED'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2]);
+}
+
+#[test]
+fn test_var_in_method_invocation() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void goo(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        goo(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void goo(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        String x;\n");
+    buf.push_str("        goo(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private String x;\n");
+    buf.push_str("    void goo(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        goo(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void goo(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("    void foo(String x) {\n");
+    buf.push_str("        goo(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final String x = null;\n");
+    buf.push_str("    void goo(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("    void foo() {\n");
+    buf.push_str("        goo(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Create constant 'x'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+fn test_var_in_constructur_invocation() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public E(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public E() {\n");
+    buf.push_str("        this(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static String x;\n");
+    buf.push_str("    public E(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public E() {\n");
+    buf.push_str("        this(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create field 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public E(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public E(String x) {\n");
+    buf.push_str("        this(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create parameter 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final String x = null;\n");
+    buf.push_str("    public E(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public E() {\n");
+    buf.push_str("        this(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create constant 'x'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3]);
+}
+
+#[test]
+fn test_var_in_super_constructur_invocation() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    public F(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "F.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E extends F {\n");
+    buf.push_str("    public E() {\n");
+    buf.push_str("        super(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E extends F {\n");
+    buf.push_str("    private static String x;\n");
+    buf.push_str("\n");
+    buf.push_str("    public E() {\n");
+    buf.push_str("        super(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create field 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E extends F {\n");
+    buf.push_str("    public E(String x) {\n");
+    buf.push_str("        super(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create parameter 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E extends F {\n");
+    buf.push_str("    private static final String x = null;\n");
+    buf.push_str("\n");
+    buf.push_str("    public E() {\n");
+    buf.push_str("        super(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create constant 'x'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3]);
+}
+
+#[test]
+fn test_var_in_class_instance_creation() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class F {\n");
+    buf.push_str("    public F(String s) {\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "F.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public E() {\n");
+    buf.push_str("        new F(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public E() {\n");
+    buf.push_str("        String x;\n");
+    buf.push_str("        new F(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private String x;\n");
+    buf.push_str("\n");
+    buf.push_str("    public E() {\n");
+    buf.push_str("        new F(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public E(String x) {\n");
+    buf.push_str("        new F(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'x'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final String x = null;\n");
+    buf.push_str("\n");
+    buf.push_str("    public E() {\n");
+    buf.push_str("        new F(x);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Create constant 'x'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+fn test_var_in_array_access() {
+    let (mut t, root) = setup();
+    // bug 194913
+    let mut buf = String::new();
+    buf.push_str("package p;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(int i) {\n");
+    buf.push_str("        bar[0][i] = \"bar\";\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "p", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package p;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(int i) {\n");
+    buf.push_str("        String[][] bar;\n");
+    buf.push_str("        bar[0][i] = \"bar\";\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'bar'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package p;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private String[][] bar;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo(int i) {\n");
+    buf.push_str("        bar[0][i] = \"bar\";\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'bar'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package p;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    void foo(int i, String[][] bar) {\n");
+    buf.push_str("        bar[0][i] = \"bar\";\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'bar'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package p;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final String[][] bar = null;\n");
+    buf.push_str("\n");
+    buf.push_str("    void foo(int i) {\n");
+    buf.push_str("        bar[0][i] = \"bar\";\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Create constant 'bar'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+fn test_var_with_method_name1() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    int foo(String str) {\n");
+    buf.push_str("        for (int i = 0; i > str.length; i++) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    int foo(String str) {\n");
+    buf.push_str("        for (int i = 0; i > str.length(); i++) {\n");
+    buf.push_str("        }\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Change to 'length()'", &buf);
+    t.assert_code_actions(&cu, &[e1]);
+}
+
+#[test]
+fn test_var_with_method_name2() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    int foo(String str) {\n");
+    buf.push_str("        return length;\n");
+    buf.push_str("    }\n");
+    buf.push_str("    int getLength() {\n");
+    buf.push_str("        return 1;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    int foo(String str) {\n");
+    buf.push_str("        return getLength();\n");
+    buf.push_str("    }\n");
+    buf.push_str("    int getLength() {\n");
+    buf.push_str("        return 1;\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Change to 'getLength()'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_similar_vars_and_visibility() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    int var1;\n");
+    buf.push_str("    static int var2;\n");
+    buf.push_str("    public static void main(String[] var3) {\n");
+    buf.push_str("        println(var);\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public static void println(String[] s) {}\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    int var1;\n");
+    buf.push_str("    static int var2;\n");
+    buf.push_str("    public static void main(String[] var3) {\n");
+    buf.push_str("        String[] var;\n");
+    buf.push_str("        println(var);\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public static void println(String[] s) {}\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'var'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    int var1;\n");
+    buf.push_str("    static int var2;\n");
+    buf.push_str("    private static String[] var;\n");
+    buf.push_str("    public static void main(String[] var3) {\n");
+    buf.push_str("        println(var);\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public static void println(String[] s) {}\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'var'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    int var1;\n");
+    buf.push_str("    static int var2;\n");
+    buf.push_str("    public static void main(String[] var3) {\n");
+    buf.push_str("        println(var3);\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public static void println(String[] s) {}\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Change to 'var3'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    int var1;\n");
+    buf.push_str("    static int var2;\n");
+    buf.push_str("    public static void main(String[] var3, String[] var) {\n");
+    buf.push_str("        println(var);\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public static void println(String[] s) {}\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Create parameter 'var'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    private static final String[] var = null;\n");
+    buf.push_str("    int var1;\n");
+    buf.push_str("    static int var2;\n");
+    buf.push_str("    public static void main(String[] var3) {\n");
+    buf.push_str("        println(var);\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public static void println(String[] s) {}\n");
+    buf.push_str("}\n");
+    let e5 = Expected::new("Create constant 'var'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    int var1;\n");
+    buf.push_str("    static int var2;\n");
+    buf.push_str("    public static void main(String[] var3) {\n");
+    buf.push_str("        println(var2);\n");
+    buf.push_str("    }\n");
+    buf.push_str("    public static void println(String[] s) {}\n");
+    buf.push_str("}\n");
+    let e6 = Expected::new("Change to 'var2'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4, e5, e6]);
+}
+
+#[test]
+fn test_var_of_shadowed_type() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    class Runnable { }\n");
+    buf.push_str("    public void test() {\n");
+    buf.push_str("        new Thread(myRunnable);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    class Runnable { }\n");
+    buf.push_str("    public void test() {\n");
+    buf.push_str("        java.lang.Runnable myRunnable;\n");
+    buf.push_str("        new Thread(myRunnable);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create local variable 'myRunnable'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    class Runnable { }\n");
+    buf.push_str("    private java.lang.Runnable myRunnable;\n");
+    buf.push_str("    public void test() {\n");
+    buf.push_str("        new Thread(myRunnable);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e2 = Expected::new("Create field 'myRunnable'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    class Runnable { }\n");
+    buf.push_str("    public void test(java.lang.Runnable myRunnable) {\n");
+    buf.push_str("        new Thread(myRunnable);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e3 = Expected::new("Create parameter 'myRunnable'", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    class Runnable { }\n");
+    buf.push_str("    private static final java.lang.Runnable myRunnable = null;\n");
+    buf.push_str("    public void test() {\n");
+    buf.push_str("        new Thread(myRunnable);\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e4 = Expected::new("Create constant 'myRunnable'", &buf);
+    t.assert_code_actions(&cu, &[e1, e2, e3, e4]);
+}
+
+#[test]
+#[ignore = "needs ModifierCorrectionSubProcessor.getNonAccessibleReferenceProposal (NotVisibleField), ported separately in correction::modifier_corrections"]
+fn test_var_parameter_access() {
+    let (mut t, root) = setup();
+    let base_code = "package test1;\npublic class Base {\n    protected int myField;\n}\n";
+    let cu = t.ws.create_cu(&root, "src", "test1", "Base.java", &base_code);
+    let child_code = "package test2;\nimport test1.Base;\npublic class Child extends Base {\n    public void aMethod(Base parent) {\n        System.out.println(parent.myField);\n    }\n}\n";
+    let cu = t.ws.create_cu(&root, "src", "test2", "Child.java", &child_code);
+    let e1_code = "package test1;\npublic class Base {\n    public int myField;\n}\n";
+    let e1 = Expected::new("Change visibility of 'myField' to 'public'", &e1_code);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_assign_statement_to_variabled_with_final_setting() {
+    let (mut t, root) = setup_with(&[], Some("variables"));
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public  void test() {\n");
+    buf.push_str("        System.getenv(\"foo\");\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class E {\n");
+    buf.push_str("    public  void test() {\n");
+    buf.push_str("        final String getenv = System.getenv(\"foo\");\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Assign statement to new local variable", &buf);
+    let selection = get_range(&t.ws.read(&cu), "getenv");
+    t.assert_code_actions_range(&cu, selection, &[e1]);
+}
+
+#[test]
+fn test_bug300() {
+    let (mut t, root) = setup();
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class Message {\n");
+    buf.push_str("}\n");
+    t.ws.create_cu(&root, "src", "test1", "Message.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class DevoxxApplication {\n");
+    buf.push_str("    public static void main(String[] args) {\n");
+    buf.push_str("        new Message().z\n");
+    buf.push_str("    }\n");
+    buf.push_str("}\n");
+    let cu = t.ws.create_cu(&root, "src", "test1", "DevoxxApplication.java", &buf);
+    let mut buf = String::new();
+    buf.push_str("package test1;\n");
+    buf.push_str("public class Message {\n\n");
+    buf.push_str("    public static Object z;\n");
+    buf.push_str("}\n");
+    let e1 = Expected::new("Create field 'z' in type 'Message'", &buf);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+

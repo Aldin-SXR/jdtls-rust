@@ -564,7 +564,8 @@ final class SemanticAstService {
             for (IProblem p : cu.getProblems()) {
                 int id = p.getID();
                 if (id == IProblem.UndefinedMethod || id == IProblem.ParameterMismatch || id == IProblem.UndefinedConstructor
-                        || id == IProblem.UndefinedAnnotationMember || id == IProblem.NoMessageSendOnArrayType) {
+                        || id == IProblem.UndefinedAnnotationMember || id == IProblem.NoMessageSendOnArrayType
+                        || id == IProblem.UndefinedField || id == IProblem.UndefinedName || id == IProblem.UnresolvedVariable) {
                     found = true;
                     starts.add(p.getSourceStart());
                 }
@@ -587,6 +588,11 @@ final class SemanticAstService {
                         unresolved = true;
                     } else if (node instanceof SuperConstructorInvocation c && (c.resolveConstructorBinding() == null || atProblem)) {
                         unresolved = true;
+                    } else if (node instanceof QualifiedName q && q.getName().resolveBinding() == null) {
+                        // unresolved variables: the qualifier's members are the candidates
+                        receiver = q.getQualifier().resolveTypeBinding();
+                    } else if (node instanceof FieldAccess f && f.getName().resolveBinding() == null) {
+                        receiver = f.getExpression().resolveTypeBinding();
                     }
                 } catch (RuntimeException e) {
                     // recovered nodes

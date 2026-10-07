@@ -440,7 +440,7 @@ impl NewMethod {
 
 /// `ASTResolving.guessTypeForReference(ast, node)`: a copy of a declared
 /// variable type (the primitive code, if any, decides the default value).
-fn guess_type_for_reference(rw: &mut ASTRewrite, node: Node<'_>) -> Option<(RNode, Option<String>)> {
+pub(super) fn guess_type_for_reference(rw: &mut ASTRewrite, node: Node<'_>) -> Option<(RNode, Option<String>)> {
     let mut node = node;
     let mut parent = node.parent();
     while let Some(p) = parent {

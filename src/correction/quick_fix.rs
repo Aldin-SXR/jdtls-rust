@@ -197,6 +197,8 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::UndefinedAnnotationMember => super::unresolved_elements::annotation_member_proposals(env, ctx, problem, proposals).await,
         p::ParameterMismatch => super::unresolved_elements::method_proposals(env, ctx, problem, true, proposals).await,
         p::NoMessageSendOnArrayType => super::unresolved_elements::array_access_proposals(ctx, problem, proposals),
+        p::UndefinedField | p::UndefinedName | p::UnresolvedVariable => super::unresolved_elements::variable_proposals(env, ctx, problem, proposals).await,
+        p::UndefinedType | p::JavadocUndefinedType => super::unresolved_elements::type_proposals(env, ctx, problem, proposals).await,
         p::TypeMismatch | p::ReturnTypeMismatch => super::type_mismatch::type_mismatch(env, ctx, problem, proposals).await,
         p::IncompatibleTypesInForeach => super::type_mismatch::type_mismatch_in_for_each(env, ctx, problem, proposals).await,
         p::IncompatibleReturnType => super::type_mismatch::incompatible_return_type(env, ctx, problem, proposals).await,

@@ -4,9 +4,13 @@
 
 mod names;
 mod new_method;
+mod new_variable;
 mod proposals;
 mod scope;
 mod types;
+mod variables;
+
+pub use variables::{type_proposals, variable_proposals};
 
 pub(crate) use new_method::method_body_content;
 

@@ -648,7 +648,7 @@ impl LazyChange for QualifyOuter {
 // ─── AddArgumentCorrectionProposalCore ──────────────────────────────────────
 
 /// `ASTNodeFactory.newDefaultExpression(ast, type)`.
-fn default_expression(rw: &mut ASTRewrite, t: BindingRef<'_>) -> RNode {
+pub(super) fn default_expression(rw: &mut ASTRewrite, t: BindingRef<'_>) -> RNode {
     if t.is_primitive() {
         match t.name() {
             "boolean" => {
@@ -897,7 +897,7 @@ impl ChangeSignature {
 }
 
 /// `JavadocTagsSubProcessorCore.insertTag`.
-fn insert_tag(rw: &mut ASTRewrite, doc: Node<'_>, tag: RNode, tag_name: &str, leading: &HashSet<String>) {
+pub(super) fn insert_tag(rw: &mut ASTRewrite, doc: Node<'_>, tag: RNode, tag_name: &str, leading: &HashSet<String>) {
     let tags = rw.list_rewritten(RNode::Orig(doc.id), "tags");
     let rank = tag_rank(tag_name);
     let mut after = None;

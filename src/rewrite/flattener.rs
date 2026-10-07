@@ -195,6 +195,8 @@ impl<'r> Flattener<'r> {
                 };
                 match element {
                     Some(e) => self.accept(e),
+                    // `ArrayCreation.getType()` defaults to `int[]` (placeholders).
+                    None if array_type.is_none() => self.push("int[]"),
                     None => self.push("int"),
                 }
                 let list = self.list(n, "dimensions");

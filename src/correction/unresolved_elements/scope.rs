@@ -116,6 +116,7 @@ fn qualifier<'a>(selector: Node<'a>) -> Option<BindingRef<'a>> {
         NodeKind::SuperMethodInvocation if selector.location_is("name") => types::parent_type_binding(parent).and_then(|t| t.superclass()),
         NodeKind::QualifiedName if selector.location_is("name") => parent.child("qualifier").and_then(|e| e.type_binding()),
         NodeKind::FieldAccess if selector.location_is("name") => parent.child("expression").and_then(|e| e.type_binding()),
+        NodeKind::SuperFieldAccess if selector.location_is("name") => types::parent_type_binding(parent).and_then(|t| t.superclass()),
         _ => None,
     }
 }
@@ -153,7 +154,7 @@ pub fn is_in_static_context(node: Node<'_>) -> bool {
 }
 
 /// `ASTResolving.isInsideConstructorInvocation`.
-fn is_inside_constructor_invocation(decl: Node<'_>, node: Node<'_>) -> bool {
+pub fn is_inside_constructor_invocation(decl: Node<'_>, node: Node<'_>) -> bool {
     if decl.flag("constructor") {
         if let Some(statement) = crate::semantic_ast::resolve::find_parent_statement(node) {
             if statement.is(NodeKind::ConstructorInvocation) || statement.is(NodeKind::SuperConstructorInvocation) {
@@ -283,6 +284,34 @@ fn possible_reference_binding(node: Node<'_>) -> Option<BindingRef<'_>> {
                 None
             }
         }
+        NodeKind::ArrayInitializer => {
+            let mut initializer_parent = parent.parent();
+            let mut dim: i32 = 1;
+            while let Some(p) = initializer_parent.filter(|p| p.is(NodeKind::ArrayInitializer)) {
+                initializer_parent = p.parent();
+                dim += 1;
+            }
+            let ip = initializer_parent?;
+            let creation_type = match ip.kind() {
+                NodeKind::ArrayCreation => ip.child("type"),
+                NodeKind::VariableDeclarationFragment | NodeKind::SingleVariableDeclaration => {
+                    dim -= ip.list("extraDimensions2").len() as i32;
+                    if ip.is(NodeKind::SingleVariableDeclaration) {
+                        ip.child("type")
+                    } else {
+                        ip.parent().and_then(|d| d.child("type"))
+                    }
+                }
+                NodeKind::MemberValuePair => {
+                    let name = ip.child("name").map(|n| n.identifier()).unwrap_or_default();
+                    let member = annotation_member(ip.parent()?, &name)?;
+                    return reduced_dimension(member.return_type()?, dim);
+                }
+                _ => None,
+            };
+            let t = creation_type.filter(|t| t.is(NodeKind::ArrayType))?.binding()?;
+            reduced_dimension(t, dim)
+        }
         NodeKind::ConditionalExpression => {
             if node.location_is("expression") {
                 return wk("boolean");
@@ -377,6 +406,14 @@ fn possible_reference_binding(node: Node<'_>) -> Option<BindingRef<'_>> {
         }
         _ => None,
     }
+}
+
+/// `ASTResolving.getReducedDimensionBinding` / `Bindings.getComponentType`.
+fn reduced_dimension(mut t: BindingRef<'_>, dims: i32) -> Option<BindingRef<'_>> {
+    for _ in 0..dims {
+        t = t.component_type()?;
+    }
+    Some(t)
 }
 
 /// `ASTResolving.findAnnotationMember`.
@@ -594,4 +631,175 @@ fn add_inherited_fields<'a>(t: BindingRef<'a>, visited: &mut HashSet<String>, ac
     for i in t.interfaces() {
         add_inherited_fields(i, visited, accept);
     }
+}
+
+// ─── ScopeAnalyzer.getDeclarationsInScope(selector, VARIABLES | METHODS | CHECK_VISIBILITY) ───
+
+/// `ScopeAnalyzer.DefaultBindingRequestor` with the `VARIABLES` flag and,
+/// optionally, `METHODS`.
+struct ScopeRequestor<'a> {
+    methods: bool,
+    result: Vec<BindingRef<'a>>,
+    names: HashSet<String>,
+    visited: HashSet<String>,
+}
+
+impl<'a> ScopeRequestor<'a> {
+    /// `acceptBinding` (`getSignature` dedup).
+    fn accept(&mut self, b: BindingRef<'a>) {
+        let signature = if b.is_method() { method_signature_key(b) } else { format!("V{}", b.name()) };
+        if self.names.insert(signature) {
+            self.result.push(b);
+        }
+    }
+
+    /// `addInherited(binding, isSuperInterfaceBinding, flags, requestor)`.
+    fn add_inherited(&mut self, t: BindingRef<'a>, super_interface: bool) {
+        if !self.visited.insert(t.key().to_owned()) {
+            return;
+        }
+        for f in t.declared_fields().unwrap_or_default() {
+            self.accept(f);
+        }
+        if self.methods {
+            for m in t.declared_methods().unwrap_or_default() {
+                if super_interface && m.modifiers() & modifier::STATIC != 0 {
+                    continue;
+                }
+                if !m.has(crate::semantic_ast::bflag::SYNTHETIC) && !m.is_constructor() {
+                    self.accept(m);
+                }
+            }
+        }
+        if let Some(s) = t.superclass() {
+            self.add_inherited(s, false);
+        } else if t.is_array() {
+            if let Some(o) = well_known(t.ast, "java.lang.Object") {
+                self.add_inherited(o, false);
+            }
+        }
+        for i in t.interfaces() {
+            self.add_inherited(i, true);
+        }
+    }
+
+    /// `addTypeDeclarations(binding, flags, requestor)`.
+    fn add_type_declarations(&mut self, t: BindingRef<'a>) {
+        self.add_inherited(t, false);
+        if t.is_local() {
+            // addOuterDeclarationsForLocalType
+            if let Some(node) = t.declaring_node() {
+                if node.kind().is_abstract_type_declaration() || node.is(NodeKind::AnonymousClassDeclaration) {
+                    if let Some(parent) = node.parent() {
+                        self.add_local_declarations(parent, parent.start());
+                        if let Some(p) = types::parent_type_binding(parent) {
+                            self.add_type_declarations(p);
+                        }
+                    }
+                }
+            }
+        } else if let Some(d) = t.declaring_class() {
+            self.add_type_declarations(d);
+        }
+    }
+
+    /// `addLocalDeclarations(node, offset, flags, requestor)`.
+    fn add_local_declarations(&mut self, node: Node<'a>, offset: usize) {
+        if let Some(decl) = crate::semantic_ast::resolve::find_parent_body_declaration(node) {
+            if matches!(decl.kind(), NodeKind::MethodDeclaration | NodeKind::Initializer | NodeKind::FieldDeclaration) {
+                let mut v = LocalVisitor { position: offset, out: Vec::new() };
+                v.visit(decl);
+                for b in v.out {
+                    self.accept(b);
+                }
+            }
+        }
+    }
+}
+
+/// `ScopeAnalyzer.isVisible(binding, context)`.
+pub fn is_visible(b: BindingRef<'_>, context: BindingRef<'_>) -> bool {
+    if b.is_variable() && !b.is_field() {
+        return true;
+    }
+    let Some(declaring) = b.declaring_class() else { return false };
+    let declaring = types::declaration(declaring);
+    let mods = b.modifiers();
+    if context.is_class() && context.modifiers() & modifier::STATIC != 0 && b.is_variable() && mods & modifier::STATIC == 0 {
+        return context == declaring;
+    }
+    if mods & modifier::PUBLIC != 0 || declaring.is_interface() {
+        true
+    } else if mods & modifier::PROTECTED != 0 || mods & modifier::PRIVATE == 0 {
+        if declaring.package_name() == context.package_name() {
+            return true;
+        }
+        is_type_in_scope(declaring, context, mods & modifier::PROTECTED != 0)
+    } else {
+        is_type_in_scope(declaring, context, false)
+    }
+}
+
+/// `ScopeAnalyzer.isTypeInScope`.
+fn is_type_in_scope(declaring: BindingRef<'_>, context: BindingRef<'_>, include_hierarchy: bool) -> bool {
+    let mut curr = Some(types::declaration(context));
+    while let Some(c) = curr {
+        if c == declaring {
+            return true;
+        }
+        if include_hierarchy && is_in_super_type_hierarchy(declaring, c) {
+            return true;
+        }
+        curr = c.declaring_class();
+    }
+    false
+}
+
+/// `ScopeAnalyzer.isInSuperTypeHierarchy`.
+fn is_in_super_type_hierarchy(possible: BindingRef<'_>, t: BindingRef<'_>) -> bool {
+    if t == possible {
+        return true;
+    }
+    if let Some(s) = t.superclass() {
+        if is_in_super_type_hierarchy(possible, types::declaration(s)) {
+            return true;
+        }
+    }
+    if possible.is_interface() {
+        for i in t.interfaces() {
+            if is_in_super_type_hierarchy(possible, types::declaration(i)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// `new ScopeAnalyzer(root).getDeclarationsInScope(selector, VARIABLES | CHECK_VISIBILITY)`
+/// (plus `METHODS` when `methods`).
+pub fn declarations_in_scope<'a>(selector: Node<'a>, methods: bool) -> Vec<BindingRef<'a>> {
+    // special case for switch on enum
+    if selector.location_is("expression") {
+        if let Some(case) = selector.parent().filter(|p| p.is(NodeKind::SwitchCase)) {
+            let binding = case
+                .parent()
+                .filter(|s| matches!(s.kind(), NodeKind::SwitchStatement | NodeKind::SwitchExpression))
+                .and_then(|s| s.child("expression"))
+                .and_then(|e| e.type_binding());
+            if let Some(b) = binding.filter(|b| b.is_enum()) {
+                return b.declared_fields().unwrap_or_default().into_iter().filter(|f| f.is_enum_constant()).collect();
+            }
+        }
+    }
+    let Some(parent_type) = types::parent_type_binding(selector) else { return Vec::new() };
+    let mut r = ScopeRequestor { methods, result: Vec::new(), names: HashSet::new(), visited: HashSet::new() };
+    match qualifier(selector) {
+        None => {
+            r.add_local_declarations(selector, selector.start());
+            r.add_type_declarations(parent_type);
+        }
+        Some(q) => r.add_inherited(q, false),
+    }
+    r.result.retain(|b| is_visible(*b, parent_type));
+    r.result
 }
