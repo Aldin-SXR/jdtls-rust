@@ -19,10 +19,10 @@ of `CompletionHandlerTest`'s 156.
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 1,210 | 57.2% |
-| Passing | 1,191 | 56.3% |
+| Ported | 1,258 | 59.4% |
+| Passing | 1,239 | 58.5% |
 | Ported but `#[ignore]`d | 19 | 0.9% |
-| Not ported yet | 907 | 42.8% |
+| Not ported yet | 859 | 40.6% |
 
 Our own regression suites (`tests/lsp.rs`, `tests/*_regressions.rs`) and unit tests that
 are not ports are excluded from these counts.
@@ -32,7 +32,7 @@ are not ports are excluded from these counts.
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
 | handlers | 868 | 670 | 660 | 76% |
-| correction | 610 | 278 | 276 | 45% |
+| correction | 610 | 326 | 324 | 53% |
 | managers | 211 | 134 | 127 | 60% |
 | refactoring | 118 | 0 | 0 | 0% |
 | (root) | 72 | 7 | 7 | 9% |
@@ -107,6 +107,7 @@ are not ports are excluded from these counts.
 | correction/NonProjectFixTest | `correction_non_project_fix_test` | 2 | 2 | 0 | 2/2; original source, action order, titles and command arguments |
 | correction/OrganizeImportsActionTest | `correction_organize_imports_action_test` | 6 | 6 | 0 | 6/6; original sources and edit assertions |
 | correction/TypeMismatchQuickFixTest | `correction_type_mismatch_quick_fix_test` | 44 | 44 | 0 | 44/44 |
+| correction/UnresolvedVariablesQuickFixTest | `correction_unresolved_variables_quick_fix_test` | 48 | 48 | 0 | 48/48 |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
@@ -156,7 +157,7 @@ Rust run and is excluded from the upstream-port count.
 | Requires an installed JavaSE-1.8 or Java 26 VM | 4 | Eclipse `test_forbidden_reference`, `test_preview_features_disabled_by_default`; invisible `test_preview_features_enabled_by_default`; Maven `test_java26_project` |
 | Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
 | Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
-| Needs the getter/setter ("Create getter and setter for") and unresolved-variable proposals | 2 | ModifierCorrections `test_invisible_field_requested_in_same_package1`, `test_invisible_field_requested_in_same_package2` |
+| Needs the getter/setter ("Create getter and setter for") proposal | 2 | ModifierCorrections `test_invisible_field_requested_in_same_package1`, `test_invisible_field_requested_in_same_package2` |
 | Gradle model/update parity for an invalid build | 1 | ProjectsManager `test_sending_warning_project_status`; successful-update and reload-marker assertions now run with the compatible Gradle VM |
 
 ## Lifecycle/init integration evidence
@@ -429,6 +430,24 @@ preference manager keeps JavaCore's tab default).
 * The semantic AST parses units and the sources they look up in their package fragment
   (folder), matching the Java model; this fixed a completion regression where the
   folder-based name environment and declared-package parse disagreed.
+
+## Unresolved-variable correction evidence
+
+All 48 `UnresolvedVariablesQuickFixTest` methods are ported and pass on Rust and on
+jdt.ls 1.58.0.
+
+* `src/correction/unresolved_elements/variables.rs` ports `collectVariableProposals`:
+  new local/field/parameter/constant/enum constant, remove assignment, "Change to" similar
+  variables and methods, array `length` and static-import favorites;
+  `new_variable.rs` ports `NewVariableCorrectionProposalCore` (member-order placement).
+  The variable proposals also run for non-accessible references.
+* `UndefinedType` is dispatched to Rust for the similar-type "Change to 'X' (pkg)"
+  proposals only. Creating types, import-only and qualify-type proposals, project setup
+  fixes and the enhanced-for loop variable remain unported.
+* The bridge sends qualifier-type members and compatibility data for unresolved field
+  references; the old bridge "Create local variable/parameter/field/constant" actions are
+  dropped. JDT's insert-after-previous-element placement is used by the new proposals
+  only, not yet globally in the Rust `ASTRewrite`.
 
 ## Known differences from jdt.ls
 
