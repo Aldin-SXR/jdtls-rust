@@ -148,6 +148,7 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::IncompatibleTypesInForeach => super::type_mismatch::type_mismatch_in_for_each(env, ctx, problem, proposals).await,
         p::IncompatibleReturnType => super::type_mismatch::incompatible_return_type(env, ctx, problem, proposals).await,
         p::IncompatibleExceptionInThrowsClause => super::type_mismatch::incompatible_throws(env, ctx, problem, proposals).await,
+        p::UnsafeTypeConversion | p::RawTypeReference | p::UnsafeRawMethodInvocation | p::UnsafeElementTypeConversion => super::infer_type_arguments::raw_type_reference_proposals(env, ctx, problem, proposals).await,
         _ => {}
     }
 }

@@ -408,7 +408,6 @@ fn test_type_mismatch_for_interface_in_generic2() {
 }
 
 #[test]
-#[ignore = "needs Java50Fix raw type reference fix (InferTypeArguments constraint solver), not ported"]
 fn test_type_mismatch_for_parameterized_type() {
     let (mut t, root) = setup(&[("org.eclipse.jdt.core.compiler.problem.uncheckedTypeOperation", "warning"), ("org.eclipse.jdt.core.compiler.problem.rawTypeReference", "warning")]);
     let e_code = "package test1;\nimport java.util.*;\npublic class E {\n    public void foo() {\n        List list= new ArrayList<Integer>();\n    }\n}\n";
