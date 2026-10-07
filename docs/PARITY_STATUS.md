@@ -19,10 +19,10 @@ of `CompletionHandlerTest`'s 156.
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 1,299 | 61.4% |
-| Passing | 1,247 | 58.9% |
-| Ported but `#[ignore]`d | 52 | 2.5% |
-| Not ported yet | 818 | 38.6% |
+| Ported | 1,335 | 63.1% |
+| Passing | 1,280 | 60.5% |
+| Ported but `#[ignore]`d | 55 | 2.6% |
+| Not ported yet | 782 | 36.9% |
 
 Our own regression suites (`tests/lsp.rs`, `tests/*_regressions.rs`) and unit tests that
 are not ports are excluded from these counts.
@@ -31,10 +31,10 @@ are not ports are excluded from these counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 868 | 670 | 660 | 76% |
+| handlers | 868 | 702 | 692 | 79% |
 | correction | 610 | 367 | 332 | 54% |
 | managers | 211 | 134 | 127 | 60% |
-| refactoring | 118 | 0 | 0 | 0% |
+| refactoring | 118 | 4 | 1 | 0% |
 | (root) | 72 | 7 | 7 | 9% |
 | commands | 60 | 23 | 23 | 38% |
 | preferences | 53 | 53 | 53 | 100% |
@@ -60,6 +60,8 @@ are not ports are excluded from these counts.
 | handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 10 | 0 | 10/10; restored stub-JDK source-location assertion verified |
 | handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 11 | 11 | 0 | 11/11 |
 | handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 14 | 0 | 14/14; restored two-lens binary assertion verified |
+| handlers/CompletionHandlerLazyResolveTest | `handlers_completion_handler_lazy_resolve_test` | 20 | 20 | 0 | 20/20 |
+| handlers/CompletionHandlerChainTest | `handlers_completion_handler_chain_test` | 12 | 12 | 0 | 12/12 |
 | handlers/CompletionHandlerTest | `handlers_completion_handler_test` | 156 | 150 | 6 | all active ports verified on the oracle in targeted runs; see the completion evidence |
 | handlers/DocumentHighlightHandlerTest | `handlers_document_highlight_handler_test` | 5 | 5 | 0 | pass |
 | handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` | 19 | 19 | 0 | 19/19 |
@@ -115,6 +117,7 @@ are not ports are excluded from these counts.
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
 | correction/UnresolvedMethodsQuickFixTest | `correction_unresolved_methods_quick_fix_test` | 91 | 91 | 0 | 91/91; the favorites tests resend settings once the server runs (jdt.ls copies live favorites) |
 | codemanipulation/OverrideMethodsTestCase | `codemanipulation_override_methods_test_case` | 10 | 10 | 0 | 10/10 |
+| refactoring/ExtractVariableTest | `refactoring_extract_variable_test` | 4 of 5 (one is commented out upstream) | 1 | 3 | 4/4 |
 | JVMConfiguratorTest | `jvm_configurator_test` | 7 | 7 | 0 | 7/7 direct calls to the actual JVM/runtime APIs and unchanged upstream VM extension |
 | commands/BuildPathCommandTest | `commands_build_path_command_test` | 4 | 4 | 0 | 4/4; unchanged Gradle 8.5 fixture runs on Java 21 |
 | commands/DiagnosticsCommandTest | `commands_diagnostics_command_test` | 2 | 2 | 0 | 2/2 |
@@ -162,6 +165,7 @@ Rust run and is excluded from the upstream-port count.
 | Needs the getter/setter ("Create getter and setter for") proposal | 2 | ModifierCorrections `test_invisible_field_requested_in_same_package1`, `test_invisible_field_requested_in_same_package2` |
 | Unported type proposals: ambiguous-type "Explicitly import" (7), type parameters / import-only type change (8), `NewCUProposal` create type (8), add-all-missing-imports (2); `@Disabled` upstream (2) | 27 | `correction_unresolved_types_quick_fix_test` |
 | Unported `GetterSetterCorrectionSubProcessor` / `SelfEncapsulateFieldRefactoring` (`src/correction/getter_setter.rs` is a stub) | 6 | `correction_getter_setter_quick_fix_test` |
+| Rust extract refactorings not yet wired into the code-action pipeline | 3 | `refactoring_extract_variable_test` |
 | Gradle model/update parity for an invalid build | 1 | ProjectsManager `test_sending_warning_project_status`; successful-update and reload-marker assertions now run with the compatible Gradle VM |
 
 ## Lifecycle/init integration evidence
@@ -452,6 +456,41 @@ jdt.ls 1.58.0.
   references; the old bridge "Create local variable/parameter/field/constant" actions are
   dropped. JDT's insert-after-previous-element placement is used by the new proposals
   only, not yet globally in the Rust `ASTRewrite`.
+
+## Chain/lazy-resolve completion and extract refactoring groundwork (2026-10-07)
+
+* `CompletionHandlerLazyResolveTest` (20/20) and `CompletionHandlerChainTest` (12/12)
+  pass on Rust and the oracle. Chain completion: the bridge's `ChainCompletionService`
+  (`chains` op) returns chain data; `src/features/completion/chain.rs` selects entry
+  points, reads `recommenders.chain.*` project preferences and builds proposals. A
+  completion NPE with on-demand imports was fixed in `CodeAssistEnvironment`.
+* `src/features/completion/postfix.rs` holds an unwired port of the postfix template
+  engine. To finish: call it from `handler.rs`, add a `StoredProposal::Postfix` resolve
+  path (upstream re-adds import edits on resolve), and port `PostfixCompletionTest` (29).
+* `src/refactoring/` holds unwired ports of `RefactoringStatus`, `SelectionAnalyzer`, AST
+  fragments, `ScopeAnalyzer`, naming suggestions, `Checks`/side-effect checkers,
+  `ExtractTempRefactoring` and `ExtractConstantRefactoring`. To finish: port the extract
+  parts of `RefactorProposalUtility` into `correction::quick_assist::refactor_proposals`,
+  retire the bridge's `makeExtract*Action`, un-ignore the three `ExtractVariableTest`
+  cases, then port ExtractField/ExtractMethod (flow analysis) and `GetRefactorEditHandler`.
+  Method side-effect lookup currently only sees the current file.
+
+## Next steps
+
+Run `scripts/parity-count.py` for the per-class gap. The largest remaining items:
+
+* Type quick fixes (`NewCUProposal`, add import / add-all-missing-imports, ambiguous
+  types, type parameters) and getter/setter self-encapsulation: 33 ported tests wait on them.
+* Refactoring (118 tests): wire the extract ports, then the remaining classes.
+* Postfix completion (29), the remaining correction classes (null annotations, Javadoc,
+  convert-to-record, reorg, lambda, ...), Gradle importer (45), `ProjectCommandTest` (28),
+  core utilities, syntax server and filesystem tests.
+* Environment for running the suite in a Linux container: install JDK 25 and set
+  `JAVA_HOME` to it for tests (JDK 21 stays the default `java` for Gradle 8.5);
+  `scripts/install-decompiler-from-oracle.sh` when the JetBrains repository is unreachable.
+  Downloads honour `HTTPS_PROXY`/`NO_PROXY` and `SSL_CERT_FILE`. Rust does not yet fall
+  back to `-javadoc.jar` downloads when no sources jar exists, as m2e does
+  (`test_hover_with_attached_javadoc` passes only once that jar is cached).
 
 ## Known differences from jdt.ls
 
