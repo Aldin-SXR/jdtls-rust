@@ -58,9 +58,8 @@ pub struct ReplacementProvider<'a> {
     pub is_package_info: bool,
     /// Simple name of the unit's main type (file name without extension).
     pub main_type_name: String,
-    /// `ContextSensitiveImportRewriteContext` answers for the resolve request:
-    /// (qualified name of a visible conflicting/same type).
-    pub context_types: Option<&'a [(String, String)]>,
+    /// `ContextSensitiveImportRewriteContext` data for the resolve request.
+    pub context_types: Option<&'a super::import_context::ImportContext>,
 }
 
 fn utf16_len(s: &str) -> usize {
@@ -249,11 +248,11 @@ impl<'a> ReplacementProvider<'a> {
         if p.declaration_key.is_none() {
             return;
         }
-        let Some(body) = self.stubs.anonymous_body.clone() else { return };
+        let Some(body) = self.stubs.anonymous_body.as_deref() else { return };
         let doc = self.doc;
         let len = doc.len();
         let offset = p.replace_start.max(0) as usize;
-        let mut replacement = body;
+        let mut replacement = anonymous_new_body(doc, body, offset);
         if len > offset {
             let ch = |i: usize| doc.char_at(i);
             if p.kind == kind::ANONYMOUS_CLASS_DECLARATION {
@@ -614,10 +613,9 @@ impl<'a> ReplacementProvider<'a> {
             return replacement;
         }
         match self.context_types {
-            Some(visible) if self.resolving => {
-                let visible = visible.to_vec();
+            Some(context) if self.resolving => {
                 let ctx = move |rw: &ImportRewrite, qualifier: &str, name: &str, kind: i32| -> i32 {
-                    context_sensitive(rw, &visible, qualifier, name, kind)
+                    context.find_in_context(rw, qualifier, name, kind)
                 };
                 rewrite.add_import_with(&qualified, Some(&ctx))
             }
@@ -626,25 +624,31 @@ impl<'a> ReplacementProvider<'a> {
     }
 }
 
-/// `ContextSensitiveImportRewriteContext.findInContext` over the type names
-/// visible at the completion offset (`(simple name, qualified name)` pairs).
-fn context_sensitive(rw: &ImportRewrite, visible: &[(String, String)], qualifier: &str, name: &str, kind: i32) -> i32 {
-    let qualified = if qualifier.is_empty() { name.to_owned() } else { format!("{qualifier}.{name}") };
-    for (simple, q) in visible {
-        if *q == qualified {
-            return super::imports::RES_NAME_FOUND;
-        } else if simple == name {
-            return super::imports::RES_NAME_CONFLICT;
+/// The rest of `AnonymousTypeCompletionProposal.updateReplacementString`
+/// after formatting `new A() {...}` (`formatted`): append ';' unless the
+/// line continues with ';', ',' or ')', then keep the text from '('.
+fn anonymous_new_body(doc: &Doc, formatted: &str, offset: usize) -> String {
+    let mut replacement = formatted.to_owned();
+    let (line_off, line_len) = doc.line_info_of_offset(offset);
+    let line_end = line_off + line_len;
+    let mut p = offset;
+    if p < doc.len() {
+        let mut ch = doc.char_at(p);
+        while p < line_end {
+            if matches!(ch, '(' | ')' | ';' | ',') {
+                break;
+            }
+            p += 1;
+            ch = doc.char_at(p);
+        }
+        if ch != ';' && ch != ',' && ch != ')' {
+            replacement.push(';');
         }
     }
-    for added in rw.added_imports() {
-        if added == qualified {
-            return super::imports::RES_NAME_FOUND;
-        } else if added.rsplit('.').next() == Some(name) {
-            return super::imports::RES_NAME_CONFLICT;
-        }
+    match replacement.find('(') {
+        Some(i) => replacement[i..].to_owned(),
+        None => replacement,
     }
-    rw.find_in_imports(qualifier, name, kind)
 }
 
 fn check_replacement_end(doc: &Doc, replacement: String, pos: usize) -> String {

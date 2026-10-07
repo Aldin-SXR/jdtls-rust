@@ -236,10 +236,10 @@ impl<'a> Collector<'a> {
         let prefix = p.name().to_owned();
         let start = p.replace_start;
         let end = p.replace_end;
-        let mut relevance = p.relevance + 6;
-        if prefix.is_empty() {
-            relevance -= 1;
-        }
+        // Upstream computes a relevance (`proposal.getRelevance() + 6`, minus
+        // one for an empty prefix or a static final field) but never sets it on
+        // the new proposals, so they keep `InternalCompletionProposal`'s default.
+        const DEFAULT_RELEVANCE: i32 = 1;
         let fields: Vec<EnclosingField> = self.context.enclosing_fields.clone();
         let methods = &self.context.enclosing_methods;
         let has_method = |n: &str| methods.iter().any(|m| m == n);
@@ -250,10 +250,6 @@ impl<'a> Collector<'a> {
             }
             let getter = super::accessors::getter_name(&f.name, &f.type_signature);
             if starts_with_ignore_case(&getter, &prefix) && !has_method(&getter) {
-                let mut r = relevance;
-                if flags::is(f.flags, flags::STATIC) && flags::is(f.flags, flags::FINAL) {
-                    r = relevance - 1;
-                }
                 let prop = Proposal {
                     kind: kind::POTENTIAL_METHOD_DECLARATION,
                     name: Some(getter.clone()),
@@ -262,7 +258,7 @@ impl<'a> Collector<'a> {
                     declaration_signature: Some(f.type_signature.clone()),
                     replace_start: start,
                     replace_end: start + prefix.encode_utf16().count() as i32,
-                    relevance: r,
+                    relevance: DEFAULT_RELEVANCE,
                     completion_location: start - 1,
                     parameter_names: Some(Vec::new()),
                     getter_setter: Some(GetterSetter { field: f.clone(), is_getter: true }),
@@ -281,7 +277,7 @@ impl<'a> Collector<'a> {
                         declaration_signature: Some(f.type_signature.clone()),
                         replace_start: start,
                         replace_end: start + prefix.encode_utf16().count() as i32,
-                        relevance,
+                        relevance: DEFAULT_RELEVANCE,
                         completion_location: start - 1,
                         parameter_names: Some(vec![f.name.clone()]),
                         getter_setter: Some(GetterSetter { field: f.clone(), is_getter: false }),

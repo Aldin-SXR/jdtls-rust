@@ -11,6 +11,7 @@ pub mod description;
 pub mod doc;
 pub mod guesser;
 pub mod handler;
+pub mod import_context;
 pub mod imports;
 pub mod item;
 pub mod javadoc_proposal;

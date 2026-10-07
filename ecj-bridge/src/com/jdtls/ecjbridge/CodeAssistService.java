@@ -213,6 +213,7 @@ final class CodeAssistService {
         requestor.setFavoriteReferences(favorites == null ? new String[0] : favorites.toArray(new String[0]));
         requestor.setRequireExtendedContext(true);
 
+        installNoIndexManager();
         CompletionEngine engine = new CompletionEngine(env, requestor, options, project, null, new NullProgressMonitor());
         requestor.engine = engine;
         requestor.env = env;
@@ -312,7 +313,7 @@ final class CodeAssistService {
             }
 
             private void describe(List<ScopeVariable> out, List<String[]> vars) {
-                LookupEnvironment lookup = getField(CompletionEngine.class, engineRef[0], "lookupEnvironment");
+                LookupEnvironment lookup = engineRef[0] == null ? null : engineRef[0].lookupEnvironment;
                 InternalExtendedCompletionContext ext = contextRef[0] instanceof InternalCompletionContext ic
                         ? getField(InternalCompletionContext.class, ic, "extendedContext") : null;
                 Scope assistScope = ext == null ? null : getField(InternalExtendedCompletionContext.class, ext, "assistScope");
@@ -804,7 +805,7 @@ final class CodeAssistService {
 
         /** Port of jdt.ls {@code CompletionProposalReplacementProvider.computeTypeArgumentProposals}. */
         private List<String> computeTypeArgumentProposals(CompletionProposal proposal) {
-            LookupEnvironment lookup = getField(CompletionEngine.class, engine, "lookupEnvironment");
+            LookupEnvironment lookup = engine == null ? null : engine.lookupEnvironment;
             if (lookup == null || proposal.getSignature() == null) return List.of();
             String fqn = stripSignatureToFQN(new String(proposal.getSignature()));
             ReferenceBinding type = lookup.getType(CharOperation.splitOn('.', fqn.toCharArray()));
@@ -1012,6 +1013,39 @@ final class CodeAssistService {
         return options;
     }
 
+    /**
+     * The bridge runs JDT without the Java model or its indexes. After an empty
+     * prefix with an expected interface type, {@code CompletionEngine} searches
+     * the project's indexes for implementors ({@code findConstructorsFromSubTypes});
+     * an index manager that runs no index jobs makes that search find nothing
+     * instead of failing the whole completion.
+     */
+    static synchronized void installNoIndexManager() {
+        org.eclipse.jdt.internal.core.JavaModelManager manager = org.eclipse.jdt.internal.core.JavaModelManager.getJavaModelManager();
+        if (manager.indexManager != null) {
+            return;
+        }
+        try {
+            // IndexManager's constructor needs the JavaCore plugin's state location;
+            // the instance only answers performConcurrentJob, so skip it.
+            Field f = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+            f.setAccessible(true);
+            sun.misc.Unsafe unsafe = (sun.misc.Unsafe) f.get(null);
+            manager.indexManager = (NoIndexManager) unsafe.allocateInstance(NoIndexManager.class);
+        } catch (ReflectiveOperationException e) {
+            // leave the search failing as before
+        }
+    }
+
+    /** An index manager without indexes: every search job finds nothing. */
+    static final class NoIndexManager extends org.eclipse.jdt.internal.core.search.indexing.IndexManager {
+        @Override
+        public boolean performConcurrentJob(org.eclipse.jdt.internal.core.search.processing.IJob job, int waitingPolicy,
+                org.eclipse.core.runtime.IProgressMonitor monitor) {
+            return true;
+        }
+    }
+
     static IJavaProject javaProjectProxy(Map<String, String> options) {
         InvocationHandler h = (proxy, method, args) -> {
             switch (method.getName()) {
@@ -1026,6 +1060,11 @@ final class CodeAssistService {
                     return new IPackageFragmentRoot[0];
                 case "exists":
                     return Boolean.TRUE;
+                case "getElementType":
+                    // CompletionEngine.findConstructorsFromSubTypes builds a search
+                    // scope from the project; as the (empty) Java model it adds no
+                    // roots (see installNoIndexManager).
+                    return org.eclipse.jdt.core.IJavaElement.JAVA_MODEL;
                 case "hashCode":
                     return System.identityHashCode(proxy);
                 case "equals":

@@ -688,6 +688,14 @@ fn hierarchy_contains(binding: BindingRef<'_>, key: &str, seen: &mut HashSet<Str
             .any(|s| hierarchy_contains(*s, key, seen))
 }
 
+/// `ImportReferencesCollector.collect(root, project, null, typeImports, null)`:
+/// the simple names of the type references that may need an import.
+pub(crate) fn type_import_references<'a>(root: Node<'a>) -> Vec<Node<'a>> {
+    let mut refs = References::default();
+    refs.visit(root);
+    refs.types
+}
+
 /// Port of ImportReferencesCollector's ASTVisitor (whole compilation unit,
 /// including method bodies and Javadoc; no range restriction).
 #[derive(Default)]

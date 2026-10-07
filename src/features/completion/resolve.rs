@@ -62,7 +62,13 @@ pub async fn resolve(env: &Env, mut item: Item) -> tower_lsp::jsonrpc::Result<It
     let StoredProposal::Jdt(mut proposal) = stored else { return Ok(item) };
 
     if client.resolve_additional_text_edits() {
-        let context_types: Vec<(String, String)> = Vec::new();
+        // ContextSensitiveImportRewriteContext over the unit's AST (jdt.ls
+        // uses it when the shared AST is available).
+        let mut context_types = match crate::semantic_ast::fetch_with(&env.dispatcher, uri.as_str(), ctx.clone()).await {
+            Ok(ast) => super::import_context::ImportContext::collect(ast.root(), response.offset),
+            Err(_) => super::import_context::ImportContext::default(),
+        };
+        context_types.package_types = response.container_types.get(&unit.cu.package_name).cloned();
         let provider = ReplacementProvider {
             doc: &unit.doc,
             cu: unit.cu.clone(),

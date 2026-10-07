@@ -1166,3 +1166,1624 @@ fn test_snippet_nested_inner_record_nosnippet() {
     assert!(!list.is_null());
     assert!(!items(&list).iter().any(|ci| ci["kind"] == KIND_SNIPPET), "No snippets should be returned");
 }
+
+// ─── Completion response data ────────────────────────────────────────────────
+
+const OBJEC_SOURCE: &str = "public class Foo {\n\tvoid foo() {\n\t\tObjec\n\t}\n}\n";
+
+/// `testCompletion_dataFieldURI`: upstream reads the response's common `uri`
+/// data from the server-internal `CompletionResponses` cache.  Over LSP that
+/// data is what `completionItem/resolve` resolves the compilation unit from
+/// (`CompletionResolveHandler` throws when the response is missing or the
+/// `uri` matches no unit), so resolving the item must succeed.
+#[test]
+fn test_completion_data_field_uri() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/java/Foo.java", OBJEC_SOURCE);
+    let list = t.request_completions(&unit, "Objec");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty(), "No proposals were found");
+    let item = &items(&list)[0];
+    let rid: i64 = s(&item["data"]["rid"]).parse().unwrap();
+    assert!(rid >= 0);
+    assert!(regex_full_match(r"file://.*/src/java/Foo\.java", &unit.uri), "unexpected URI prefix: {}", unit.uri);
+    let resp = t.ws.client().request_response("completionItem/resolve", item.clone());
+    assert!(resp.get("error").is_none(), "{resp:#}");
+}
+
+/// `testCompletion_dataFieldExecutionTime`: upstream reads the
+/// `COMPLETION_EXECUTION_TIME` common data of the cached response.  Over LSP
+/// it is observable through `java.completion.onDidSelect`, which copies it
+/// into the selected item's data and fails when the response is missing.
+#[test]
+fn test_completion_data_field_execution_time() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/java/Foo.java", OBJEC_SOURCE);
+    let list = t.request_completions(&unit, "Objec");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty(), "No proposals were found");
+    let item = &items(&list)[0];
+    let rid: i64 = s(&item["data"]["rid"]).parse().unwrap();
+    let pid = s(&item["data"]["pid"]).to_owned();
+    let resp = t.ws.client().request_response(
+        "workspace/executeCommand",
+        json!({ "command": "java.completion.onDidSelect", "arguments": [rid.to_string(), pid] }),
+    );
+    assert!(resp.get("error").is_none(), "{resp:#}");
+}
+
+// ─── Records (disabled upstream) ─────────────────────────────────────────────
+
+#[test]
+#[ignore = "@Disabled upstream: cu.getAllTypes() returns an empty array in tests, so the inner record name is not computed"]
+fn test_snippet_inner_record() {
+    let mut t = setup();
+    use_records(&mut t);
+    let unit = t.get_working_copy("src/main/java/org/sample/Test.java", "package org.sample;\npublic record Test() {}\n");
+    let list = t.request_completions(&unit, "package org.sample;\npublic record Test() {");
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[7];
+    assert_eq!("record", s(&item["label"]));
+    assert_eq!("/**\n * ${1:InnerTest}\n */\npublic record ${1:InnerTest}(${0}) {\n}", s(&item["insertText"]));
+}
+
+#[test]
+#[ignore = "@Disabled upstream: cu.getAllTypes() returns an empty array in tests, so the inner record name is not computed"]
+fn test_snippet_sibling_inner_record() {
+    let mut t = setup();
+    use_records(&mut t);
+    let unit = t.get_working_copy("src/main/java/org/sample/Test.java", "package org.sample;\npublic record Test() {}\npublic record InnerTest(){}\n");
+    let list = t.request_completions(&unit, "package org.sample;\npublic record Test {}\npublic record InnerTest(){}\n");
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[7];
+    assert_eq!("record", s(&item["label"]));
+    assert_eq!("/**\n * ${1:InnerTest_1}\n */\npublic record ${1:InnerTest_1}(${0) {\n}", s(&item["insertText"]));
+}
+
+#[test]
+#[ignore = "@Disabled upstream: cu.getAllTypes() returns an empty array in tests, so the inner record name is not computed"]
+fn test_snippet_nested_inner_record() {
+    let mut t = setup();
+    use_records(&mut t);
+    let src = "package org.sample;\npublic record Test() {}\npublic record InnerTest(){\n";
+    let unit = t.get_working_copy("src/main/java/org/sample/Test.java", src);
+    let list = t.request_completions(&unit, src);
+    let items = sorted(items(&list));
+    assert!(!items.is_empty());
+    let item = &items[24];
+    assert_eq!("record", s(&item["label"]));
+    assert_eq!("/**\n * ${1:InnerTest_1}\n */\npublic record ${1:InnerTest_1}(${0}) {\n}", s(&item["insertText"]));
+}
+
+// ─── Overrides ───────────────────────────────────────────────────────────────
+
+fn override_items(list: &Value) -> Vec<Value> {
+    items(list)
+        .into_iter()
+        .filter(|i| i["detail"].as_str().is_some_and(|d| d.starts_with("Override method in")))
+        .collect()
+}
+
+/// `importProjects("eclipse/<name>"); project = getProject(name)` unless the
+/// current project already is `name`.
+fn use_project(t: &mut T, name: &'static str) {
+    if t.project != name {
+        t.ws.import_projects(&[&format!("eclipse/{name}")]);
+        t.project = name;
+    }
+}
+
+fn class_method_override(project: &'static str, support_snippets: bool, overrides_super_class: bool) {
+    let mut t = setup();
+    use_project(&mut t, project);
+    t.caps = Caps::mock(support_snippets, true, false);
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n    toStr}\n");
+    let list = t.request_completions(&unit, " toStr");
+    assert!(!list.is_null());
+    let filtered = override_items(&list);
+    assert!(!filtered.is_empty(), "No override proposals: {list:#}");
+    let oride = &filtered[0];
+    assert_eq!("toString", s(&oride["insertText"]));
+    assert!(!oride["textEdit"].is_null());
+    let text = s(&oride["textEdit"]["newText"]);
+    let mut expected = String::new();
+    if overrides_super_class {
+        expected.push_str("@Override\n");
+    }
+    expected.push_str("public String toString() {\n\t");
+    if support_snippets {
+        expected.push_str("${0:");
+    }
+    expected.push_str("// TODO Auto-generated method stub\n\t");
+    expected.push_str("return super.toString();");
+    if support_snippets {
+        expected.push('}');
+    }
+    expected.push_str("\n}");
+    assert_eq!(expected, text);
+}
+
+fn interface_method_override(project: &'static str, support_snippets: bool, overrides_interface: bool) {
+    let mut t = setup();
+    use_project(&mut t, project);
+    t.caps = Caps::mock(support_snippets, true, false);
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo implements Runnable{\n    ru}\n");
+    let list = t.request_completions(&unit, " ru");
+    assert!(!list.is_null());
+    let filtered = override_items(&list);
+    assert!(!filtered.is_empty(), "No override proposals: {list:#}");
+    let oride = &filtered[0];
+    assert_eq!("run", s(&oride["insertText"]));
+    assert!(!oride["textEdit"].is_null());
+    let text = s(&oride["textEdit"]["newText"]);
+    let mut expected = String::new();
+    if overrides_interface {
+        expected.push_str("@Override\n");
+    }
+    expected.push_str("public void run() {\n\t");
+    if support_snippets {
+        expected.push_str("${0:");
+    }
+    expected.push_str("// TODO Auto-generated method stub\n\t");
+    if support_snippets {
+        expected.push('}');
+    }
+    expected.push_str("\n}");
+    assert_eq!(expected, text);
+}
+
+#[test]
+fn test_completion_method_override() {
+    class_method_override("hello", true, true);
+}
+
+#[test]
+fn test_completion_interface_method_override() {
+    interface_method_override("hello", true, true);
+}
+
+#[test]
+fn test_completion_class_method_override_no_snippet() {
+    class_method_override("hello", false, true);
+}
+
+#[test]
+fn test_completion_interface_method_override_no_snippet() {
+    interface_method_override("hello", false, true);
+}
+
+#[test]
+fn test_completion_class_method_override_java4() {
+    class_method_override("java11", true, true);
+}
+
+#[test]
+fn test_completion_interface_method_override_java4() {
+    interface_method_override("java11", true, true);
+}
+
+#[test]
+fn test_completion_class_method_override_java5() {
+    class_method_override("java11", true, true);
+}
+
+#[test]
+fn test_completion_interface_method_override_java5() {
+    interface_method_override("java11", true, true);
+}
+
+#[test]
+fn test_completion_method_override_with_params() {
+    let mut t = setup();
+    t.caps.label_details = true;
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\n\npublic class Test extends Baz {\n    getP}\n");
+    let list = t.request_completions(&unit, " getP");
+    assert!(!list.is_null());
+    let filtered = override_items(&list);
+    assert_eq!(1, filtered.len(), "No override proposals: {list:#}");
+    let oride = &filtered[0];
+    assert_eq!("getParent", s(&oride["insertText"]));
+    assert!(!oride["textEdit"].is_null());
+    let text = s(&oride["textEdit"]["newText"]);
+    let expected = "@Override\nprotected File getParent(File file, int depth) {\n\t${0:// TODO Auto-generated method stub\n\treturn super.getParent(file, depth);}\n}";
+    assert_eq!(expected, text);
+    let edits = oride["additionalTextEdits"].as_array().unwrap();
+    assert_eq!(1, edits.len(), "Missing required imports");
+    assert_eq!("\n\nimport java.io.File;\n\n", s(&edits[0]["newText"]));
+    assert_position(0, 19, &edits[0]["range"]["start"]);
+    assert_position(2, 0, &edits[0]["range"]["end"]);
+}
+
+#[test]
+fn test_completion_method_override_with_exception() {
+    let mut t = setup();
+    t.caps.label_details = true;
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\n\npublic class Test extends Baz {\n    dele}\n");
+    let list = t.request_completions(&unit, " dele");
+    assert!(!list.is_null());
+    let filtered = override_items(&list);
+    assert_eq!(1, filtered.len(), "No override proposals: {list:#}");
+    let oride = &filtered[0];
+    assert_eq!("deleteSomething", s(&oride["insertText"]));
+    assert!(!oride["textEdit"].is_null());
+    let text = s(&oride["textEdit"]["newText"]);
+    assert_eq!(s(&oride["label"]), "deleteSomething");
+    assert_eq!(s(&oride["labelDetails"]["detail"]), "()");
+    assert_eq!(s(&oride["labelDetails"]["description"]), "void");
+    let expected = "@Override\nprotected void deleteSomething() throws IOException {\n\t${0:// TODO Auto-generated method stub\n\tsuper.deleteSomething();}\n}";
+    assert_eq!(expected, text);
+    let edits = oride["additionalTextEdits"].as_array().unwrap();
+    assert_eq!(1, edits.len(), "Missing required imports");
+    assert_eq!("\n\nimport java.io.IOException;\n\n", s(&edits[0]["newText"]));
+    assert_position(0, 19, &edits[0]["range"]["start"]);
+    assert_position(2, 0, &edits[0]["range"]["end"]);
+}
+
+// ─── Getters and setters ─────────────────────────────────────────────────────
+
+fn find_label_prefix(list: &Value, prefix: &str) -> Value {
+    items(list)
+        .into_iter()
+        .find(|i| s(&i["label"]).starts_with(prefix))
+        .unwrap_or_else(|| panic!("no {prefix:?} in {list:#}"))
+}
+
+#[test]
+fn test_completion_getter() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n    private String strField;\n    get}\n");
+    let list = t.request_completions(&unit, "get");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "getStrField() : String");
+    assert_eq!("getStrField", s(&ci["insertText"]));
+    assert_eq!(KIND_METHOD, ci["kind"]);
+    assert_eq!("999999979", s(&ci["sortText"]));
+    assert_text_edit(
+        2,
+        4,
+        7,
+        "/**\n * @return the strField\n */\npublic String getStrField() {\n\treturn strField;\n}",
+        &ci["textEdit"],
+    );
+}
+
+#[test]
+fn test_completion_getter_no_javadoc() {
+    let mut t = setup();
+    t.set_preference(&["java", "codeGeneration", "generateComments"], json!(false));
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n    private String strField;\n    get}\n");
+    let list = t.request_completions(&unit, "get");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "getStrField() : String");
+    assert_eq!("getStrField", s(&ci["insertText"]));
+    assert_eq!(KIND_METHOD, ci["kind"]);
+    assert_eq!("999999979", s(&ci["sortText"]));
+    assert_text_edit(2, 4, 7, "public String getStrField() {\n\treturn strField;\n}", &ci["textEdit"]);
+}
+
+#[test]
+fn test_completion_booleangetter() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n    private boolean boolField;\n    is\n}\n");
+    let list = t.request_completions(&unit, "is");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "isBoolField() : boolean");
+    assert_eq!("isBoolField", s(&ci["insertText"]));
+    assert_eq!(KIND_METHOD, ci["kind"]);
+    assert_eq!("999999979", s(&ci["sortText"]));
+    assert_text_edit(
+        2,
+        4,
+        6,
+        "/**\n * @return the boolField\n */\npublic boolean isBoolField() {\n\treturn boolField;\n}",
+        &ci["textEdit"],
+    );
+}
+
+#[test]
+fn test_completion_setter() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n    private String strField;\n    set}\n");
+    let list = t.request_completions(&unit, "set");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "setStrField(String strField) : void");
+    assert_eq!("setStrField", s(&ci["insertText"]));
+    assert_eq!(KIND_METHOD, ci["kind"]);
+    assert_eq!("999999979", s(&ci["sortText"]));
+    assert_text_edit(
+        2,
+        4,
+        7,
+        "/**\n * @param strField the strField to set\n */\npublic void setStrField(String strField) {\n\tthis.strField = strField;\n}",
+        &ci["textEdit"],
+    );
+}
+
+// ─── Anonymous types ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_completion_anonymous_type() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    t.caps.label_details = true;
+    let unit = t.get_working_copy(
+        "src/java/Foo.java",
+        "public class Foo {\n    public static void main(String[] args) {\n        IFoo foo = new \n    } \n    interface IFoo {\n        String getName();\n    }\n}\n",
+    );
+    let list = t.request_completions(&unit, "new ");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "Foo.IFoo");
+    assert_eq!("Foo.IFoo", s(&ci["insertText"]));
+    assert_eq!(KIND_CONSTRUCTOR, ci["kind"]);
+    // createAnonymousTypeLabel
+    assert_eq!("Foo.IFoo", s(&ci["label"]));
+    assert_eq!("()", s(&ci["labelDetails"]["detail"]));
+    assert_eq!("Anonymous Inner Type", s(&ci["labelDetails"]["description"]));
+    assert_eq!("999998684", s(&ci["sortText"]));
+    assert_text_edit(2, 23, 23, "IFoo() {\n\t${0}\n};", &ci["textEdit"]);
+}
+
+#[test]
+fn test_completion_anonymous_type_more_methods() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    let unit = t.get_working_copy(
+        "src/java/Foo.java",
+        "public class Foo {\n    public static void main(String[] args) {\n        IFoo foo = new \n    } \n    interface IFoo {\n        String getName();\n        void setName(String name);\n    }\n}\n",
+    );
+    let list = t.request_completions(&unit, "new ");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "Foo.IFoo()  Anonymous Inner Type");
+    assert_eq!("Foo.IFoo", s(&ci["insertText"]));
+    assert_eq!(KIND_CONSTRUCTOR, ci["kind"]);
+    assert_eq!("999998684", s(&ci["sortText"]));
+    assert_text_edit(2, 23, 23, "IFoo() {\n\t${0}\n};", &ci["textEdit"]);
+}
+
+fn anonymous_declaration(caps: Caps, source: &str, behind: &str, line: u64, start: u64, end: u64, text: &str) {
+    let mut t = setup();
+    t.caps = caps;
+    let unit = t.get_working_copy("src/java/Foo.java", source);
+    let list = t.request_completions(&unit, behind);
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "Runnable()  Anonymous Inner Type");
+    assert_eq!("Runnable", s(&ci["insertText"]));
+    assert_eq!(KIND_CLASS, ci["kind"]);
+    assert_eq!("999999372", s(&ci["sortText"]));
+    assert_text_edit(line, start, end, text, &ci["textEdit"]);
+}
+
+#[test]
+fn test_completion_anonymous_declaration_type() {
+    anonymous_declaration(
+        Caps::lsp3(),
+        "public class Foo {\n    public static void main(String[] args) {\n        new Runnable()\n    }\n}\n",
+        "Runnable(",
+        2,
+        20,
+        22,
+        "() {\n\t${0}\n}",
+    );
+}
+
+#[test]
+fn test_completion_anonymous_declaration_type2() {
+    anonymous_declaration(
+        Caps::lsp3(),
+        "public class Foo {\n    public static void main(String[] args) {\n        new Runnable(  )\n    }\n}\n",
+        "Runnable( ",
+        2,
+        20,
+        24,
+        "() {\n\t${0}\n}",
+    );
+}
+
+#[test]
+fn test_completion_anonymous_declaration_type3() {
+    anonymous_declaration(
+        Caps::lsp3(),
+        "public class Foo {\n    public static void main(String[] args) {\n        run(\"name\", new Runnable(, 1);\n    }\n    void run(String name, Runnable runnable, int i) {\n    }\n}\n",
+        "Runnable(",
+        2,
+        33,
+        37,
+        "() {\n\t${0}\n}",
+    );
+}
+
+#[test]
+fn test_completion_anonymous_declaration_type4() {
+    anonymous_declaration(
+        Caps::lsp3(),
+        "public class Foo {\n    public static void main(String[] args) {\n        run(\"name\", new Runnable(\n        , 1);\n    }\n    void run(String name, Runnable runnable, int i) {\n    }\n}\n",
+        "Runnable(",
+        3,
+        8,
+        12,
+        "() {\n\t${0}\n}",
+    );
+}
+
+#[test]
+fn test_completion_anonymous_declaration_type5() {
+    anonymous_declaration(
+        Caps::lsp3(),
+        "public class Foo {\n    public static void main(String[] args) {\n        run(\"name\", new Runnable(",
+        "Runnable(",
+        2,
+        33,
+        33,
+        "() {\n\t${0}\n}",
+    );
+}
+
+#[test]
+fn test_completion_anonymous_declaration_type_no_snippet() {
+    // A fresh mock: only isCompletionSnippetsSupported (false) is stubbed.
+    anonymous_declaration(
+        Caps::default(),
+        "public class Foo {\n    public static void main(String[] args) {\n        new Runnable()\n    }\n}\n",
+        "Runnable(",
+        2,
+        20,
+        22,
+        "() {\n\n}",
+    );
+}
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_completion_type() {
+    let mut t = setup();
+    let unit = t.get_working_copy(
+        "src/org/sample/Foo.java",
+        "public class Foo {\n    public static void main(String[] args) {\n        ArrayList\n    }\n}\n",
+    );
+    let list = t.request_completions(&unit, "ArrayList");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "ArrayList");
+    assert_eq!("ArrayList", s(&ci["insertText"]));
+    assert_eq!(KIND_CLASS, ci["kind"]);
+    assert_eq!("ArrayList - java.util", s(&ci["label"]));
+    assert_eq!("java.util.ArrayList", s(&ci["detail"]));
+    assert_eq!("999999116", s(&ci["sortText"]));
+    assert!(!ci["textEdit"].is_null());
+}
+
+const DOLLAR_SOURCE: &str = "public class Foo$Bar {\n    public static void main(String[] args) {\n        new Foo\n    }\n}\n";
+
+/// `testCompletion_class_name_contains_$`.
+#[test]
+fn test_completion_class_name_contains_dollar() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    let unit = t.get_working_copy("src/org/sample/Foo$Bar.java", DOLLAR_SOURCE);
+    let list = t.request_completions(&unit, "new Foo");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "Foo$Bar");
+    assert_eq!("Foo$Bar", s(&ci["insertText"]));
+    assert_eq!(KIND_CONSTRUCTOR, ci["kind"]);
+    assert_eq!("999999115", s(&ci["sortText"]));
+    assert_text_edit(2, 12, 15, "Foo\\$Bar()", &ci["textEdit"]);
+}
+
+/// `testCompletion_class_name_contains_$withoutSnippetSupport`.
+#[test]
+fn test_completion_class_name_contains_dollar_without_snippet_support() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    t.caps.snippets = false;
+    let unit = t.get_working_copy("src/org/sample/Foo$Bar.java", DOLLAR_SOURCE);
+    let list = t.request_completions(&unit, "new Foo");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "Foo$Bar");
+    assert_eq!("Foo$Bar", s(&ci["insertText"]));
+    assert_eq!(KIND_CONSTRUCTOR, ci["kind"]);
+    assert_eq!("999999115", s(&ci["sortText"]));
+    assert_text_edit(2, 12, 15, "Foo$Bar", &ci["textEdit"]);
+}
+
+#[test]
+fn test_completion_test_classes_dont_leak_into_main_code() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\n\npublic class Test extends AbstractTe {\n}\n");
+    let list = t.request_completions(&unit, " AbstractTe");
+    assert_eq!(0, items(&list).len(), "Test proposals leaked:\n{list:#}");
+}
+
+#[test]
+fn test_completion_test_method_with_params() {
+    let mut t = setup();
+    t.caps = Caps { resolve_documentation: true, ..Default::default() };
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\npublic class Test {\n\tpublic static void main(String[] args) {\n\t\tfo\n\t\tSystem.out.println(\"Hello World!\");\n\t}\n\n\t/**\n\t* This method has Javadoc\n\t*/\n\tpublic static void foo(String bar) {\n\t}\n\t/**\n\t* Another Javadoc\n\t*/\n\tpublic static void foo() {\n\t}\n}\n",
+    );
+    let list = t.request_completions(&unit, "\t\tfo");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "foo(String bar) : void");
+    let resolved = t.resolve(&ci);
+    assert!(!resolved.is_null());
+    assert_eq!(s(&resolved["documentation"]), " This method has Javadoc ");
+    let ci = find_label_prefix(&list, "foo() : void");
+    let resolved = t.resolve(&ci);
+    assert!(!resolved.is_null());
+    assert_eq!(s(&resolved["documentation"]), " Another Javadoc ");
+}
+
+#[test]
+fn test_completion_test_classes_available_into_test_code() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    let unit = t.get_working_copy("test/foo/bar/BaseTest.java", "package foo.bar;\n\npublic class BaseTest extends AbstractTe {\n}\n");
+    let list = t.request_completions(&unit, " AbstractTe");
+    assert!(!list.is_null());
+    assert_eq!(1, items(&list).len(), "Test proposals missing from :\n{list:#}");
+    assert_eq!("AbstractTest - foo.bar", s(&items(&list)[0]["label"]));
+}
+
+/// `getCompletionOverwriteReplaceUnit`.
+const OVERWRITE_SOURCE: &str = "package foo.bar;\n\npublic class BaseTest {\n    public int testInt;\n\n    public boolean method(int x, int y, int z) {\n        return true;\n    } \n\n    public void update() {\n        BaseTest t = new BaseTest();\n        t.method(t.this.testInt, this.testInt);\n    }\n}\n";
+
+fn completion_overwrite_replace(overwrite: bool, expected: &str) {
+    let mut t = setup();
+    if !overwrite {
+        t.set_preference(&["java", "completion", "overwrite"], json!(false));
+    }
+    let unit = t.get_working_copy("test/foo/bar/BaseTest.java", OVERWRITE_SOURCE);
+    let list = t.request_completions(&unit, "method(t.");
+    assert!(!list.is_null());
+    let ci = find_label_prefix(&list, "testInt : int");
+    assert_eq!("testInt", s(&ci["insertText"]));
+    assert_eq!(KIND_FIELD, ci["kind"]);
+    assert_eq!("999998554", s(&ci["sortText"]));
+    assert!(!ci["textEdit"].is_null());
+    let returned = apply_edits(&unit.text, &[ci["textEdit"].clone()]);
+    assert_eq!(returned, expected);
+}
+
+#[test]
+fn test_completion_overwrite() {
+    completion_overwrite_replace(
+        true,
+        "package foo.bar;\n\npublic class BaseTest {\n    public int testInt;\n\n    public boolean method(int x, int y, int z) {\n        return true;\n    } \n\n    public void update() {\n        BaseTest t = new BaseTest();\n        t.method(t.testInt.testInt, this.testInt);\n    }\n}\n",
+    );
+}
+
+#[test]
+fn test_completion_insert() {
+    completion_overwrite_replace(
+        false,
+        "package foo.bar;\n\npublic class BaseTest {\n    public int testInt;\n\n    public boolean method(int x, int y, int z) {\n        return true;\n    } \n\n    public void update() {\n        BaseTest t = new BaseTest();\n        t.method(t.testIntthis.testInt, this.testInt);\n    }\n}\n",
+    );
+}
+
+// ─── Snippet contexts ────────────────────────────────────────────────────────
+
+fn find_snippet(list: &Value, label: &str) -> Option<Value> {
+    items(list).into_iter().find(|i| i["label"] == label && i["kind"] == KIND_SNIPPET)
+}
+
+#[test]
+fn test_snippet_with_public() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic ");
+    let list = t.request_completions(&unit, "public ");
+    assert!(!list.is_null());
+    let ci = find_snippet(&list, "class").unwrap_or_else(|| panic!("{list:#}"));
+    assert_eq!("class Test {\n\n\t${0}\n}", s(&ci["insertText"]));
+    let ci = find_snippet(&list, "interface").unwrap_or_else(|| panic!("{list:#}"));
+    assert_eq!("interface Test {\n\n\t${0}\n}", s(&ci["insertText"]));
+}
+
+#[test]
+fn test_snippet_context_javadoc() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\n/**\n */");
+    let list = t.request_completions(&unit, "/**");
+    assert!(!list.is_null());
+    assert!(find_snippet(&list, "class").is_none(), "{list:#}");
+    assert!(find_snippet(&list, "interface").is_none(), "{list:#}");
+}
+
+#[test]
+fn test_snippet_context_package() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\n");
+    let list = t.request_completions(&unit, "package ");
+    assert!(!list.is_null());
+    assert!(find_snippet(&list, "class").is_none(), "{list:#}");
+    assert!(find_snippet(&list, "interface").is_none(), "{list:#}");
+}
+
+#[test]
+fn test_snippet_context_method1() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class Test {\n\n\tvoid test() {\n\n\t}\n}\n");
+    let list = t.request_completions(&unit, "{\n\n");
+    assert!(!list.is_null());
+    let ci = find_snippet(&list, "class").unwrap_or_else(|| panic!("{list:#}"));
+    assert_eq!("class ${1:InnerTest} {\n\n\t${0}\n}", s(&ci["insertText"]));
+    assert!(find_snippet(&list, "interface").is_none(), "{list:#}");
+}
+
+#[test]
+fn test_snippet_context_method2() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class Test {\n\n\tvoid test() {\n\n\t\tif (c\n\t}\n}\n");
+    let list = t.request_completions(&unit, "if (c");
+    assert!(!list.is_null());
+    assert!(find_snippet(&list, "class").is_none(), "{list:#}");
+    assert!(find_snippet(&list, "interface").is_none(), "{list:#}");
+}
+
+#[test]
+fn test_snippet_context_method3() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class Test {\n\n\tvoid test() {\n\n\t\tint \n\t}\n}\n");
+    let list = t.request_completions(&unit, "int ");
+    assert!(!list.is_null());
+    assert!(find_snippet(&list, "class").is_none(), "{list:#}");
+    assert!(find_snippet(&list, "interface").is_none(), "{list:#}");
+}
+
+#[test]
+fn test_snippet_context_static() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class Test {\n\n\tstatic {\n\t}\n}\n");
+    let list = t.request_completions(&unit, "static {\n");
+    assert!(!list.is_null());
+    let ci = find_snippet(&list, "class").unwrap_or_else(|| panic!("{list:#}"));
+    assert_eq!("class ${1:InnerTest} {\n\n\t${0}\n}", s(&ci["insertText"]));
+    assert!(find_snippet(&list, "interface").is_none(), "{list:#}");
+}
+
+// ─── Static imports and result limits ────────────────────────────────────────
+
+/// `-Dcompletion.timeout=60000`, set by the static import tests.
+fn long_completion_timeout(t: &mut T) {
+    t.ws.oracle_java_options.push("-Dcompletion.timeout=60000".into());
+}
+
+#[test]
+fn test_static_imports1() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    long_completion_timeout(&mut t);
+    t.set_preference(&["java", "completion", "favoriteStaticMembers"], json!(["test1.A.foo"]));
+    let unit = t.get_working_copy("src/test1/B.java", "package test1;\n\npublic class B {\n    public void bar() {\n        fo\n    }\n}\n");
+    let list = t.request_completions(&unit, "fo");
+    assert!(!list.is_null());
+    assert_eq!(Some(false), list["isIncomplete"].as_bool());
+    assert!(!items(&list).is_empty());
+    assert_eq!("foo() : void", s(&items(&list)[0]["label"]), "no proposal for foo()");
+}
+
+fn no_snippets(items: Vec<Value>) -> Vec<Value> {
+    items.into_iter().filter(|i| i["kind"] != KIND_SNIPPET).collect()
+}
+
+#[test]
+fn test_limit_completion_results() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    let unit = t.get_working_copy("src/test1/B.java", "package test1;\n\npublic class B {\n    public void bar() {\n        d\n    }\n}\n");
+    //Completion should limit results to maxCompletionResults (excluding snippets)
+    let list = t.request_completions(&unit, "d");
+    assert!(!list.is_null());
+    assert_eq!(Some(true), list["isIncomplete"].as_bool());
+    let completion_only = no_snippets(items(&list));
+    assert_eq!(50, completion_only.len());
+    assert!(s(&completion_only[0]["sortText"]) < s(&completion_only[completion_only.len() - 1]["sortText"]));
+
+    //Set max results to 1 to double check
+    t.set_preference(&["java", "completion", "maxResults"], json!(1));
+    let list = t.request_completions(&unit, "d");
+    assert!(!list.is_null());
+    assert_eq!(Some(true), list["isIncomplete"].as_bool());
+    assert_eq!(1, no_snippets(items(&list)).len());
+
+    //when maxCompletionResults is set to 0, limit is disabled, completion should be complete
+    t.set_preference(&["java", "completion", "maxResults"], json!(0));
+    let list = t.request_completions(&unit, "d");
+    assert!(!list.is_null());
+    assert_eq!(Some(false), list["isIncomplete"].as_bool());
+    let completion_only = no_snippets(items(&list));
+    assert!(completion_only.len() > 50, "Expected way than {}", completion_only.len());
+    assert!(s(&completion_only[0]["sortText"]) < s(&completion_only[completion_only.len() - 1]["sortText"]));
+}
+
+#[test]
+fn test_static_imports2() {
+    let mut t = setup();
+    long_completion_timeout(&mut t);
+    t.set_preference(&["java", "completion", "favoriteStaticMembers"], json!([]));
+    let unit = t.get_working_copy(
+        "src/test1/B.java",
+        // conflicting method, no static import possible
+        "package test1;\n\npublic class B {\n    public void bar() {\n        /* */fo\n    }\n    public void foo(int x) {\n    }\n}\n",
+    );
+    let list = t.request_completions(&unit, "/* */fo");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty());
+    for it in items(&list) {
+        assert_ne!("foo() : void", s(&it["label"]), "there is a proposal for foo()");
+    }
+}
+
+#[test]
+fn test_star_imports() {
+    let mut t = setup();
+    long_completion_timeout(&mut t);
+    t.set_preference(&["java", "completion", "favoriteStaticMembers"], json!(["java.lang.Math.*"]));
+    t.set_preference(&["java", "sources", "organizeImports", "starThreshold"], json!(2));
+    t.set_preference(&["java", "sources", "organizeImports", "staticStarThreshold"], json!(2));
+    let unit = t.get_working_copy(
+        "src/test1/B.java",
+        "package test1;\nimport static java.lang.Math.sqrt;\nimport java.util.List;\npublic class B {\n    List<String> list = new ArrayL\n    public static void main(String[] args) {\n        double d1 = sqrt(4);\n        double d2 = abs\n    }\n}\n",
+    );
+    let list = t.request_completions(&unit, "new ArrayL");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty());
+    let item = items(&list).into_iter().find(|i| i["label"] == "ArrayList()").unwrap_or_else(|| panic!("{list:#}"));
+    let edits = item["additionalTextEdits"].as_array().unwrap_or_else(|| panic!("{item:#}"));
+    assert_eq!(1, edits.len());
+    assert_eq!("\n\nimport java.util.*;", s(&edits[0]["newText"]));
+    let list = t.request_completions(&unit, "= abs");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty());
+    let item = find_label_prefix(&list, "abs(double");
+    let edits = item["additionalTextEdits"].as_array().unwrap_or_else(|| panic!("{item:#}"));
+    assert_eq!(1, edits.len());
+    assert_eq!("import static java.lang.Math.*;\n\n", s(&edits[0]["newText"]));
+}
+
+#[test]
+fn test_completion_links_in_markdown() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    t.caps = Caps { markdown: true, resolve_documentation: true, ..Default::default() };
+    t.ws.init_options = json!({ "extendedClientCapabilities": { "classFileContentsSupport": true } });
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\npublic class Test {\n    public void foo(){\n      this.zz \n    }\n    \n\t/**\n\t * @see Baz\n\t */\n    public Baz zzzzzzz(){ \n      return null;\n    }\n}\n",
+    );
+    let list = t.request_completions(&unit, "this.zz");
+    assert!(!list.is_null());
+    assert_eq!(1, items(&list).len(), "{list:#}");
+    let ci = &items(&list)[0];
+    assert_eq!("zzzzzzz() : Baz", s(&ci["label"]));
+    let resolved = t.resolve(ci);
+    assert!(resolved["documentation"].is_object(), "{resolved:#}");
+    let doc = s(&resolved["documentation"]["value"]);
+    assert!(doc.contains("* [Baz](file:/"), "Unexpected documentation content in {doc}");
+}
+
+#[test]
+fn test_completion_additional_text_edit() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n\tprivate Object o;\n\tvoid foo() {\n\t\to.toStr\n\t}\n}\n");
+    let list = t.request_completions(&unit, "o.toStr");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty(), "No proposals were found");
+    let ci = &items(&list)[0];
+    assert!(ci["additionalTextEdits"].is_null(), "{ci:#}");
+    assert_eq!("toString() : String", s(&ci["label"]));
+    let resolved = t.resolve(ci);
+    assert!(resolved["additionalTextEdits"].is_null(), "{resolved:#}");
+}
+
+#[test]
+fn test_completion_resolve_additional_text_edits() {
+    let mut t = setup();
+    t.caps = Caps { resolve_additional_text_edits: true, ..Default::default() };
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n\tvoid foo() {\n\t\tHashMa\n\t}\n}\n");
+    let list = t.request_completions(&unit, "HashMa");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty(), "No proposals were found");
+    let ci = &items(&list)[0];
+    assert!(ci["additionalTextEdits"].is_null(), "{ci:#}");
+    assert_eq!("HashMap - java.util", s(&ci["label"]));
+    let resolved = t.resolve(ci);
+    let edits = resolved["additionalTextEdits"].as_array().unwrap_or_else(|| panic!("{resolved:#}"));
+    assert_eq!(1, edits.len());
+    assert_eq!("import java.util.HashMap;\n\n", s(&edits[0]["newText"]));
+}
+
+#[test]
+fn test_completion_enum() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class Test {\n\n   enum Zenum{A,B}\n\tvoid test() {\n\n      Zenu\n\t}\n}\n");
+    let list = t.request_completions(&unit, "   Zenu");
+    assert!(!list.is_null());
+    assert_eq!(1, items(&list).len(), "{list:#}");
+    let item = &items(&list)[0];
+    assert_eq!(KIND_ENUM, item["kind"]);
+    assert_eq!("Zenum", s(&item["insertText"]));
+}
+
+#[test]
+fn test_completion_constant() {
+    let mut t = setup();
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\npublic class Test {\n\n\tvoid test() {\n\n\t\tchar c = java.io.File.pathSeparatorC \n\t}\n}\n",
+    );
+    let list = t.request_completions(&unit, "pathSeparatorC");
+    assert!(!list.is_null());
+    assert_eq!(1, items(&list).len(), "{list:#}");
+    let item = &items(&list)[0];
+    assert_eq!(KIND_CONSTANT, item["kind"]);
+    assert_eq!("pathSeparatorChar", s(&item["insertText"]));
+}
+
+// ─── Type filters ────────────────────────────────────────────────────────────
+
+fn set_filtered_types(t: &mut T, types: &[&str]) {
+    t.set_preference(&["java", "completion", "filteredTypes"], json!(types));
+}
+
+fn has_detail(list: &Value, detail: &str) -> bool {
+    items(list).iter().any(|i| i["detail"] == detail)
+}
+
+#[test]
+fn test_completion_filter_types() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class Test {\n\n\tvoid test() {\n\n\t\tList l; \n\t}\n}\n");
+    let list = t.request_completions(&unit, "List");
+    assert!(!list.is_null());
+    assert!(has_detail(&list, "java.util.List"), "{list:#}");
+    let present = items(&list).iter().any(|i| i["label"] == "List - java.util");
+    assert!(present, "The 'List - java.util' proposal hasn't been found");
+    set_filtered_types(&mut t, &["java.util.*"]);
+    let list = t.request_completions(&unit, "List");
+    assert!(!list.is_null());
+    assert!(!has_detail(&list, "java.util.List"), "{list:#}");
+}
+
+#[test]
+fn test_completion_filter_packages() {
+    let mut t = setup();
+    // The preference is set before the server starts: it is in place before the request.
+    set_filtered_types(&mut t, &["java.util.*"]);
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\n\npublic class Test {\n\tvoid test() {\n\t\tjava.util \n\t}\n}\n");
+    let list = t.request_completions(&unit, "java.util");
+    assert!(!list.is_null());
+    let packages: Vec<String> = items(&list).iter().map(|i| s(&i["label"]).to_owned()).collect();
+    assert!(packages.len() > 1, "{list:#}");
+    assert_eq!("java.util", packages[0]);
+}
+
+#[test]
+fn test_completion_filter_types_keep_methods() {
+    let mut t = setup();
+    // The preference is set before the server starts: it is in place before the request.
+    set_filtered_types(&mut t, &["java.util.*"]);
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\npublic class Test {\n\n\tvoid test() {\n\n\t\tjava.util.List l; \n       l.clea \n\t}\n}\n",
+    );
+    let list = t.request_completions(&unit, "l.clea");
+    assert!(!list.is_null());
+    assert_eq!(1, items(&list).len(), "Missing completion: {list:#}");
+    assert_eq!("clear() : void", s(&items(&list)[0]["label"]));
+}
+
+#[test]
+fn test_completion_filter_types_keep_methods2() {
+    let mut t = setup();
+    // The preference is set before the server starts: it is in place before the request.
+    set_filtered_types(&mut t, &["java.util.*"]);
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\nimport java.util.List;public class Test {\n\n\tvoid test() {\n\n\t\tList l; \n\t\tl.clea \n\t}\n}\n",
+    );
+    let list = t.request_completions(&unit, "l.clea");
+    assert!(!list.is_null());
+    assert_eq!(1, items(&list).len(), "Missing completion: {list:#}");
+    assert_eq!("clear() : void", s(&items(&list)[0]["label"]));
+}
+
+#[test]
+fn test_completion_filter_methods_when_type_is_missing() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    // The preference is set before the server starts: it is in place before the request.
+    set_filtered_types(&mut t, &["java.util.*"]);
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\npublic class Test {\n\n\tvoid test() {\n\n\t\tList l; \n\t\tl.clea \n\t}\n}\n");
+    let list = t.request_completions(&unit, "l.clea");
+    assert!(!list.is_null());
+    assert_eq!(0, items(&list).len(), "{list:#}");
+}
+
+fn ignore_type_filter_when_imported(import: &str) {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    let src = format!("package org.sample;\n{import}public class Test {{\n\n\tvoid test() {{\n\n\t\tList\n\t}}\n}}\n");
+    // The preference is set before the server starts: it is in place before the request.
+    set_filtered_types(&mut t, &["java.util.*"]);
+    let unit = t.get_working_copy("src/org/sample/Test.java", &src);
+    // getWorkingCopy's makeConsistent: the unit is reconciled before the request.
+    t.ws.diagnostics(&unit.uri);
+    let list = t.request_completions(&unit, "\t\tList");
+    assert!(!list.is_null());
+    assert!(has_detail(&list, "java.util.List"), "{list:#}");
+}
+
+#[test]
+fn test_completion_ignore_type_filter_when_imported1() {
+    ignore_type_filter_when_imported("import java.util.List;");
+}
+
+#[test]
+fn test_completion_ignore_type_filter_when_imported2() {
+    ignore_type_filter_when_imported("import java.util.*;");
+}
+
+#[test]
+fn test_completion_ignore_type_filter_when_imported3() {
+    ignore_type_filter_when_imported("import static java.util.List.*;");
+}
+
+#[test]
+fn test_completion_ignore_type_filter_when_imported4() {
+    ignore_type_filter_when_imported("import static java.util.List.DUMMY;");
+}
+
+#[test]
+fn test_completion_ignore_type_filter_when_imported5() {
+    let mut t = setup();
+    // The preference is set before the server starts: it is in place before the request.
+    set_filtered_types(&mut t, &["java.util.*"]);
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\nimport java.util.List;\npublic class Test {\n}");
+    let list = t.request_completions(&unit, "java.util.");
+    assert!(!list.is_null());
+}
+
+#[test]
+fn test_completion_ignore_type_filter_when_imported6() {
+    let mut t = setup();
+    // The preference is set before the server starts: it is in place before the request.
+    set_filtered_types(&mut t, &["java.util.*"]);
+    let unit = t.get_working_copy("src/org/sample/Test.java", "package org.sample;\nimport java.util.\npublic class Test {\n}");
+    let list = t.request_completions(&unit, "java.util.");
+    assert!(!list.is_null());
+}
+
+#[test]
+fn test_completion_auto_add_static_import_as_favorite_import() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    // The preference is set before the server starts: it is in place before the request.
+    t.set_preference(&["java", "completion", "favoriteStaticMembers"], json!(["org.junit.Assert.*"]));
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\nimport static java.util.Arrays.sort;\npublic class Test {\n\tpublic static void main(String[] args) {\n\t\tasList\n\t}\n}",
+    );
+    // getWorkingCopy's makeConsistent: the unit is reconciled before the request.
+    t.ws.diagnostics(&unit.uri);
+    let list = t.request_completions(&unit, "asList");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty());
+    let item = items(&list)
+        .into_iter()
+        .find(|i| i["detail"].as_str().is_some_and(|d| d.starts_with("java.util.Arrays.asList(")))
+        .unwrap_or_else(|| panic!("{list:#}"));
+    assert!(!item.is_null());
+}
+
+// ─── Documentation ───────────────────────────────────────────────────────────
+
+#[test]
+#[ignore = "environment: needs com.aspose:aspose-words:15.12.0 from repository.aspose.com, which this machine cannot reach (the oracle fails the same way)"]
+fn test_completion_invalid_javadoc() {
+    let mut t = setup();
+    t.ws.import_projects(&["maven/aspose"]);
+    let uri = t.ws.class_uri("aspose", "org.sample.TestJavadoc");
+    let source = t.ws.read(&uri);
+    let unit = t.get_working_copy_uri(&uri, &source);
+    let list = t.request_completions(&unit, "doc.");
+    let ci = items(&list).into_iter().find(|i| i["label"] == "accept(DocumentVisitor visitor) : boolean");
+    assert!(ci.is_some(), "{list:#}");
+}
+
+#[test]
+fn test_completion_constant_default_value() {
+    let mut t = setup();
+    t.caps = Caps { resolve_documentation: true, ..Default::default() };
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\npublic class Test {\n\n\tprivate int one = IConstantDefault.\n\t@IConstantDefault()\n\tvoid test() {\n\t}\n}\n",
+    );
+    let list = t.request_completions(&unit, "IConstantDefault.");
+    assert!(!list.is_null());
+    assert_eq!(3, items(&list).len(), "{list:#}");
+    let ci = &items(&list)[0];
+    assert_eq!(KIND_CONSTANT, ci["kind"]);
+    assert_eq!("ONE : int", s(&ci["label"]));
+    let resolved = t.resolve(ci);
+    assert_eq!(KIND_CONSTANT, resolved["kind"]);
+    assert_eq!("Value: 1", s(&resolved["documentation"]));
+
+    let ci = &items(&list)[1];
+    assert_eq!(KIND_CONSTANT, ci["kind"]);
+    assert_eq!("TEST : double", s(&ci["label"]));
+
+    let list = t.request_completions(&unit, "@IConstantDefault(");
+    assert!(!list.is_null());
+    assert_eq!(1, items(&list).len(), "{list:#}");
+    let ci = &items(&list)[0];
+    assert_eq!(KIND_FIELD, ci["kind"]);
+    assert_eq!("someMethod : String", s(&ci["label"]));
+    let resolved = t.resolve(ci);
+    assert_eq!(KIND_FIELD, resolved["kind"]);
+    assert_eq!("Default: \"test\"", s(&resolved["documentation"]));
+}
+
+// See https://github.com/redhat-developer/vscode-java/issues/1258
+#[test]
+fn test_completion_javadoc_original() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    t.caps = Caps { resolve_documentation: true, ..Default::default() };
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\nimport java.util.List;\nimport java.util.LinkedList;\npublic class Test {\n\n\tvoid test() {\n\t\tMyList<String> l = new LinkedList<>();\n\t\tl.add\n\t}\n}\n",
+    );
+    let list = t.request_completions(&unit, "l.add");
+    assert!(!list.is_null());
+    assert_eq!(4, items(&list).len(), "{list:#}");
+    let ci = &items(&list)[0];
+    assert_eq!(KIND_METHOD, ci["kind"]);
+    assert_eq!("add(String e) : boolean", s(&ci["label"]));
+    let resolved = t.resolve(ci);
+    assert_eq!(KIND_METHOD, resolved["kind"]);
+    assert_eq!(" Test ", s(&resolved["documentation"]));
+}
+
+// See https://github.com/redhat-developer/vscode-java/issues/2034
+#[test]
+fn test_completion_anonymous() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    t.caps.label_details = true;
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample;\nimport java.util.Arrays;\npublic class Test {\n\n\tpublic static void main(String[] args) {\n\t\tnew Runnable() {\n\t\t\t@Override\n\t\t\tpublic void run() {\n\t\t\t\tboolean equals = Arrays.equals(new Object[0], new Object[0]);\n\t\t\t}\n\t\t};\n\t}\n}\n",
+    );
+    let list = t.request_completions(&unit, "= A");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty());
+    let ci = items(&list).into_iter().find(|i| i["label"] == "Arrays").unwrap_or_else(|| panic!("{list:#}"));
+    // createTypeProposalLabel
+    assert_eq!("Arrays", s(&ci["label"]));
+    assert!(ci["labelDetails"]["detail"].is_null());
+    assert_eq!("java.util", s(&ci["labelDetails"]["description"]));
+    assert_eq!(KIND_CLASS, ci["kind"]);
+    assert_eq!("java.util.Arrays", s(&ci["detail"]));
+}
+
+#[test]
+fn test_completion_nullable() {
+    let mut t = setup();
+    t.ws.import_projects(&["eclipse/testnullable"]);
+    // JavaCore.createCompilationUnitFrom(file): the unit is not opened.
+    let uri = t.ws.class_uri("testnullable", "org.sample.Main");
+    let text = t.ws.read(&uri);
+    t.start();
+    let (line, character) = find_completion_location(&text, "ru", 0);
+    let list = t.completion_at(&uri, line, character);
+    assert!(!list.is_null());
+    let ci = items(&list).into_iter().find(|i| i["label"] == "run() : void").unwrap_or_else(|| panic!("{list:#}"));
+    assert_eq!("public void run() {};", s(&ci["textEdit"]["newText"]));
+}
+
+const DEPRECATED_SOURCE: &str = "public class Main {\n\t@Deprecated\n\tpublic static final class DeprecatedClass {}\n\tDeprecatedCl\n\t/**\n\t * @deprecated\n\t */\n\tpublic static void deprecatedMethod() {\n\t\tdeprecatedMe\n\t}\n\tpublic static void notDeprecated() {\n\t\tnotDepr\n\t}\n}";
+
+#[test]
+fn test_completion_deprecated() {
+    let mut t = setup();
+    t.caps.tag_support = true;
+    let unit = t.get_working_copy("src/org/sample/Test.java", DEPRECATED_SOURCE);
+
+    let deprecated_class = items(&t.request_completions(&unit, "\tDeprecatedCl"))[0].clone();
+    assert_eq!(KIND_CLASS, deprecated_class["kind"]);
+    let tags = deprecated_class["tags"].as_array().unwrap_or_else(|| panic!("{deprecated_class:#}"));
+    assert!(tags.contains(&json!(1)), "Should have deprecated tag");
+
+    let deprecated_method = items(&t.request_completions(&unit, "\t\tdeprecatedMe"))[0].clone();
+    assert_eq!(KIND_METHOD, deprecated_method["kind"]);
+    let tags = deprecated_method["tags"].as_array().unwrap_or_else(|| panic!("{deprecated_method:#}"));
+    assert!(tags.contains(&json!(1)), "Should have deprecated tag");
+
+    let not_deprecated = items(&t.request_completions(&unit, "\t\tnotDepr"))[0].clone();
+    assert_eq!(KIND_METHOD, not_deprecated["kind"]);
+    if let Some(tags) = not_deprecated["tags"].as_array() {
+        assert!(!tags.contains(&json!(1)), "Should not have deprecated tag");
+    }
+}
+
+#[test]
+fn test_completion_deprecated_property() {
+    let mut t = setup();
+    t.caps.tag_support = false;
+    let unit = t.get_working_copy("src/org/sample/Test.java", "public class Main {\n\t@Deprecated\n\tpublic static final class DeprecatedClass {}\n\tDeprecatedCl\n}");
+    let deprecated_class = items(&t.request_completions(&unit, "\tDeprecatedCl"))[0].clone();
+    assert_eq!(KIND_CLASS, deprecated_class["kind"]);
+    assert_eq!(Some(true), deprecated_class["deprecated"].as_bool(), "Should be deprecated: {deprecated_class:#}");
+}
+
+// ─── Lambdas and constructors ────────────────────────────────────────────────
+
+#[test]
+fn test_completion_lambda() {
+    let mut t = setup();
+    t.caps.label_details = true;
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "import java.util.function.Consumer;\npublic class Test {\n\tpublic static void main(String[] args) {\n\t\tConsumer c = \n\t}\n}",
+    );
+    let list = t.request_completions(&unit, "c = ");
+    assert!(!list.is_null());
+    let lambda = items(&list)
+        .into_iter()
+        .find(|i| regex_full_match(r"\(Object \w+\) ->", s(&i["label"])) && i["kind"] == KIND_METHOD)
+        .unwrap_or_else(|| panic!("{list:#}"));
+    assert!(regex_full_match(r"\$\{1:\w+\} -> \$\{0\}", s(&lambda["textEdit"]["newText"])), "{lambda:#}");
+    let label = s(&lambda["label"]);
+    // In case the JDK has no sources: "(Object arg0) ->"
+    assert!(label == "(Object t) ->" || label == "(Object arg0) ->", "{label}");
+    assert!(lambda["labelDetails"]["detail"].is_null());
+    assert_eq!(s(&lambda["labelDetails"]["description"]), "void");
+}
+
+/// A completion request with `CompletionContext(TriggerCharacter, " ")`.
+fn request_with_space_trigger(t: &mut T, unit: &Unit, behind: &str) -> Value {
+    let (line, character) = find_completion_location(&unit.text, behind, 0);
+    t.ws.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": unit.uri },
+            "position": { "line": line, "character": character },
+            "context": { "triggerKind": 2, "triggerCharacter": " " }
+        }),
+    )
+}
+
+#[test]
+fn test_completion_after_new() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "public class Test {\n\tpublic static void main(String[] args) {\n\t\tString s = new \n\t}\n}");
+    let list = request_with_space_trigger(&mut t, &unit, "new ");
+    assert_eq!(Some(true), list["isIncomplete"].as_bool(), "{list:#}");
+    assert!(s(&items(&list)[0]["label"]).starts_with("String("), "{list:#}");
+}
+
+#[test]
+fn test_completion_ignore_space_without_new() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "public class Test {\n\tpublic static void main(String[] args) {\n\t\tString s \n\t}\n}");
+    let list = request_with_space_trigger(&mut t, &unit, "String s ");
+    assert!(items(&list).is_empty(), "{list:#}");
+}
+
+#[test]
+fn test_completion_ignore_variable_with_new_postfix() {
+    let mut t = setup();
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "public class Test {\n\tpublic static void main(String[] args) {\n\t\tString val_new;\n\t\tnew String(val_new );\n\t}\n}",
+    );
+    let list = request_with_space_trigger(&mut t, &unit, "val_new ");
+    assert!(items(&list).is_empty(), "{list:#}");
+}
+
+#[test]
+fn test_completion_ignore_string_literal_new() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/org/sample/Test.java", "public class Test {\n\tpublic static void main(String[] args) {\n\t\tString s = \"new \";\n\t}\n}");
+    let list = request_with_space_trigger(&mut t, &unit, "\"new ");
+    assert!(items(&list).is_empty(), "{list:#}");
+}
+
+// https://github.com/redhat-developer/vscode-java/issues/2534
+#[test]
+fn test_completion_qualified_name() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample\npublic class Test {\n\tpublic static void main(String[] args) {\n\t\t java.util.List<String> list = new Array\n\t}\n}",
+    );
+    let list = t.request_completions(&unit, "new Array");
+    assert!(!items(&list).is_empty());
+    assert_eq!("ArrayList<>()", s(&items(&list)[0]["textEdit"]["newText"]), "{list:#}");
+}
+
+// https://github.com/eclipse/eclipse.jdt.ls/issues/2147
+#[test]
+fn test_completion_qualified_name2() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample\npublic class Test {\n\tpublic static void main(String[] args) {\n\t\t  List<String> list = new java.util.ArrayL\n\t}\n}",
+    );
+    let list = t.request_completions(&unit, "ArrayL");
+    assert!(!items(&list).is_empty());
+    assert!(s(&items(&list)[0]["filterText"]).starts_with("java.util.ArrayList"), "{list:#}");
+}
+
+#[test]
+fn test_completion_with_conflicting_type_names() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    t.caps = Caps { resolve_additional_text_edits: true, ..Default::default() };
+    t.get_working_copy("src/java/List.java", "package util;\npublic class List {\n}\n");
+    let unit = t.get_working_copy(
+        "src/java/Foo.java",
+        "package util;\npublic class Foo {\n\tvoid foo() {\n \t\tObject list = new List();\n\t\tList \n\t}\n}\n",
+    );
+    // CoreASTProvider.getAST(unit, WAIT_YES): the unit is reconciled before the request.
+    t.ws.diagnostics(&unit.uri);
+    let from = unit.text.find("List()").unwrap() + 6;
+    let list = t.request_completions_from(&unit, "List", from);
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty(), "No proposals were found");
+    assert!(has_detail(&list, "java.util.List"), "java.util.List not found: {list:#}");
+    let resolved = t.resolve(&items(&list)[0]);
+    assert_eq!("java.util.List", s(&resolved["textEdit"]["newText"]), "{resolved:#}");
+}
+
+fn lambda_items(list: &Value) -> Vec<Value> {
+    items(list).into_iter().filter(|p| p["label"].as_str().is_some_and(|l| l.contains("->"))).collect()
+}
+
+#[test]
+fn test_completion_lambda_with_no_param() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n\tvoid foo() {\n \t\tRunnable r = \n\t}\n}\n");
+    let list = t.request_completions(&unit, "= ");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty(), "No proposals were found");
+    let items = lambda_items(&list);
+    assert!(!items.is_empty(), "Lambda not found");
+    assert!(regex_full_match(r"\(\) -> \$\{0\}", s(&items[0]["textEdit"]["newText"])), "{:#}", items[0]);
+}
+
+#[test]
+fn test_completion_lambda_with_multiple_params() {
+    let mut t = setup();
+    let unit = t.get_working_copy(
+        "src/java/Foo.java",
+        "public class Foo {\n\tvoid foo() {\n \t\tjava.util.function.BiConsumer<Integer, Long> bc = \n\t}\n}\n",
+    );
+    let list = t.request_completions(&unit, "= ");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty(), "No proposals were found");
+    let items = lambda_items(&list);
+    assert!(!items.is_empty(), "Lambda not found");
+    assert!(regex_full_match(r"\(\$\{1:\w+\}\, \$\{2:\w+\}\) -> \$\{0\}", s(&items[0]["textEdit"]["newText"])), "{:#}", items[0]);
+}
+
+// ─── Case matching ───────────────────────────────────────────────────────────
+
+fn first_upper(item: &Value) -> bool {
+    s(&item["label"]).chars().next().is_some_and(char::is_uppercase)
+}
+
+const MATCH_CASE_SOURCE: &str = "package org.sample\npublic class Test {\n\tpublic static void main(String[] args) {\n\t\ti\n\t}\n}";
+
+#[test]
+fn test_completion_match_case_off() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    let unit = t.get_working_copy("src/org/sample/Test.java", MATCH_CASE_SOURCE);
+    let list = t.request_completions(&unit, "\t\ti");
+    assert!(!items(&list).is_empty());
+    assert!(items(&list).iter().any(first_upper), "{list:#}");
+}
+
+#[test]
+fn test_completion_match_case_first_letter() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    t.set_preference(&["java", "completion", "matchCase"], json!("firstLetter"));
+    let unit = t.get_working_copy("src/org/sample/Test.java", MATCH_CASE_SOURCE);
+    let list = t.request_completions(&unit, "\t\ti");
+    assert!(!items(&list).is_empty());
+    assert!(!items(&list).iter().any(|i| i["kind"] != KIND_SNIPPET && first_upper(i)), "{list:#}");
+}
+
+#[test]
+fn test_completion_match_case_first_letter_for_constructor() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    t.set_preference(&["java", "completion", "matchCase"], json!("firstLetter"));
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample\npublic class Test {\n\tpublic static void main(String[] args) {\n\t\tString a = new S\n\t}\n}",
+    );
+    let list = t.request_completions(&unit, "new S");
+    assert!(!items(&list).is_empty());
+    assert!(items(&list).iter().all(first_upper), "{list:#}");
+    assert!(items(&list).iter().any(|i| s(&i["label"]).starts_with("String")), "{list:#}");
+}
+
+// https://github.com/eclipse-jdtls/eclipse.jdt.ls/issues/2884
+#[test]
+fn test_completion_match_case_first_letter_for_method_override() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    t.set_preference(&["java", "completion", "matchCase"], json!("firstLetter"));
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample\npublic class Test {\n\tpublic void testMethod(int a, int b){}\n\tpublic void testMethod(int b){}\n}\nclass TestOverride extends Test{\n\tt\n}",
+    );
+    let list = t.request_completions(&unit, "t");
+    assert!(!items(&list).is_empty());
+    assert!(s(&items(&list)[0]["label"]).starts_with("testMethod(int b"), "{list:#}");
+    assert!(s(&items(&list)[1]["label"]).starts_with("testMethod(int a"), "{list:#}");
+}
+
+// ─── Snippet items ───────────────────────────────────────────────────────────
+
+/// `testCompletion_selectSnippetItem` (https://github.com/eclipse/eclipse.jdt.ls/issues/2376):
+/// upstream asserts the item's response is still cached in
+/// `CompletionResponses`.  Over LSP, `java.completion.onDidSelect` fails with
+/// "Cannot get completion responses." when it is not.
+#[test]
+fn test_completion_select_snippet_item() {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n\tvoid foo() {\n \t\tsysout\n\t}\n}\n");
+    let list = t.request_completions(&unit, "sysout");
+    let completion_item = &items(&list)[0];
+    let data = &completion_item["data"];
+    let request_id: i64 = s(&data["rid"]).parse().unwrap();
+    let resp = t.ws.client().request_response(
+        "workspace/executeCommand",
+        json!({ "command": "java.completion.onDidSelect", "arguments": [request_id.to_string(), s(&data["pid"])] }),
+    );
+    assert!(resp.get("error").is_none(), "{resp:#}");
+}
+
+// https://github.com/eclipse/eclipse.jdt.ls/issues/2387
+#[test]
+fn test_completion_multi_line_range() {
+    let mut t = setup();
+    t.caps.insert_replace = true;
+    let unit = t.get_working_copy(
+        "src/java/Foo.java",
+        "public class Foo {\n    public static void main(String[] args) {\n        if (true) {\n            java.util.List<String> list = new java.util.ArrayList<>();\n            list.add\n            (\"test\"\n            );\n        }\n    }\n}\n",
+    );
+    let list = t.request_completions(&unit, "list.");
+    let completion_items: Vec<Value> = items(&list).into_iter().filter(|i| s(&i["label"]).starts_with("add")).collect();
+    assert!(!completion_items.is_empty(), "{list:#}");
+    for completion_item in completion_items {
+        let te = &completion_item["textEdit"];
+        assert!(!te.is_null());
+        let replace = if te.get("replace").is_some() {
+            &te["replace"]
+        } else if te.get("range").is_some() {
+            &te["range"]
+        } else {
+            &te["insert"]
+        };
+        assert_eq!(replace["start"]["line"], replace["end"]["line"], "{completion_item:#}");
+    }
+}
+
+fn edit_range_of(item: &Value) -> Value {
+    let te = &item["textEdit"];
+    if te.get("range").is_some() {
+        te["range"].clone()
+    } else {
+        te["replace"].clone()
+    }
+}
+
+#[test]
+fn test_completion_syserr_snipper() {
+    let mut t = setup();
+    t.set_preference(&["java", "completion", "lazyResolveTextEdit", "enabled"], json!(false));
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n\tvoid f() {\n\t\tsyser\n\t}\n};\n");
+    let list = t.request_completions(&unit, "syser");
+    assert!(!list.is_null());
+    assert_eq!(1, items(&list).len(), "{list:#}");
+    let item = &items(&list)[0];
+    assert_eq!("syserr", s(&item["label"]));
+    assert_eq!(range(2, 2, 2, 7), edit_range_of(item));
+}
+
+#[test]
+fn test_completion_print_snippets() {
+    let mut t = setup();
+    t.ws.use_upstream_test_jdk("hello");
+    t.set_preference(&["java", "completion", "lazyResolveTextEdit", "enabled"], json!(false));
+    let unit = t.get_working_copy("src/java/Foo.java", "public class Foo {\n\tvoid f() {\n\t\tprin\n\t}\n};\n");
+    let list = t.request_completions(&unit, "prin");
+    assert!(!list.is_null());
+    let out_item = &items(&list)[3];
+    let err_item = &items(&list)[4];
+    assert_eq!("System.out.println()", s(&out_item["label"]), "{list:#}");
+    assert_eq!("System.err.println()", s(&err_item["label"]), "{list:#}");
+    assert_eq!(range(2, 2, 2, 6), edit_range_of(out_item));
+    assert_eq!(range(2, 2, 2, 6), edit_range_of(err_item));
+}
+
+#[test]
+fn test_completion_publicmain_snippet() {
+    let mut t = setup();
+    t.set_preference(&["java", "completion", "lazyResolveTextEdit", "enabled"], json!(false));
+    t.set_preference(&["java", "completion", "matchCase"], json!("firstLetter"));
+    let unit = t.get_working_copy("src/java/Foo.java", "class Foo {\n\tpublic\n};\n");
+    let list = t.request_completions(&unit, "public");
+    assert!(!list.is_null());
+    assert_eq!(2, items(&list).len(), "{list:#}");
+    let item = &items(&list)[1];
+    assert_eq!("public static void main(String[] args)", s(&item["label"]));
+}
+
+// ─── Array creations ─────────────────────────────────────────────────────────
+
+fn array_type_receiver(source: &str, insert_text: &str, label: &str) {
+    let mut t = setup();
+    let unit = t.get_working_copy("src/java/Arr.java", source);
+    let list = t.request_completions(&unit, "new ");
+    let completion_item = &items(&list)[0];
+    assert_eq!(insert_text, s(&completion_item["insertText"]), "Array type completion EditText");
+    assert_eq!(label, s(&completion_item["label"]), "Array type completion Label");
+}
+
+#[test]
+fn test_completion_for_non_primitive_array_type_receivers() {
+    array_type_receiver("public class Arr {\n\tvoid foo() {\n \t\tString[] names = new S\n\t}\n}\n", "String[]", "String[] - java.lang");
+}
+
+#[test]
+fn test_completion_for_primitive_array_type_receivers() {
+    array_type_receiver("public class Arr {\n\tvoid foo() {\n \t\tint[] ages = new i\n\t}\n}\n", "int[]", "int[]");
+}
+
+#[test]
+fn test_completion_for_enclosing_type_array_type_receivers() {
+    array_type_receiver("public class Arr {\n\tvoid foo() {\n\t\tArr[] ages = new A\n\t}\n}\n", "Arr[]", "Arr[] - java");
+}
+
+// ─── Lombok ──────────────────────────────────────────────────────────────────
+
+/// The `when(...)` stubs of the lombok tests on top of `mockLSP3Client()`.
+fn lombok_caps() -> Caps {
+    Caps {
+        insert_replace: true,
+        item_defaults: vec!["editRange", "insertTextFormat", "insertTextMode"],
+        insert_text_mode_adjust_indentation: true,
+        ..Caps::lsp3()
+    }
+}
+
+fn lombok_completions(source: &str) -> Value {
+    let mut t = setup();
+    // -javaagent:~/.m2/repository/org/projectlombok/lombok/<version>/lombok-<version>.jar
+    let home = std::env::var("HOME").unwrap_or_default();
+    t.ws.oracle_java_options.push(format!("-javaagent:{home}/.m2/repository/org/projectlombok/lombok/1.18.32/lombok-1.18.32.jar"));
+    t.caps = lombok_caps();
+    t.ws.import_projects(&["maven/mavenlombok"]);
+    let uri = t.ws.class_uri("mavenlombok", "org.sample.Test");
+    let original = t.ws.read(&uri);
+    let mut unit = t.get_working_copy_uri(&uri, &original);
+    t.change(&mut unit, source);
+    t.request_completions(&unit, " = ")
+}
+
+// this test should pass when starting with -javaagent:<lombok_jar>
+// https://github.com/eclipse/eclipse.jdt.ls/issues/2669
+#[test]
+#[ignore = "needs the Lombok javaagent in the compiler; the ECJ bridge has no Lombok support (passes on the oracle started with -javaagent)"]
+fn test_completion_lombok() {
+    let list = lombok_completions(
+        "package org.sample;\nimport lombok.Builder;\nimport lombok.Data;\nimport lombok.Builder.Default;\n@Data\n@Builder\npublic class Test {\n      @Default\n      private Integer offset = ;\n}\n",
+    );
+    assert!(!list.is_null());
+    assert_eq!(6, items(&list).len(), "{list:#}");
+    let item_defaults = &list["itemDefaults"];
+    assert!(!item_defaults.is_null());
+    assert!(item_defaults["insertTextFormat"].is_null(), "{item_defaults:#}");
+    assert!(item_defaults["editRange"].is_null(), "{item_defaults:#}");
+}
+
+// this test should pass when starting with -javaagent:<lombok_jar>
+// https://github.com/eclipse/eclipse.jdt.ls/issues/2669
+#[test]
+#[ignore = "needs the Lombok javaagent in the compiler; the ECJ bridge has no Lombok support (passes on the oracle started with -javaagent)"]
+fn test_completion_lombok2() {
+    let list = lombok_completions(
+        "package org.sample;\nimport lombok.Builder;\nimport lombok.Data;\nimport lombok.Builder.Default;\n@Data\n@Builder\npublic class Test {\n      private Integer offset = ;\n}\n",
+    );
+    assert!(!list.is_null());
+    assert_eq!(19, items(&list).len(), "{list:#}");
+    let item_defaults = &list["itemDefaults"];
+    assert!(!item_defaults.is_null());
+    assert!(!item_defaults["editRange"].is_null(), "{item_defaults:#}");
+}
+
+// ─── Java 17 ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_completion_record() {
+    let mut t = setup();
+    use_project(&mut t, "java17");
+    let unit = t.get_working_copy(
+        "src/foo/bar/Foo.java",
+        "package foo.bar;\n\npublic class Foo() {\n\n\tstatic record MyRecordKind(int i){}\n\n\tprivate MyRecordKin\n}\n",
+    );
+    let list = t.request_completions(&unit, "private MyRecordKin");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty());
+    let item = &items(&list)[0];
+    assert_eq!(KIND_STRUCT, item["kind"]);
+    assert_eq!("MyRecordKind", s(&item["insertText"]));
+}
+
+#[test]
+fn test_completion_annotation_param() {
+    let mut t = setup();
+    use_project(&mut t, "java17");
+    let unit = t.get_working_copy("src/foo/bar/Foo.java", "package foo.bar;\n\n@Deprecated()\npublic class Foo() {\n}\n");
+    let list = t.request_completions(&unit, "@Deprecated(");
+    assert!(!list.is_null());
+    assert!(!items(&list).is_empty());
+    for item in items(&list) {
+        assert_eq!(KIND_FIELD, item["kind"], "{item:#}");
+    }
+}
+
+// ─── Overload order and collapsing ───────────────────────────────────────────
+
+const OVERLOADS_SOURCE: &str = "package org.sample\npublic class Test {\n\tpublic void test(String x){}\n\tpublic void test(String x, int y){}\n\tpublic void test(String x, int y, boolean z){}\n\tpublic static void main(String[] args) {\n\t\t  Test obj = new Test();\n\t\t  obj.test\n\t}\n}";
+
+#[test]
+fn test_completion_order() {
+    let mut t = setup();
+    t.caps.label_details = true;
+    let unit = t.get_working_copy("src/org/sample/Test.java", OVERLOADS_SOURCE);
+    let list = t.request_completions(&unit, "obj.test");
+    assert!(!items(&list).is_empty());
+    assert!(s(&items(&list)[0]["filterText"]).starts_with("test(String x)"), "{list:#}");
+    assert!(s(&items(&list)[1]["filterText"]).starts_with("test(String x, int y)"), "{list:#}");
+    assert!(s(&items(&list)[2]["filterText"]).starts_with("test(String x, int y, boolean z)"), "{list:#}");
+}
+
+#[test]
+fn test_completion_collapse() {
+    let mut t = setup();
+    t.caps.label_details = true;
+    t.set_preference(&["java", "completion", "collapseCompletionItems"], json!(true));
+    let unit = t.get_working_copy("src/org/sample/Test.java", OVERLOADS_SOURCE);
+    let list = t.request_completions(&unit, "obj.test");
+    assert!(!items(&list).is_empty());
+    assert!(s(&items(&list)[0]["labelDetails"]["detail"]).starts_with("(...)"), "{list:#}");
+    assert!(s(&items(&list)[0]["labelDetails"]["description"]).starts_with("3 overloads"), "{list:#}");
+}
+
+#[test]
+fn test_completion_collapse_extends() {
+    let mut t = setup();
+    t.caps.label_details = true;
+    t.set_preference(&["java", "completion", "collapseCompletionItems"], json!(true));
+    let unit = t.get_working_copy(
+        "src/org/sample/Test.java",
+        "package org.sample\nclass Test extends TestSuper {\n\tpublic void test(String x){}\n\tpublic static void main(String[] args) {\n\t\t  Test obj = new Test();\n\t\t  obj.test\n\t}\n}\npublic class TestSuper {\n\tpublic void test(String x, int y){}\n}",
+    );
+    let list = t.request_completions(&unit, "obj.test");
+    assert!(!items(&list).is_empty());
+    assert!(s(&items(&list)[0]["labelDetails"]["detail"]).starts_with("(...)"), "{list:#}");
+    assert!(s(&items(&list)[0]["labelDetails"]["description"]).starts_with("2 overloads"), "{list:#}");
+}
