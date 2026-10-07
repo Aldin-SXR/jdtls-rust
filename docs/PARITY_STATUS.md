@@ -7,7 +7,7 @@ suite. For how the port is done, see [PORTING.md](PORTING.md).
   binary-editor, initial correction, completion and project-manager integrations. `main` is unchanged.
 * **Reference:** eclipse.jdt.ls 1.58.0. The upstream checkout is 1.58.0-SNAPSHOT
   (2026-04-10), and the oracle in `.oracle/` is the 1.58.0 release.
-* **Last updated:** 2026-10-06.
+* **Last updated:** 2026-10-07.
 
 ## Summary
 
@@ -16,10 +16,10 @@ The upstream suite has 2,087 `@Test` methods in 206 classes
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 881 | 42.2% |
-| Passing | 870 | 41.7% |
+| Ported | 934 | 44.8% |
+| Passing | 923 | 44.2% |
 | Ported but `#[ignore]`d | 11 | 0.5% |
-| Not ported yet | 1,206 | 57.8% |
+| Not ported yet | 1,153 | 55.2% |
 
 On `jdtls-parity`, `cargo test --no-fail-fast --bins --tests` gives 1,684 passed,
 0 failed and 12 ignored across 99 test targets. That count also includes our own regression suite
@@ -70,7 +70,7 @@ Those duplicate runs are excluded from the upstream-port counts.
 | correction | 604 | 101 | 101 | 17% |
 | refactoring | 119 | 0 | 0 | 0% |
 | (root) | 71 | 7 | 7 | 10% |
-| preferences | 53 | 0 | 0 | 0% |
+| preferences | 53 | 53 | 53 | 100% |
 | codemanipulation | 20 | 10 | 10 | 50% |
 | cleanup | 18 | 3 | 3 | 17% |
 | syntaxserver | 14 | 0 | 0 | 0% |
@@ -158,6 +158,10 @@ Those duplicate runs are excluded from the upstream-port counts.
 | managers/MultiRootTest | `managers_multi_root_test` | 2 | 2 | 0 | 2/2 |
 | managers/ProjectsManagerTest | `managers_projects_manager_test` | 13 | 12 | 1 | 12/12 active, including unchanged Gradle successful-update and reload-marker assertions on Java 21; invalid-build status remains ignored |
 | managers/StandardProjectManagerTest | `managers_standard_project_manager_test` | 1 | 1 | 0 | n/a (unit port) |
+| preferences/ClientPreferencesTest | unit tests in `src/features/client_caps.rs` (`client_preferences_test`) | 16 | 16 | 0 | n/a (unit tests) |
+| preferences/PreferencesTest | unit tests in `src/features/preferences/model.rs` (`preferences_test`) | 16 | 16 | 0 | n/a (unit tests) |
+| preferences/PreferenceManagerTest | unit tests in `src/features/preferences/manager.rs` (`preference_manager_test`) | 15 | 15 | 0 | n/a (unit tests) |
+| preferences/NullAnalysisTest | `preferences_null_analysis_test` | 6 | 6 | 0 | 6/6 |
 
 ## Ignored tests
 
@@ -341,6 +345,30 @@ assertions: JUnit signature help and Reactor's exact 119 workspace-symbol matche
 * Gradle still reads build scripts heuristically; Tooling API/Buildship model parity
   is unfinished. Passing project-selection tests do not establish Gradle parity.
 
+## Preferences integration evidence
+
+All four `preferences` test classes are ported: 53 upstream methods, all passing.
+
+* `ClientPreferencesTest`, `PreferencesTest` and `PreferenceManagerTest` call Java APIs
+  directly, so they are unit ports with the upstream inputs and expected values. The
+  Mockito Maven-configuration mock is replaced by a recording mock.
+* Rust now has a typed `ClientPreferences` (the global `client_caps` helpers delegate to
+  it), a typed `Preferences` with `create_from`/`update_from` and a full `MapFlattener`
+  port, and a `StandardPreferenceManager` port (listeners, code templates, JavaCore tab
+  options, Maven/Eclipse preferences, `javals.profile`, multi-module directory). The
+  server keeps one global manager updated on `initialize` and `didChangeConfiguration`.
+* `java.project.encoding: warning` publishes the "Project 'X' has no explicit encoding
+  set" marker; explicit encodings come from the POM or `org.eclipse.core.resources.prefs`.
+  The static Gradle importer falls back to downloading declared dependencies.
+* `NullAnalysisTest` (6/6 on Rust and the oracle) observes upstream's marker counts over
+  LSP, so two inputs differ from upstream: `testNullAnalysisDisabled` enables
+  `java.project.encoding` (upstream's third marker is the encoding marker) and
+  `testMissingNonNull` restarts the server after adding a folder, because jdt.ls only
+  re-applies null-analysis options at startup.
+* **Remaining:** the disable-test-classpath flag and multi-module directory update only
+  the modelled m2e state, not the Maven classpath; completion snippets still read raw
+  `java.templates.*` settings.
+
 ## Known differences from jdt.ls
 
 * **JDT build.** The bridge now uses Maven JDT/ECJ 3.46.0. Its Core build is
@@ -432,7 +460,8 @@ for f in tests/*.rs; do b=$(basename "$f" .rs); case "$b" in lsp|*_regressions) 
 ```
 
 Add the ports that live as unit tests in `src/` (InlayHintFilterManagerTest 7,
-JavaDoc2Markdown 19, JavaDoc2PlainText 2, JavaDocImageExtraction 1, InitHandler 2).
+JavaDoc2Markdown 19, JavaDoc2PlainText 2, JavaDocImageExtraction 1, InitHandler 2,
+ClientPreferencesTest 16, PreferencesTest 16, PreferenceManagerTest 15).
 Exclude `tests/lsp.rs`, all `tests/*_regressions.rs` files, and empty placeholders
 (these are not ports). Upstream counts come from `@Test` methods in
 `eclipse.jdt.ls/org.eclipse.jdt.ls.tests*/src`.
