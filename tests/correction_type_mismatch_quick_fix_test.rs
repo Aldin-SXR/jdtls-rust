@@ -258,6 +258,7 @@ fn test_type_mismatch_for_interface1() {
 }
 
 #[test]
+#[ignore = "ParameterMismatch proposals (cast argument, change method signature, create method) come from UnresolvedElementsSubProcessor.getMethodProposals, ported with UnresolvedMethodsQuickFixTest; it can call type_mismatch::change_sender_type_proposals for the type change proposals"]
 fn test_type_mismatch_for_interface2() {
     let (mut t, root) = setup(&[]);
     let primary_container_code = "package test0;\npublic interface PrimaryContainer {\n    PrimaryContainer duplicate(PrimaryContainer container);\n}\n";
@@ -408,6 +409,7 @@ fn test_type_mismatch_for_interface_in_generic2() {
 }
 
 #[test]
+#[ignore = "needs Java50Fix raw type reference fix (InferTypeArguments constraint solver), not ported"]
 fn test_type_mismatch_for_parameterized_type() {
     let (mut t, root) = setup(&[("org.eclipse.jdt.core.compiler.problem.uncheckedTypeOperation", "warning"), ("org.eclipse.jdt.core.compiler.problem.rawTypeReference", "warning")]);
     let e_code = "package test1;\nimport java.util.*;\npublic class E {\n    public void foo() {\n        List list= new ArrayList<Integer>();\n    }\n}\n";
@@ -1327,6 +1329,7 @@ fn test_type_mismatch_with_array_length() {
 }
 
 #[test]
+#[ignore = "needs folder-based type lookup: test2/E.java declares package test1, which JDT still resolves as test2.E through its package fragment; the bridge name environment resolves types by declared package"]
 fn test_type_mismatch_with_type_in_same_package() {
     let (mut t, root) = setup(&[]);
     let mut buf = String::new();

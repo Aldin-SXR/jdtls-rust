@@ -83,6 +83,20 @@ pub async fn type_mismatch(env: &Env<'_>, ctx: &Context, problem: &ProblemLocati
     }
 
     if !node_to_cast.is(NodeKind::ArrayInitializer) {
+        if cast_type.erasure().unwrap_or(cast_type).qualified_name() == "java.util.Optional" {
+            let node_type = node_to_cast.type_binding();
+            let empty = messages::correction("TypeMismatchSubProcessor_changetooptionalempty_description");
+            proposals.push(optional_proposal(&ast, empty, node_to_cast, relevance::CREATE_EMPTY_OPTIONAL, None));
+            let wrap_all = node_type.is_some_and(|t| cast_type.type_arguments().into_iter().any(|a| is_cast_compatible(Ty::Binding(a), t)));
+            if wrap_all {
+                let of = messages::correction("TypeMismatchSubProcessor_changetooptionalof_description");
+                proposals.push(optional_proposal(&ast, of, node_to_cast, relevance::CREATE_OPTIONAL, Some("of")));
+                if node_type.is_some_and(|t| !t.is_primitive()) {
+                    let nullable = messages::correction("TypeMismatchSubProcessor_changetooptionalofnullable_description");
+                    proposals.push(optional_proposal(&ast, nullable, node_to_cast, relevance::CREATE_OPTIONAL_OF_NULLABLE, Some("ofNullable")));
+                }
+            }
+        }
         let cast_fix = match curr {
             None => Some(Ty::Binding(cast_type)),
             Some(c) if is_cast_compatible(Ty::Binding(cast_type), c) || node_to_cast.is(NodeKind::CastExpression) => Some(Ty::Binding(cast_type)),
@@ -136,6 +150,20 @@ pub async fn type_mismatch(env: &Env<'_>, ctx: &Context, problem: &ProblemLocati
         rw.replace(RNode::Orig(node_to_cast.id), Some(infix));
         proposals.push(Proposal::rewrite(label, kind::QUICK_FIX, relevance::INSERT_NULL_CHECK, rw));
     }
+}
+
+/// `OptionalCorrectionProposalCore`: `Optional.empty()` (no `method`), or
+/// `Optional.of(node)` / `Optional.ofNullable(node)`.
+fn optional_proposal(ast: &Arc<Ast>, label: &str, node: Node<'_>, relevance: i32, method: Option<&str>) -> Proposal {
+    let mut rw = ASTRewrite::new(ast.clone());
+    let receiver = rw.new_name("Optional");
+    let arguments = match method {
+        Some(_) => vec![rw.create_copy_target(node.id)],
+        None => Vec::new(),
+    };
+    let invocation = rw.new_method_invocation(Some(receiver), method.unwrap_or("empty"), arguments);
+    rw.replace(RNode::Orig(node.id), Some(invocation));
+    Proposal::rewrite(label, kind::QUICK_FIX, relevance, rw)
 }
 
 /// `TypeMismatchBaseSubProcessor.isTypeReturned`.

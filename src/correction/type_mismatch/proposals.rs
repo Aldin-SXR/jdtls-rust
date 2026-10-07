@@ -204,6 +204,13 @@ pub async fn type_change_proposal(
             }
             rw.set(RNode::Orig(decl.id), "returnType2", Some(typ));
             remove_dimensions(&mut rw, decl);
+            // Add a `@return` tag when a void method gets a return type.
+            let was_void = decl.child("returnType2").is_some_and(|t| t.is(NodeKind::PrimitiveType) && t.simple("primitiveTypeCode") == Some("void"));
+            if let Some(doc) = decl.child("javadoc").filter(|_| was_void) {
+                if !doc.list("tags").iter().any(|t| t.simple("tagName") == Some("@return")) {
+                    insert_return_tag(&mut rw, doc);
+                }
+            }
         }
         NodeKind::AnnotationTypeMemberDeclaration => {
             rw.set(RNode::Orig(decl.id), "type", Some(typ));
@@ -262,6 +269,26 @@ pub async fn type_change_proposal(
         _ => return None,
     }
     Some(Proposal::new(label, kind::QUICK_FIX, relevance, single_change(rw, imports)))
+}
+
+/// `JavadocTagsSubProcessorCore.insertTag(tags, @return, null)`: after the
+/// last tag that sorts before `@return` (or a leading description).
+fn insert_return_tag(rw: &mut ASTRewrite, doc: Node<'_>) {
+    const ORDER: [&str; 9] = ["@author", "@version", "@param", "@return", "@throws", "@see", "@since", "@serial", "@deprecated"];
+    let rank = |tag: &str| {
+        let tag = if tag == "@exception" { "@throws" } else { tag };
+        ORDER.iter().position(|t| *t == tag).unwrap_or(ORDER.len())
+    };
+    let tag = rw.new_node(NodeKind::TagElement);
+    rw.put_simple(tag, "tagName", "@return");
+    let comment = rw.new_node(NodeKind::TextElement);
+    rw.put_simple(comment, "text", "");
+    rw.put_list(tag, "fragments", vec![comment]);
+    let after = doc.list("tags").into_iter().rev().find(|t| t.simple("tagName").is_none_or(|n| rank("@return") > rank(n)));
+    match after {
+        Some(after) => rw.list_insert_after(RNode::Orig(doc.id), "tags", tag, RNode::Orig(after.id)),
+        None => rw.list_insert_first(RNode::Orig(doc.id), "tags", tag),
+    }
 }
 
 /// `TypeChangeCorrectionProposalCore.getTypeNodeFromBinding`.
