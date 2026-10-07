@@ -19,10 +19,10 @@ of `CompletionHandlerTest`'s 156.
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 1,168 | 55.2% |
-| Passing | 1,150 | 54.3% |
-| Ported but `#[ignore]`d | 18 | 0.9% |
-| Not ported yet | 949 | 44.8% |
+| Ported | 1,210 | 57.2% |
+| Passing | 1,191 | 56.3% |
+| Ported but `#[ignore]`d | 19 | 0.9% |
+| Not ported yet | 907 | 42.8% |
 
 Our own regression suites (`tests/lsp.rs`, `tests/*_regressions.rs`) and unit tests that
 are not ports are excluded from these counts.
@@ -32,7 +32,7 @@ are not ports are excluded from these counts.
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
 | handlers | 868 | 670 | 660 | 76% |
-| correction | 610 | 236 | 235 | 38% |
+| correction | 610 | 278 | 276 | 45% |
 | managers | 211 | 134 | 127 | 60% |
 | refactoring | 118 | 0 | 0 | 0% |
 | (root) | 72 | 7 | 7 | 9% |
@@ -103,13 +103,14 @@ are not ports are excluded from these counts.
 | cleanup/CleanUpsTest | `cleanup_clean_ups_test` | 3 | 3 | 0 | 3/3; no cleanup, invert equals, organize imports; 15 methods remain unported |
 | correction/AbstractMethodQuickFixTest | `correction_abstract_method_quick_fix_test` | 8 | 8 | 0 | 8/8 |
 | correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 75 | 75 | 0 | 75/75 with `--test-threads=1`; 12 upstream methods remain unported |
+| correction/ModifierCorrectionsQuickFixTest | `correction_modifier_corrections_quick_fix_test` | 42 | 40 | 2 | 42/42 |
 | correction/NonProjectFixTest | `correction_non_project_fix_test` | 2 | 2 | 0 | 2/2; original source, action order, titles and command arguments |
 | correction/OrganizeImportsActionTest | `correction_organize_imports_action_test` | 6 | 6 | 0 | 6/6; original sources and edit assertions |
 | correction/TypeMismatchQuickFixTest | `correction_type_mismatch_quick_fix_test` | 44 | 44 | 0 | 44/44 |
 | correction/SerialVersionQuickFixTest | `correction_serial_version_quick_fix_test` | 5 | 5 | 0 | 5/5 |
 | correction/RedundantInterfaceQuickFixTest | `correction_redundant_interface_quick_fix_test` | 2 | 2 | 0 | 2/2 |
 | correction/UnnecessaryCastQuickFixTest | `correction_unnecessary_cast_quick_fix_test` | 1 | 1 | 0 | 1/1 |
-| correction/UnresolvedMethodsQuickFixTest | `correction_unresolved_methods_quick_fix_test` | 91 | 90 | 1 | 91/91; the favorites tests resend settings once the server runs (jdt.ls copies live favorites) |
+| correction/UnresolvedMethodsQuickFixTest | `correction_unresolved_methods_quick_fix_test` | 91 | 91 | 0 | 91/91; the favorites tests resend settings once the server runs (jdt.ls copies live favorites) |
 | codemanipulation/OverrideMethodsTestCase | `codemanipulation_override_methods_test_case` | 10 | 10 | 0 | 10/10 |
 | JVMConfiguratorTest | `jvm_configurator_test` | 7 | 7 | 0 | 7/7 direct calls to the actual JVM/runtime APIs and unchanged upstream VM extension |
 | commands/BuildPathCommandTest | `commands_build_path_command_test` | 4 | 4 | 0 | 4/4; unchanged Gradle 8.5 fixture runs on Java 21 |
@@ -155,7 +156,7 @@ Rust run and is excluded from the upstream-port count.
 | Requires an installed JavaSE-1.8 or Java 26 VM | 4 | Eclipse `test_forbidden_reference`, `test_preview_features_disabled_by_default`; invisible `test_preview_features_enabled_by_default`; Maven `test_java26_project` |
 | Oracle product lacks the resource-filter matcher available in the upstream test plugin | 1 | Eclipse `ignore_missing_resource_filters` |
 | Internal project markers differ from published diagnostics | 1 | Eclipse `test_null_analysis` retains the upstream count of 2 markers |
-| Needs the unported `NotVisibleMethod` visibility proposal (ModifierCorrectionSubProcessor) | 1 | UnresolvedMethods `test_indirect_protected_method` |
+| Needs the getter/setter ("Create getter and setter for") and unresolved-variable proposals | 2 | ModifierCorrections `test_invisible_field_requested_in_same_package1`, `test_invisible_field_requested_in_same_package2` |
 | Gradle model/update parity for an invalid build | 1 | ProjectsManager `test_sending_warning_project_status`; successful-update and reload-marker assertions now run with the compatible Gradle VM |
 
 ## Lifecycle/init integration evidence
@@ -383,8 +384,8 @@ pass on jdt.ls 1.58.0.
 * The bridge exports receiver and created-type member graphs, well-known types and a
   cast-compatibility relation for units that need them.
 * `validate_all_open_buffers_on_changes` now defaults to `true`, as upstream.
-* **Remaining:** `test_indirect_protected_method` waits on the visibility proposal from
-  `ModifierCorrectionSubProcessor`. `ConvertLoopOperation.modifyBaseName`, the "Let type
+* `test_indirect_protected_method` passes since the modifier-correction port.
+  `ConvertLoopOperation.modifyBaseName`, the "Let type
   implement interface"/"change constructor type" sender proposals and generated method
   comments are simplified or missing; no upstream test covers them.
 
@@ -409,6 +410,25 @@ All 44 `TypeMismatchQuickFixTest` methods are ported and pass on Rust and on jdt
 * **Remaining:** candidate subtypes for the constructor type proposal (upstream runs code
   completion); removing type annotations on type change; the "type arguments from
   context" and deprecated-field proposals sharing the raw-type dispatch entry.
+
+## Modifier-correction evidence
+
+All 42 `ModifierCorrectionsQuickFixTest` methods are ported; 40 pass on Rust and all 42
+on jdt.ls 1.58.0. `setup()` sets `java.format.insertSpaces=false` (upstream's mocked
+preference manager keeps JavaCore's tab default).
+
+* `src/correction/modifier_corrections/` ports `ModifierChangeCorrectionProposalCore`
+  (cross-unit lazy changes, `ModifierRewrite`, bodies for methods made static, abstract
+  enclosing classes), `VariableDeclarationRewrite.rewriteModifiers`, invalid-modifier
+  removal, every non-accessible-reference kind, overridden-method visibility/final/static,
+  effectively-final locals, synchronized/static method modifiers, sealed types and
+  permitted subtypes, "Add permitted type cases", `@Override` removal with "Create method
+  in super type", and "Mark method as deprecated". Untested proposals were compared with
+  the oracle.
+* `modifier::keywords` now follows `AST.newModifiers` order.
+* The semantic AST parses units and the sources they look up in their package fragment
+  (folder), matching the Java model; this fixed a completion regression where the
+  folder-based name environment and declared-package parse disagreed.
 
 ## Known differences from jdt.ls
 
