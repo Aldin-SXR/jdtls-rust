@@ -347,7 +347,6 @@ pub async fn equal_number_of_parameters(
     method: BindingRef<'_>,
     proposals: &mut Vec<Proposal>,
 ) {
-    let _ = env;
     let ast = ctx.ast();
     let param_types = method.parameter_types();
     let mut diffs = Vec::new();
@@ -398,7 +397,7 @@ pub async fn equal_number_of_parameters(
                 );
                 proposals.push(cast_proposal(ctx, label, node_to_cast, Some(fix), relevance::CAST_ARGUMENT_1));
             }
-            change_sender_type(ctx, units, node_to_cast, cast_type, false, relevance::CAST_ARGUMENT_2, proposals);
+            crate::correction::type_mismatch::change_sender_type_proposals(env, ctx, node_to_cast, cast_type, false, relevance::CAST_ARGUMENT_2, proposals).await;
         }
     }
     if diffs.len() == 2 {
@@ -934,129 +933,6 @@ impl LazyChange for ChangeSignature {
         let mut imports = ImportRewrite::create_for_corrections(target.clone(), &options);
         let mut rw = ASTRewrite::new(target.clone());
         self.modify(&mut rw, &mut imports, decl, &options, &target);
-        Ok(vec![CuChange::rewrite(rw).with_imports(imports)])
-    }
-}
-
-// ─── TypeChangeCorrectionProposalCore ───────────────────────────────────────
-
-/// `TypeMismatchBaseSubProcessor.collectChangeSenderTypeProposals`.
-pub fn change_sender_type(ctx: &Context, units: &Units, node_to_cast: Node<'_>, cast_type: BindingRef<'_>, is_assigned: bool, relevance: i32, proposals: &mut Vec<Proposal>) {
-    let ast = ctx.ast();
-    let Some(caller) = names::resolve_expression_binding(node_to_cast, false) else { return };
-    let mut target: Option<Option<String>> = None;
-    let mut declaring_type: Option<BindingRef<'_>> = None;
-    let mut caller_decl = caller;
-    if caller.is_variable() {
-        if caller.is_enum_constant() {
-            return;
-        }
-        if !caller.is_field() {
-            target = Some(None);
-        } else {
-            caller_decl = caller.variable_declaration().unwrap_or(caller);
-            let Some(c) = caller.declaring_class() else { return };
-            declaring_type = Some(declaration(c));
-        }
-    } else if caller.is_method() {
-        if !caller.is_constructor() {
-            declaring_type = caller.declaring_class().map(declaration);
-            caller_decl = method_declaration(caller);
-        }
-    }
-    if let Some(d) = declaring_type.filter(|d| d.is_from_source()) {
-        target = units.find(ast, d);
-    }
-    if let Some(target) = target {
-        if types::is_useable_in_context(cast_type, caller_decl, false) {
-            let type_name = type_label(cast_type);
-            let label = if caller_decl.is_variable() {
-                let args = [caller_decl.name(), type_name.as_str()];
-                if caller_decl.is_field() {
-                    messages::format(messages::correction("TypeChangeCompletionProposal_field_name"), &args)
-                } else if caller_decl.declaring_node().is_some_and(|n| n.is(NodeKind::SingleVariableDeclaration)) {
-                    messages::format(messages::correction("TypeChangeCompletionProposal_param_name"), &args)
-                } else {
-                    messages::format(messages::correction("TypeChangeCompletionProposal_variable_name"), &args)
-                }
-            } else {
-                messages::format(messages::correction("TypeChangeCompletionProposal_method_name"), &[caller_decl.name(), &type_name])
-            };
-            proposals.push(Proposal::new(
-                label,
-                kind::QUICK_FIX,
-                relevance,
-                Change::Lazy(Box::new(TypeChange { source: ctx.ast.clone(), binding: caller_decl.key().to_owned(), new_type: cast_type.key().to_owned(), target_uri: target })),
-            ));
-        }
-    }
-    let _ = is_assigned;
-}
-
-struct TypeChange {
-    source: Arc<Ast>,
-    binding: String,
-    new_type: String,
-    target_uri: Option<String>,
-}
-
-#[tower_lsp::async_trait]
-impl LazyChange for TypeChange {
-    async fn compute(&self, env: &Env<'_>) -> anyhow::Result<Vec<CuChange>> {
-        let target = target_ast(env, &self.source, &self.target_uri).await?;
-        let options = env.options(&target.uri).await;
-        let decl = target.binding_by_key(&self.binding).and_then(|b| b.declaring_node()).ok_or_else(|| anyhow::anyhow!("no declaration"))?;
-        let new_type = self.source.binding_by_key(&self.new_type).ok_or_else(|| anyhow::anyhow!("no type"))?;
-        let mut imports = ImportRewrite::create_for_corrections(target.clone(), &options);
-        let mut rw = ASTRewrite::new(target.clone());
-        let context = ConstructorImportContext { ast: target.clone(), declaration: crate::semantic_ast::resolve::find_parent_type(decl).map(|n| n.id), nullness: None };
-        let location = match decl.kind() {
-            NodeKind::MethodDeclaration => TypeLocation::ReturnType,
-            NodeKind::SingleVariableDeclaration => TypeLocation::Parameter,
-            NodeKind::VariableDeclarationFragment if decl.parent().is_some_and(|p| p.is(NodeKind::FieldDeclaration)) => TypeLocation::Field,
-            _ => TypeLocation::LocalVariable,
-        };
-        let typ = imports.add_import_type(new_type, &mut rw, &context, location);
-        let remove_dims = |rw: &mut ASTRewrite, n: Node<'_>| {
-            for d in n.list("extraDimensions2") {
-                rw.list_remove(RNode::Orig(n.id), "extraDimensions2", RNode::Orig(d.id));
-            }
-        };
-        match decl.kind() {
-            NodeKind::MethodDeclaration => {
-                rw.set(RNode::Orig(decl.id), "returnType2", Some(typ));
-                remove_dims(&mut rw, decl);
-            }
-            NodeKind::AnnotationTypeMemberDeclaration => rw.set(RNode::Orig(decl.id), "type", Some(typ)),
-            NodeKind::VariableDeclarationFragment => {
-                let parent = decl.parent().ok_or_else(|| anyhow::anyhow!("no parent"))?;
-                let fragments = parent.list("fragments");
-                let splittable = fragments.len() > 1
-                    && parent.parent().is_some_and(|g| (parent.is(NodeKind::FieldDeclaration) && g.kind().is_abstract_type_declaration()) || (parent.is(NodeKind::VariableDeclarationStatement) && g.is(NodeKind::Block)));
-                if splittable {
-                    let placeholder = rw.create_move_target(decl.id);
-                    let new_decl = rw.new_node(parent.kind());
-                    rw.put_child(new_decl, "type", typ);
-                    rw.put_list(new_decl, "fragments", vec![placeholder]);
-                    rw.put_list(new_decl, "modifiers", Vec::new());
-                    let list_owner = parent.parent().unwrap();
-                    let prop: &'static str = if parent.is(NodeKind::FieldDeclaration) { "bodyDeclarations" } else { "statements" };
-                    if fragments.first().is_some_and(|f| f.id == decl.id) {
-                        rw.list_insert_before(RNode::Orig(list_owner.id), prop, new_decl, RNode::Orig(parent.id));
-                    } else {
-                        rw.list_insert_after(RNode::Orig(list_owner.id), prop, new_decl, RNode::Orig(parent.id));
-                    }
-                } else {
-                    rw.set(RNode::Orig(parent.id), "type", Some(typ));
-                    remove_dims(&mut rw, decl);
-                }
-            }
-            NodeKind::SingleVariableDeclaration => {
-                rw.set(RNode::Orig(decl.id), "type", Some(typ));
-                remove_dims(&mut rw, decl);
-            }
-            _ => {}
-        }
         Ok(vec![CuChange::rewrite(rw).with_imports(imports)])
     }
 }

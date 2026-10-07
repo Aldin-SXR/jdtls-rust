@@ -258,7 +258,6 @@ fn test_type_mismatch_for_interface1() {
 }
 
 #[test]
-#[ignore = "ParameterMismatch proposals (cast argument, change method signature, create method) come from UnresolvedElementsSubProcessor.getMethodProposals, ported with UnresolvedMethodsQuickFixTest; it can call type_mismatch::change_sender_type_proposals for the type change proposals"]
 fn test_type_mismatch_for_interface2() {
     let (mut t, root) = setup(&[]);
     let primary_container_code = "package test0;\npublic interface PrimaryContainer {\n    PrimaryContainer duplicate(PrimaryContainer container);\n}\n";
