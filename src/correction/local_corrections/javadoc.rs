@@ -10,7 +10,7 @@ fn text(rw: &mut ASTRewrite, value: &str) -> RNode {
     rw.put_simple(node, "text", value);
     node
 }
-pub(super) fn argument(tag: Node<'_>) -> Option<String> {
+pub(crate) fn argument(tag: Node<'_>) -> Option<String> {
     let fragments = tag.list("fragments");
     let first = fragments.first()?;
     if first.kind().is_name() {
@@ -196,7 +196,7 @@ pub async fn document_unused(
 /// ChangeMethodSignatureProposalCore inserts new throws tags using the old
 /// exception list as ordering context, without adding documentation to a method
 /// that had no Javadoc.
-pub(super) fn insert_throws_tag(
+pub(crate) fn insert_throws_tag(
     rw: &mut ASTRewrite,
     doc: Node<'_>,
     name: &str,

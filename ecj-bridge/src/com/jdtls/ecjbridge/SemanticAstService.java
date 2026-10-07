@@ -241,9 +241,11 @@ final class SemanticAstService {
                 for (IMethodBinding method : new ArrayList<>(methodBindings.values())) {
                     hierarchyGraph(method.getDeclaringClass(), seen);
                 }
-                for (String name : new String[] {"boolean", "byte", "char", "short", "int", "long", "float", "double"}) {
-                    binding(cu.getAST().resolveWellKnownType(name));
-                }
+            }
+            // AST.resolveWellKnownType for primitives (expected types of
+            // conditions, unboxed cast types).
+            for (String name : new String[] {"boolean", "byte", "char", "short", "int", "long", "float", "double"}) {
+                binding(cu.getAST().resolveWellKnownType(name));
             }
             boolean unresolved = unresolvedInvocations();
             namespaceAnnotations();

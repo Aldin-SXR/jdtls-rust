@@ -12,7 +12,7 @@ use crate::{
 use std::collections::HashSet;
 
 /// ASTNodes.getTypeName / getQualifiedTypeName: exclude arguments and annotations.
-pub(super) fn type_name(node: Node<'_>, qualified: bool) -> String {
+pub(crate) fn type_name(node: Node<'_>, qualified: bool) -> String {
     match node.kind() {
         NodeKind::PrimitiveType => node.simple("primitiveTypeCode").unwrap_or("").into(),
         NodeKind::SimpleType => node
@@ -240,7 +240,7 @@ pub fn unreachable_catch(ctx: &Context, problem: &ProblemLocation, proposals: &m
 }
 /// ASTNodes.getNumberOfTypeReferences: declaration/expression types only,
 /// ignoring imports and Javadoc, and descending into parameterized types.
-pub(super) fn type_references(binding: BindingRef<'_>) -> usize {
+pub(crate) fn type_references(binding: BindingRef<'_>) -> usize {
     let mut count = 0;
     for node in binding
         .ast

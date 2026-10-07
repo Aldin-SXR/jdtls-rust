@@ -18,6 +18,8 @@ pub use assignment::{refactors as assignment_refactors, get_refactor_edit};
 pub use uncaught::{proposals as uncaught_exception, resource_proposals, resource_assist};
 pub use unreachable::proposals as unreachable_code;
 pub use unused::{proposals as unused_member, type_parameter as unused_type_parameter};
+pub(crate) use exceptions::{type_name as exception_type_name, type_references};
+pub(crate) use javadoc::{argument as javadoc_tag_argument, insert_throws_tag};
 
 use super::edit::Env;
 use super::parentheses::needs_parentheses;
