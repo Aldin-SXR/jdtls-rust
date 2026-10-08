@@ -519,6 +519,29 @@ impl Lifecycle {
 
     /// `didClose` (`handleClosed`); called before the store forgets the
     /// buffer.
+    /// `WorkspaceDiagnosticsHandler.cleanUpDiagnostics(resource)`: the stale
+    /// problems of a removed resource are cleared (reported even when empty).
+    pub async fn clean_up_diagnostics(&self, uri: &Url) {
+        self.state().markers.remove(uri);
+        self.client.publish_diagnostics(uri.clone(), Vec::new(), None).await;
+    }
+
+    /// `WorkspaceEventsHandler.discardWorkingCopies(parentUri)`: the open
+    /// documents below a deleted folder stop being working copies.
+    pub fn discard_working_copies(&self, parent: &Url) {
+        let Ok(parent_path) = parent.to_file_path() else { return };
+        if parent_path.extension().is_some_and(|e| e == "java") {
+            return;
+        }
+        for uri in self.store.open_uris() {
+            if uri.to_file_path().is_ok_and(|p| p.starts_with(&parent_path)) {
+                self.state().to_validate.retain(|u| u != &uri);
+                crate::features::configuration::discard_unit_options(&uri);
+                self.store.close(&uri);
+            }
+        }
+    }
+
     pub async fn did_close(&self, uri: &Url) {
         self.state().to_validate.retain(|u| u != uri);
         if !is_java_like(uri) {
@@ -878,7 +901,7 @@ impl Lifecycle {
     /// projects named `names`: the project's own markers, then those of its
     /// `pom.xml` and Gradle wrapper properties when they exist (reports are
     /// sent even when empty).
-    async fn publish_project_markers(&self, names: &[String]) {
+    pub(crate) async fn publish_project_markers(&self, names: &[String]) {
         let ws = self.workspace();
         for p in ws.projects.iter().filter(|p| p.kind != ProjectKind::Default && names.contains(&p.name)) {
             let project_uri = crate::project::resource_uri(&p.location);
