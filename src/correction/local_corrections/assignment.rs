@@ -16,7 +16,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, HashSet};
 
-fn used_names(node: Node<'_>) -> Vec<String> {
+pub(crate) fn used_names(node: Node<'_>) -> Vec<String> {
     let mut names = uncaught::visible_locals(node);
     if let Some(block) = node.ancestors().find(|n| n.is(NodeKind::Block)) {
         fn after(node: Node<'_>, end: usize, names: &mut HashSet<String>) {
@@ -278,7 +278,7 @@ fn expression_name(mut expression: Node<'_>, options: &BTreeMap<String, String>)
     }
 }
 
-fn variable_name(
+pub(crate) fn variable_name(
     typ: BindingRef<'_>,
     expression: Node<'_>,
     preference: &str,

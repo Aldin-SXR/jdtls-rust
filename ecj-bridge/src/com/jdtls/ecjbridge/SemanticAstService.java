@@ -120,7 +120,7 @@ final class SemanticAstService {
             RAW_METHOD = 1L << 36, COMPACT_CONSTRUCTOR = 1L << 37, CANONICAL_CONSTRUCTOR = 1L << 38, SYNTHETIC_RECORD_METHOD = 1L << 39;
 
     // Node flags (NodeOut.f) beyond ASTNode.getFlags() (MALFORMED 1, ORIGINAL 2, PROTECT 4, RECOVERED 8)
-    static final int BOXING = 1 << 8, UNBOXING = 1 << 9, COMMENT_ROOT = 1 << 10;
+    static final int BOXING = 1 << 8, UNBOXING = 1 << 9, COMMENT_ROOT = 1 << 10, INFERRED_FROM_EXPECTED = 1 << 11;
 
     /** Recently built ASTs by cache key, for follow-up queries. */
     private static final int MAX_CACHED = 8;
@@ -358,6 +358,11 @@ final class SemanticAstService {
                     }
                     if (e.resolveUnboxing()) {
                         flags |= UNBOXING;
+                    }
+                    if (e instanceof MethodInvocation m ? m.isResolvedTypeInferredFromExpectedType()
+                            : e instanceof SuperMethodInvocation sm ? sm.isResolvedTypeInferredFromExpectedType()
+                            : e instanceof ClassInstanceCreation c && c.isResolvedTypeInferredFromExpectedType()) {
+                        flags |= INFERRED_FROM_EXPECTED;
                     }
                 }
             } catch (RuntimeException e) {

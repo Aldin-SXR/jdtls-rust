@@ -23,6 +23,7 @@
 pub mod analyzer;
 pub mod flattener;
 pub mod formatter;
+pub mod import_remover;
 pub mod import_rewrite;
 pub mod indent;
 pub mod scanner;

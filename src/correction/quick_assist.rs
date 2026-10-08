@@ -4,6 +4,17 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod lambda;
+mod convert_var;
+mod method_ref;
+mod nls;
+mod static_import;
+mod string_concat;
+mod switch_expression;
+mod text_block;
+mod util;
+mod variable;
+
 use super::edit::Env;
 use super::handler::Request;
 use super::{kind, messages, relevance, Change, Context, CuChange, LazyChange, Proposal};
@@ -34,6 +45,23 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
     }
     if let Some(covering) = req.context.covering_node() {
         convert_to_record_proposals(env, &req.context, covering, &mut proposals).await;
+        let options = env.options(&req.context.ast.uri).await;
+        lambda::add_inferred_lambda_parameter_types(&req.context, &options, covering, &mut proposals);
+        lambda::add_var_lambda_parameter_types(&req.context, &options, covering, &mut proposals);
+        lambda::remove_var_or_inferred_lambda_parameter_types(&req.context, &options, covering, &mut proposals);
+        lambda::change_lambda_body_to_block(&req.context, covering, &mut proposals);
+        lambda::change_lambda_body_to_expression(&req.context, covering, &mut proposals);
+        method_ref::clean_up_lambda(&req.context, &options, covering, &mut proposals);
+        method_ref::convert_method_reference_to_lambda(&req.context, covering, &mut proposals);
+        method_ref::convert_lambda_to_method_reference(&req.context, &options, covering, &mut proposals);
+        string_concat::convert_to_message_format(&req.context, &options, covering, &mut proposals);
+        string_concat::convert_to_string_buffer(&req.context, &options, covering, &mut proposals);
+        string_concat::convert_to_string_format(&req.context, &options, covering, &mut proposals);
+        text_block::string_concat_to_text_block(&req.context, &options, covering, &mut proposals);
+        switch_expression::convert_to_switch_expression(&req.context, &options, covering, &mut proposals);
+        variable::split_variable(&req.context, &options, covering, &mut proposals);
+        variable::join_variable(&req.context, &options, covering, &mut proposals);
+        variable::invert_equals(&req.context, covering, &mut proposals);
     }
     // jdt.ls offers "Add Javadoc comment" only for units backed by a file
     // (verified against 1.58.0 for a working copy of a nonexistent file);
@@ -67,6 +95,10 @@ pub async fn refactor_proposals(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposa
         if let Some(p) = extract_field_proposal(env, req, problems_at_location).await {
             proposals.push(p);
         }
+        let options = env.options(&req.context.ast.uri).await;
+        convert_var::convert_var_type_to_resolved_type(env, &req.context, &options, covering, &mut proposals).await;
+        convert_var::convert_resolved_type_to_var_type(&req.context, &options, covering, &mut proposals);
+        static_import::add_static_import_proposals(&req.context, &options, covering, &mut proposals);
     }
     proposals.extend(super::local_corrections::assignment_refactors(env, req).await);
     if no_errors_at_location(req, covering) {
