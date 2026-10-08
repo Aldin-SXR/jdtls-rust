@@ -28,6 +28,7 @@ pub mod snippet_finder;
 pub mod flow;
 pub mod extract_temp;
 pub mod check_source;
+pub mod convert_for_loop;
 pub mod inline_constant;
 pub mod inline_temp;
 pub mod fragments;
