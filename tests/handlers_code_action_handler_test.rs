@@ -243,7 +243,6 @@ fn find_actions<'a>(actions: &'a [Value], kind: &str) -> Vec<&'a Value> {
 const QUICK_ASSIST: &str = "quickassist";
 
 #[test]
-#[ignore = "needs ReorgCorrectionsSubProcessor.removeImportStatementProposals (Remove unused import); passes on the oracle"]
 fn test_code_action_literal_remove_unused_import() {
     let source = "import java.sql.*; \npublic class Foo {\n\tvoid foo() {\n\t}\n}\n";
     let (mut ws, uri) = setup(source, "src/java/Foo.java");

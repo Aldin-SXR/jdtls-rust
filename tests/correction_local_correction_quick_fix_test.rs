@@ -813,3 +813,385 @@ fn test_unused_allocation3() {
     let uri = t.ws.create_cu(&root, "src", "test1", "E.java", "package test1;\npublic class E {\n\tpublic String foo(int count) throws Exception {\n\t\tif (count < 3) {\n\t\t\tnew String(\"abc\");\n\t\t}\n\t\treturn \"def\";\n\t}\n}\n");
     t.assert_code_action_exists_expected(&uri, &Expected::new("Remove", "package test1;\npublic class E {\n\tpublic String foo(int count) throws Exception {\n\t\tif (count < 3) {\n\t\t}\n\t\treturn \"def\";\n\t}\n}\n"));
 }
+
+#[test]
+fn test_unchecked_conversion_method_argument() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.uncheckedTypeOperation", "warning");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.rawTypeReference", "warning");
+    // @formatter:off
+    let before = concat!(
+        "package test1;\n",
+        "import java.util.*;\n",
+        "public class E {\n",
+        "    public void foo(Map<String, String> map) {\n",
+        "    }\n",
+        "    public void bar() {\n",
+        "        foo(new HashMap());\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &before);
+    let after = concat!(
+        "package test1;\n",
+        "import java.util.*;\n",
+        "public class E {\n",
+        "    public void foo(Map<String, String> map) {\n",
+        "    }\n",
+        "    public void bar() {\n",
+        "        foo(new HashMap<>());\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Add type arguments to 'HashMap'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_unchecked_conversion_return_statement() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.uncheckedTypeOperation", "warning");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.rawTypeReference", "warning");
+    // @formatter:off
+    let before = concat!(
+        "package test1;\n",
+        "import java.util.*;\n",
+        "public class E {\n",
+        "    public Map<String, String> foo() {\n",
+        "        return new HashMap();\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &before);
+    let after = concat!(
+        "package test1;\n",
+        "import java.util.*;\n",
+        "public class E {\n",
+        "    public Map<String, String> foo() {\n",
+        "        return new HashMap<>();\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Add type arguments to 'HashMap'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_unchecked_conversion_assignment() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.uncheckedTypeOperation", "warning");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.rawTypeReference", "warning");
+    // @formatter:off
+    let before = concat!(
+        "package test1;\n",
+        "import java.util.*;\n",
+        "public class E {\n",
+        "    public void foo() {\n",
+        "        Map<String, String> map;\n",
+        "        map = new HashMap();\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &before);
+    let after = concat!(
+        "package test1;\n",
+        "import java.util.*;\n",
+        "public class E {\n",
+        "    public void foo() {\n",
+        "        Map<String, String> map;\n",
+        "        map = new HashMap<>();\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Add type arguments to 'HashMap'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_unchecked_conversion_list() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.uncheckedTypeOperation", "warning");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.rawTypeReference", "warning");
+    // @formatter:off
+    let before = concat!(
+        "package test1;\n",
+        "import java.util.*;\n",
+        "public class E {\n",
+        "    public void foo() {\n",
+        "        List<String> list = new ArrayList();\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &before);
+    let after = concat!(
+        "package test1;\n",
+        "import java.util.*;\n",
+        "public class E {\n",
+        "    public void foo() {\n",
+        "        List<String> list = new ArrayList<>();\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Add type arguments to 'ArrayList'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+#[ignore = "LocalCorrectionsSubProcessor.addTypeParametersToRawTypeReference (UnsafeElementTypeConversion, 'Change type to ...') is not ported; passes on the oracle"]
+fn test_unchecked_conversion_explicit_type_arguments() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.uncheckedTypeOperation", "warning");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.rawTypeReference", "warning");
+    // @formatter:off
+    let before = concat!(
+        "package test1;\n",
+        "import java.util.*;\n",
+        "public class E {\n",
+        "    public void foo() {\n",
+        "        HashMap<Character, Integer> asdf = new HashMap();\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &before);
+    let after = concat!(
+        "package test1;\n",
+        "import java.util.*;\n",
+        "public class E {\n",
+        "    public void foo() {\n",
+        "        HashMap<Character, Integer> asdf = new HashMap<Character, Integer>();\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Change type to 'HashMap<Character, Integer>'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_hiding_variable1() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.localVariableHiding", "error");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.fieldHiding", "error");
+    let str = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    private int count;\n",
+        "    public void foo() {\n",
+        "       int count= 1;\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &str);
+    let after = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    private int count;\n",
+        "    public void foo() {\n",
+        "       int count1= 1;\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Rename local variable 'count'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_hiding_variable2() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.localVariableHiding", "error");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.fieldHiding", "error");
+    let str = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    private int count;\n",
+        "    public void foo(int count) {\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &str);
+    let after = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    private int count;\n",
+        "    public void foo(int count1) {\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Rename argument 'count'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_hiding_variable3() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.localVariableHiding", "error");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.fieldHiding", "error");
+    let str = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    public void foo(int count) {\n",
+        "        class Inner {\n",
+        "            private int count;\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &str);
+    let after = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    public void foo(int count) {\n",
+        "        class Inner {\n",
+        "            private int count1;\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Rename field 'count'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_hiding_variable4() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.localVariableHiding", "error");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.fieldHiding", "error");
+    let str = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    private int count;\n",
+        "    public void foo() {\n",
+        "        class Inner {\n",
+        "            private int count;\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &str);
+    let after = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    private int count;\n",
+        "    public void foo() {\n",
+        "        class Inner {\n",
+        "            private int count1;\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Rename field 'count'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_hiding_variable5() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.localVariableHiding", "error");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.fieldHiding", "error");
+    let str = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    public void foo(int count) {\n",
+        "        class Inner {\n",
+        "            public void foo() {\n",
+        "                 int count;\n",
+        "            }\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &str);
+    let after = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    public void foo(int count) {\n",
+        "        class Inner {\n",
+        "            public void foo() {\n",
+        "                 int count1;\n",
+        "            }\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Rename local variable 'count'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_hiding_variable6() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.localVariableHiding", "error");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.fieldHiding", "error");
+    let str = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    public void foo(int count) {\n",
+        "        class Inner {\n",
+        "            public void foo(int count) {\n",
+        "            }\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &str);
+    let after = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "    public void foo(int count) {\n",
+        "        class Inner {\n",
+        "            public void foo(int count1) {\n",
+        "            }\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Rename argument 'count'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
+
+#[test]
+fn test_duplicate_method() {
+    let (mut t, root) = setup();
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.localVariableHiding", "error");
+    t.ws.set_project_option(&root, "org.eclipse.jdt.core.compiler.problem.fieldHiding", "error");
+    let str = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "\tpublic void foo(int count) {\n",
+        "\t}\n",
+        "    public void foo(int count) {\n",
+        "        class Inner {\n",
+        "            public void foo(int count) {\n",
+        "            }\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    let cu = t.ws.create_cu(&root, "src", "test1", "E.java", &str);
+    let after = concat!(
+        "package test1;\n",
+        "public class E {\n",
+        "\tpublic void foo1(int count) {\n",
+        "\t}\n",
+        "    public void foo(int count) {\n",
+        "        class Inner {\n",
+        "            public void foo(int count) {\n",
+        "            }\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    // @formatter:on
+    let e1 = Expected::new("Rename method 'foo'", &after);
+    t.assert_code_action_exists_expected(&cu, &e1);
+}
