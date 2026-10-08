@@ -294,6 +294,19 @@ pub fn extended_capability_list_contains(name: &str, item: &str) -> bool {
     EXTENDED.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|v| v.get(name)).and_then(Value::as_array).is_some_and(|l| l.iter().any(|v| v.as_str() == Some(item)))
 }
 
+/// `ClientPreferences.excludedMarkerTypes()`: the string entries of the
+/// `excludedMarkerTypes` list.
+pub fn excluded_marker_types() -> Vec<String> {
+    EXTENDED
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|v| v.get("excludedMarkerTypes"))
+        .and_then(Value::as_array)
+        .map(|l| l.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
 /// An `extendedClientCapabilities` flag (`ClientPreferences`).
 pub fn extended_capability(name: &str) -> bool {
     EXTENDED.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|v| v.get(name)).is_some_and(|v| {

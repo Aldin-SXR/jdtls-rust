@@ -731,15 +731,25 @@ impl Lifecycle {
                             }
                         }
                     }
+                    // WorkspaceDiagnosticsHandler: the build's problem and
+                    // task markers of each file.
+                    let tag_support = crate::features::client_caps::diagnostic_tags();
+                    let mut docs: HashMap<String, diag_conv::Doc16> = HashMap::new();
                     for d in items.into_iter().filter(|d| own.contains(&d.uri)) {
-                        let doc = disk.get(&d.uri).map(|text| diag_conv::Doc16::new(text));
-                        if let Some((u, diag)) = diag_conv::to_lsp(
-                            &d,
-                            doc.as_ref(),
-                            crate::features::client_caps::diagnostic_tags(),
-                        ) {
-                            built.entry(u).or_default().push(diag);
-                        }
+                        let (Some(problem), Some(text), Ok(u)) =
+                            (diag_conv::RawProblem::from_bridge(&d), disk.get(&d.uri), Url::parse(&d.uri))
+                        else {
+                            if let Some((u, diag)) = diag_conv::to_lsp(&d, None, tag_support) {
+                                built.entry(u).or_default().push(diag);
+                            }
+                            continue;
+                        };
+                        let doc = docs.entry(d.uri.clone()).or_insert_with(|| diag_conv::Doc16::new(text));
+                        let marker = crate::features::markers::Marker::from_problem(&problem);
+                        built
+                            .entry(u)
+                            .or_default()
+                            .extend(crate::features::markers::to_diagnostics_array(doc, &[Some(&marker)], tag_support));
                     }
                 }
                 Err(e) => tracing::warn!("build of {}: {e}", project.name),

@@ -27,6 +27,7 @@ pub mod inlay_hints;
 pub mod java_element;
 pub mod java_model;
 pub mod lifecycle;
+pub mod markers;
 pub mod navigation;
 pub mod paste;
 pub mod preferences;
