@@ -859,7 +859,48 @@ impl Lifecycle {
             }
         }
         if !projects.is_empty() {
+            // WorkspaceDiagnosticsHandler.visit: the resource delta of the
+            // change, then the delta of the build, each report the markers of
+            // the projects they contain.
+            self.publish_project_markers(&projects).await;
             self.build(Some(&projects)).await;
+            self.publish_project_markers(&projects).await;
+        }
+    }
+
+    /// `WorkspaceDiagnosticsHandler.publishMarkers(project, markers)` for the
+    /// projects named `names`: the project's own markers, then those of its
+    /// `pom.xml` and Gradle wrapper properties when they exist (reports are
+    /// sent even when empty).
+    async fn publish_project_markers(&self, names: &[String]) {
+        let ws = self.workspace();
+        for p in ws.projects.iter().filter(|p| p.kind != ProjectKind::Default && names.contains(&p.name)) {
+            let project_uri = crate::project::resource_uri(&p.location);
+            let Ok(uri) = Url::parse(&project_uri) else { continue };
+            if matches_diagnostic_filter(&uri) {
+                continue;
+            }
+            let mut single = ws.clone();
+            single.projects.retain(|q| q.name == p.name);
+            let mut reports: HashMap<String, Vec<Value>> =
+                crate::features::project_commands::project_marker_diagnostics(&single).into_iter().collect();
+            let mut publish = |u: Url, values: Vec<Value>| {
+                let diags: Vec<Diagnostic> = values.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
+                (u, diags)
+            };
+            let mut out = vec![publish(uri, reports.remove(&project_uri).unwrap_or_default())];
+            for build_file in ["pom.xml", "gradle/wrapper/gradle-wrapper.properties"] {
+                let path = p.location.join(build_file);
+                if path.is_file() {
+                    let file_uri = crate::project::resource_uri(&path);
+                    if let Ok(u) = Url::parse(&file_uri) {
+                        out.push(publish(u, reports.remove(&file_uri).unwrap_or_default()));
+                    }
+                }
+            }
+            for (u, diags) in out {
+                self.client.publish_diagnostics(u, diags, None).await;
+            }
         }
     }
 

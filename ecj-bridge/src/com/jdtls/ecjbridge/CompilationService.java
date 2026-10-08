@@ -145,11 +145,14 @@ public class CompilationService {
                 new DefaultProblemFactory(Locale.ENGLISH));
         AnnotationProcessingSession aptSession = configureAnnotationProcessing(compiler, classpath, sourceLevel);
 
-        ICompilationUnit[] units = sourceFiles.entrySet().stream()
-                .filter(e -> e.getKey().endsWith(".java") || (roots != null && roots.contains(e.getKey())))
-                .filter(e -> roots == null || roots.contains(e.getKey()))
-                .map(e -> (ICompilationUnit) new InMemoryCompilationUnit(e.getKey(), e.getValue(),
-                        nameEnv.expectedPackage(e.getKey())))
+        // The Java builder compiles the source files in the order it visits
+        // them (the caller's root order); a type defined twice is reported on
+        // the later unit.
+        ICompilationUnit[] units = (roots == null
+                ? sourceFiles.keySet().stream().filter(k -> k.endsWith(".java"))
+                : roots.stream().distinct().filter(sourceFiles::containsKey))
+                .map(k -> (ICompilationUnit) new InMemoryCompilationUnit(k, sourceFiles.get(k),
+                        nameEnv.expectedPackage(k)))
                 .toArray(ICompilationUnit[]::new);
 
         try {
