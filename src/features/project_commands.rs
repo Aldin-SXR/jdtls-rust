@@ -1268,3 +1268,38 @@ pub fn update_project_settings(
 pub fn get_all_vm_installs(registry: &RuntimeRegistry) -> Value {
     Value::Array(registry.all_vm_installs())
 }
+
+#[cfg(test)]
+mod project_command_test {
+    use super::*;
+    use crate::project::{ImportSettings, Workspace};
+
+    fn copy_dir(from: &Path, to: &Path) {
+        for entry in walkdir::WalkDir::new(from).into_iter().flatten() {
+            let target = to.join(entry.path().strip_prefix(from).unwrap());
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(&target).unwrap();
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_update_source_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("salut2");
+        copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/projects/maven/salut2"), &root);
+        let mut ws = Workspace::import(&[root], &ImportSettings::jdtls_defaults());
+        let project = ws.projects.iter_mut().find(|p| p.name == "salut2").unwrap();
+
+        let source_and_output = [
+            ("src/main/java".to_owned(), Some("bin".to_owned())),
+            ("src/main/java/aaa".to_owned(), Some("bin".to_owned())),
+        ];
+        update_source_paths(project, &source_and_output).unwrap();
+
+        let new_source_paths = project.classpath.iter().filter(|e| e.kind == EntryKind::Source).count();
+        assert_eq!(2, new_source_paths);
+    }
+}
