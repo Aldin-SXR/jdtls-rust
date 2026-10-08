@@ -455,7 +455,7 @@ impl JavaLanguageServer {
             format: &format,
             lifecycle: &self.lifecycle,
         };
-        Ok(crate::correction::local_corrections::get_refactor_edit(&env, params).await)
+        Ok(crate::correction::refactor_edit::get_refactor_edit(&env, params).await)
     }
 
     pub async fn list_overridable_methods(

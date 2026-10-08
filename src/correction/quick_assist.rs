@@ -8,6 +8,7 @@ use super::edit::Env;
 use super::handler::Request;
 use super::{kind, messages, relevance, Change, Context, CuChange, LazyChange, Proposal};
 use crate::refactoring::extract_constant::ExtractConstant;
+use crate::refactoring::extract_field::{self, ExtractField};
 use crate::refactoring::extract_temp::ExtractTemp;
 use crate::semantic_ast::{Ast, NodeKind};
 
@@ -38,6 +39,9 @@ pub async fn refactor_proposals(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposa
     if no_errors_at_location(req, covering) {
         let problems_at_location = !req.locations.is_empty();
         extract_variable_proposals(env, req, problems_at_location, &mut proposals).await;
+        if let Some(p) = extract_field_proposal(env, req, problems_at_location).await {
+            proposals.push(p);
+        }
     }
     proposals.extend(super::local_corrections::assignment_refactors(env, req).await);
     proposals
@@ -251,4 +255,143 @@ fn supports_extract_variable(ctx: &Context) -> bool {
     }
     // `JDTUtils.isUnnamedClass` on the unit's types.
     !ctx.root().children().iter().any(|t| t.is(NodeKind::ImplicitTypeDeclaration))
+}
+
+/// `RefactorProposalUtility.InitializeScope` names, in ordinal order
+/// (`ExtractFieldRefactoring.INITIALIZE_IN_*`).
+pub const INITIALIZE_SCOPES: [&str; 3] = ["Field declaration", "Current method", "Class constructors"];
+
+/// `InitializeScope.fromName(name).ordinal()`.
+pub fn initialize_scope_from_name(name: Option<&str>) -> Option<i32> {
+    let name = name?;
+    INITIALIZE_SCOPES.iter().position(|s| *s == name).map(|i| i as i32)
+}
+
+/// `RefactorProposalUtility.getInitializeScopes(refactoring)`.
+fn initialize_scopes(refactoring: &mut ExtractField) -> Vec<&'static str> {
+    let mut scopes = Vec::new();
+    if refactoring.can_enable_setting_declare_in_method() {
+        scopes.push(INITIALIZE_SCOPES[extract_field::INITIALIZE_IN_METHOD as usize]);
+    }
+    if refactoring.can_enable_setting_declare_in_field_declaration() {
+        scopes.push(INITIALIZE_SCOPES[extract_field::INITIALIZE_IN_FIELD as usize]);
+    }
+    if refactoring.can_enable_setting_declare_in_constructors() {
+        scopes.push(INITIALIZE_SCOPES[extract_field::INITIALIZE_IN_CONSTRUCTOR as usize]);
+    }
+    scopes
+}
+
+/// The `ExtractFieldRefactoring` behind an "Extract to field" proposal
+/// (`RefactoringCorrectionProposalCore` whose `init` sets the guessed field
+/// name).
+pub struct ExtractFieldChange {
+    pub ast: Arc<Ast>,
+    pub offset: usize,
+    pub length: usize,
+    pub initialize_in: Option<i32>,
+}
+
+impl ExtractFieldChange {
+    /// `createTextChange()`: the change and the `"name"` linked positions
+    /// (no change when the final check is fatal).
+    pub fn create(&self, options: BTreeMap<String, String>) -> (Vec<CuChange>, Vec<(crate::rewrite::RNode, i32)>) {
+        let mut r = ExtractField::new(self.ast.clone(), options, self.offset, self.length);
+        if !r.check_initial_conditions().is_ok() {
+            return (Vec::new(), Vec::new());
+        }
+        if let Some(scope) = self.initialize_in {
+            r.set_initialize_in(scope);
+        }
+        let name = r.guess_field_name();
+        r.set_field_name(&name);
+        let (status, cu) = r.check_final_conditions();
+        match cu {
+            Some(cu) if !status.has_fatal_error() => (vec![CuChange::rewrite(cu.rewrite).with_imports(cu.imports)], r.name_positions.clone()),
+            _ => (Vec::new(), Vec::new()),
+        }
+    }
+}
+
+#[tower_lsp::async_trait]
+impl LazyChange for ExtractFieldChange {
+    async fn compute(&self, env: &Env<'_>) -> anyhow::Result<Vec<CuChange>> {
+        let options = env.options(&self.ast.uri).await;
+        Ok(self.create(options).0)
+    }
+}
+
+/// `RefactorProcessor.getExtractFieldProposal` /
+/// `RefactorProposalUtility.getGenericExtractFieldProposal`.
+async fn extract_field_proposal(env: &Env<'_>, req: &Request<'_>, problems_at_location: bool) -> Option<Proposal> {
+    // TODO: upstream tries `getConvertVariableToFieldProposal`
+    // (PromoteTempToFieldRefactoring) first; it is not ported yet.
+    let return_as_command = crate::features::preferences::extended_capability("advancedExtractRefactoringSupport");
+    let infer_selection = crate::features::preferences::extended_capability_list_contains("inferSelectionSupport", "extractField");
+    extract_field_proposal_for(env, &req.context, problems_at_location, None, return_as_command, infer_selection, Some(req.params)).await
+}
+
+/// `RefactorProposalUtility.getExtractFieldProposal(params, context,
+/// problemsAtLocation, formatterOptions, initializeIn, returnAsCommand,
+/// inferSelectionSupport)`.
+pub async fn extract_field_proposal_for(
+    env: &Env<'_>,
+    ctx: &Context,
+    problems_at_location: bool,
+    initialize_in: Option<&str>,
+    return_as_command: bool,
+    infer_selection: bool,
+    params: Option<&tower_lsp::lsp_types::CodeActionParams>,
+) -> Option<Proposal> {
+    if !supports_extract_variable(ctx) {
+        return None;
+    }
+    let label = messages::ls_correction("QuickAssistProcessor_extract_to_field_description");
+    let relevance = if ctx.selection_length == 0 {
+        relevance::EXTRACT_LOCAL_ZERO_SELECTION
+    } else if problems_at_location {
+        relevance::EXTRACT_LOCAL_ERROR
+    } else {
+        relevance::EXTRACT_LOCAL
+    };
+    let options = env.options(&ctx.ast.uri).await;
+    let params_json = || serde_json::to_value(params).expect("serializable code action parameters");
+    let scope = initialize_scope_from_name(initialize_in);
+    if ctx.selection_length == 0 && infer_selection {
+        let mut parent = ctx.covering_node();
+        while let Some(p) = parent.filter(|p| p.kind().is_expression()) {
+            if !p.is(NodeKind::ParenthesizedExpression) {
+                let mut r = ExtractField::new(ctx.ast.clone(), options.clone(), p.start(), p.length());
+                if r.check_initial_conditions().is_ok() {
+                    if let Some(scope) = scope {
+                        r.set_initialize_in(scope);
+                    }
+                    if !initialize_scopes(&mut r).is_empty() {
+                        return Some(Proposal::command(label, kind::REFACTOR_EXTRACT_FIELD, relevance, "java.action.applyRefactoringCommand", vec![serde_json::json!("extractField"), params_json()]));
+                    }
+                }
+            }
+            parent = p.parent();
+        }
+        return None;
+    }
+    let mut r = ExtractField::new(ctx.ast.clone(), options, ctx.selection_offset, ctx.selection_length);
+    if !r.check_initial_conditions().is_ok() {
+        return None;
+    }
+    if let Some(scope) = scope {
+        r.set_initialize_in(scope);
+    }
+    if return_as_command {
+        let scopes = initialize_scopes(&mut r);
+        return Some(Proposal::command(
+            label,
+            kind::REFACTOR_EXTRACT_FIELD,
+            relevance,
+            "java.action.applyRefactoringCommand",
+            vec![serde_json::json!("extractField"), params_json(), serde_json::json!({ "initializedScopes": scopes })],
+        ));
+    }
+    let change = ExtractFieldChange { ast: ctx.ast.clone(), offset: ctx.selection_offset, length: ctx.selection_length, initialize_in: scope };
+    Some(Proposal::new(label, kind::REFACTOR_EXTRACT_FIELD, relevance, Change::Lazy(Box::new(change))))
 }

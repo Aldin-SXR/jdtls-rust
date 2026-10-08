@@ -20,6 +20,7 @@
 pub mod checkers;
 pub mod checks;
 pub mod extract_constant;
+pub mod extract_field;
 pub mod extract_temp;
 pub mod fragments;
 pub mod naming;
