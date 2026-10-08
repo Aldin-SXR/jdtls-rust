@@ -36,6 +36,7 @@ pub mod quick_fix;
 pub mod parentheses;
 pub mod serial_hash;
 pub mod serial_version;
+pub mod sort_members;
 pub mod source_assist;
 pub mod infer_type_arguments;
 pub mod type_mismatch;
