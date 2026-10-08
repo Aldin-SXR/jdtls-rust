@@ -19,10 +19,10 @@ of `CompletionHandlerTest`'s 156.
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 1,409 | 66.6% |
-| Passing | 1,365 | 64.5% |
-| Ported but `#[ignore]`d | 44 | 2.1% |
-| Not ported yet | 708 | 33.4% |
+| Ported | 1,583 | 74.8% |
+| Passing | 1,530 | 72.3% |
+| Ported but `#[ignore]`d | 53 | 2.5% |
+| Not ported yet | 534 | 25.2% |
 
 Our own regression suites (`tests/lsp.rs`, `tests/*_regressions.rs`) and unit tests that
 are not ports are excluded from these counts.
@@ -31,12 +31,12 @@ are not ports are excluded from these counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 868 | 768 | 751 | 86% |
-| correction | 610 | 367 | 346 | 56% |
+| handlers | 868 | 792 | 771 | 88% |
+| correction | 610 | 444 | 420 | 68% |
 | managers | 211 | 134 | 128 | 60% |
-| refactoring | 118 | 4 | 4 | 3% |
+| refactoring | 118 | 41 | 39 | 33% |
 | (root) | 72 | 8 | 8 | 11% |
-| commands | 60 | 23 | 23 | 38% |
+| commands | 60 | 59 | 59 | 98% |
 | preferences | 53 | 53 | 53 | 100% |
 | javadoc | 32 | 32 | 32 | 100% |
 | codemanipulation | 30 | 10 | 10 | 33% |
@@ -58,7 +58,7 @@ are not ports are excluded from these counts.
 | handlers/AdvancedOrganizeImportsHandlerTest | `handlers_advanced_organize_imports_handler_test` | 5 | 5 | 0 | 5/5; dynamic chooser replies and unchanged Maven fixtures |
 | handlers/BuildWorkspaceHandlerTest | `handlers_build_workspace_handler_test` | 5 | 5 | 0 | 5/5 |
 | handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 10 | 0 | 10/10; restored stub-JDK source-location assertion verified |
-| handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 11 | 11 | 0 | 11/11 |
+| handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 25 | 21 | 4 | 21/25 passing here; the 4 ignored pass on the oracle |
 | handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 14 | 0 | 14/14; restored two-lens binary assertion verified |
 | handlers/CompletionHandlerLazyResolveTest | `handlers_completion_handler_lazy_resolve_test` | 20 | 20 | 0 | 20/20 |
 | handlers/CompletionHandlerChainTest | `handlers_completion_handler_chain_test` | 12 | 12 | 0 | 12/12 |
@@ -153,6 +153,19 @@ are not ports are excluded from these counts.
 | contentassist/SnippetUtilsTest | `src/features/completion/snippets.rs` | 5 | 5 | 0 | unit tests |
 | contentassist/SortTextHelperTest | `src/features/completion/sort_text.rs` | 1 | 1 | 0 | unit test |
 | corext/template/java/JavaLanguageServerTemplateStoreTest | `src/features/completion/template_store.rs` | 1 | 1 | 0 | unit test |
+| commands/ProjectCommandTest | `commands_project_command_test` | 27 | 27 | 0 | 27 of 28; all pass on the oracle; `testUpdateSourcePaths` has no LSP command |
+| commands/SourceAttachmentCommandTest | `commands_source_attachment_command_test` | 8 | 8 | 0 | 8/8 |
+| commands/VmCommandTest | `src/project/runtime.rs` | 1 | 1 | 0 | unit test over a registry with a TestVMType install |
+| correction/ConstructorQuickFixTest | `correction_constructor_quick_fix_test` | 3 | 0 | 3 | 3/3; ignored until ConstructorFromSuperclassProposal is ported |
+| correction/ConvertToRecordQuickAssistTest | `correction_convert_to_record_quick_assist_test` | 32 | 32 | 0 | 31/32 (`test_convert_to_record11` is an oracle-internal NPE) |
+| correction/JavadocQuickFixTest | `correction_javadoc_quick_fix_test` | 30 | 30 | 0 | 30/30 |
+| correction/ReturnTypeQuickFixTest | `correction_return_type_quick_fix_test` | 4 | 4 | 0 | 4/4 |
+| correction/StaticAccessQuickFixTest | `correction_static_access_quick_fix_test` | 4 | 4 | 0 | 4/4 |
+| correction/StaticReferenceQuickFixTest | `correction_static_reference_quick_fix_test` | 4 | 4 | 0 | 4/4 |
+| handlers/DiagnosticHandlerTest | `handlers_diagnostic_handler_test` | 7 | 7 | 0 | 7/7 |
+| handlers/JDTLanguageServerTest | `handlers_jdt_language_server_test` | 3 | 3 | 0 | 3/3 |
+| refactoring/ExtractFieldTest | `refactoring_extract_field_test` | 16 | 16 | 0 | 16/16 through java/getRefactorEdit |
+| refactoring/ExtractMethodTest | `refactoring_extract_method_test` | 21 | 19 | 2 | 21/21 |
 
 ## Ignored tests
 
@@ -584,6 +597,7 @@ Run `scripts/parity-count.py` for the per-class gap. The largest remaining items
   AST import builder. Exact custom-JDK binding contents retain the
   standalone-parser limitation above.
 * **Lombok** is not supported in any feature.
+* **Cross-file secondary types and package annotations.** `delegate_regressions::secondary_external_source_type_preserves_method_source_order` and two `nullness_generation_regressions` cases (package-info defaults) fail on this machine and did before this session; the oracle passes them. `refactoring_extract_variable_test::test_extract_variable1` fails identically on the oracle here (attached JDK sources change parameter names).
 * **Extension bundles.** jdt.ls loads OSGi bundles (`initializationOptions.bundles`,
   e.g. java-debug and the test runner) that contribute delegate commands. The Rust
   server can't host Eclipse plug-ins; its delegate-command registry
