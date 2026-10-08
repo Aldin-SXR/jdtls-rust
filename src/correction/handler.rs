@@ -390,7 +390,7 @@ impl super::LazyChange for IgnoreProblems {
 /// Titles of bridge (legacy Java) code actions that the Rust processors
 /// replace; they are no longer forwarded.
 pub fn is_superseded_legacy_action(title: &str) -> bool {
-    const SUPERSEDED: &[&str] = &["Organize Imports", "Add serialVersionUID field", "Remove unnecessary cast", "Remove redundant superinterface", "Add Javadoc comment", "Add all missing Javadoc tags", "Remove invalid Javadoc tag"];
+    const SUPERSEDED: &[&str] = &["Organize Imports", "Add serialVersionUID field", "Remove unnecessary cast", "Remove redundant superinterface", "Add Javadoc comment", "Add all missing Javadoc tags", "Remove invalid Javadoc tag", "Add return statement"];
     // Unresolved variables: `UnresolvedElementsSubProcessor.getVariableProposals`.
     const SUPERSEDED_PREFIXES: &[&str] = &["Add Javadoc @", "Extract to local variable", "Extract to constant '", "Create local variable '", "Create parameter '", "Create field '", "Create constant '"];
     // Unresolved types: `UnresolvedElementsSubProcessor.getTypeProposals`

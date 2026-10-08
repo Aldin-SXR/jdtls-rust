@@ -23,6 +23,7 @@ pub mod edit;
 pub mod handler;
 pub mod messages;
 pub mod relevance;
+pub mod return_type;
 
 pub mod assign_to_field;
 pub mod getter_setter;

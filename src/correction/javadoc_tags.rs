@@ -21,13 +21,13 @@ const TAG_RETURN: &str = "@return";
 const TAG_THROWS: &str = "@throws";
 const TAG_EXCEPTION: &str = "@exception";
 
-fn text(rw: &mut ASTRewrite, value: &str) -> RNode {
+pub(crate) fn text(rw: &mut ASTRewrite, value: &str) -> RNode {
     let node = rw.new_node(NodeKind::TextElement);
     rw.put_simple(node, "text", value);
     node
 }
 
-fn new_tag(rw: &mut ASTRewrite, name: &str, fragments: Vec<RNode>) -> RNode {
+pub(crate) fn new_tag(rw: &mut ASTRewrite, name: &str, fragments: Vec<RNode>) -> RNode {
     let tag = rw.new_node(NodeKind::TagElement);
     rw.put_simple(tag, "tagName", name);
     rw.put_list(tag, "fragments", fragments);
@@ -106,7 +106,7 @@ fn is_same_tag(inserted: &str, tag: &str) -> bool {
 
 /// `JavadocTagsSubProcessorCore.insertTag(rewriter, newElement, sameKindLeadingNames)`
 /// over the rewritten tag list.
-fn insert_tag(rw: &mut ASTRewrite, doc: RNode, tag: RNode, leading: Option<&HashSet<String>>) {
+pub(crate) fn insert_tag(rw: &mut ASTRewrite, doc: RNode, tag: RNode, leading: Option<&HashSet<String>>) {
     let tags = rw.list_rewritten(doc, "tags");
     let inserted = rw.new_value(tag, "tagName").simple().unwrap_or("").to_owned();
     let ranking = rank(&inserted);
@@ -135,7 +135,7 @@ fn insert_tag(rw: &mut ASTRewrite, doc: RNode, tag: RNode, leading: Option<&Hash
 }
 
 /// `JavadocTagsSubProcessorCore.findTag(javadoc, name, arg)`.
-fn find_tag<'a>(javadoc: Node<'a>, name: &str, arg: Option<&str>) -> Option<Node<'a>> {
+pub(crate) fn find_tag<'a>(javadoc: Node<'a>, name: &str, arg: Option<&str>) -> Option<Node<'a>> {
     javadoc.list("tags").into_iter().find(|t| t.simple("tagName") == Some(name) && arg.is_none_or(|arg| argument(*t).as_deref() == Some(arg)))
 }
 
