@@ -89,10 +89,14 @@ pub fn java_project_from_uri(ws: &Workspace, uri: &str) -> Result<Project, Strin
         }
     }
     containers.sort_by_key(|(d, _)| *d);
+    // JavaCore.create(project) of the last container is returned even when it
+    // doesn't exist.
+    let fallback = containers.last().map(|(_, p)| *p);
     containers
-        .into_iter()
-        .map(|(_, p)| p)
+        .iter()
+        .map(|(_, p)| *p)
         .find(|p| p.is_java())
+        .or(fallback)
         .cloned()
         .ok_or_else(|| "Given URI does not belong to any Java project.".to_owned())
 }

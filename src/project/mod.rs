@@ -22,6 +22,7 @@ pub mod null_analysis;
 pub mod prefs;
 pub mod resource_filters;
 pub mod runtime;
+pub mod source_discovery;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};

@@ -18,6 +18,14 @@ use common::projects::*;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
+/// The upstream tests run one at a time; these delete and download artifacts
+/// of the shared local repository.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// `projectsManager.updateProject(project, false)`.
 fn update_project(ws: &mut Workspace, project: &Path) {
     ws.client().notify(
@@ -29,6 +37,7 @@ fn update_project(ws: &mut Workspace, project: &Path) {
 
 #[test]
 fn test_update() {
+    let _serial = serial();
     let mut ws = workspace();
     let project = import_simple_java_project(&mut ws);
 
@@ -65,16 +74,19 @@ fn test_non_standard_compiler_id(project_name: &str) {
 
 #[test]
 fn test_compile_with_error_prone() {
+    let _serial = serial();
     test_non_standard_compiler_id("compile-with-error-prone");
 }
 
 #[test]
 fn test_compile_with_eclipse() {
+    let _serial = serial();
     test_non_standard_compiler_id("compile-with-eclipse");
 }
 
 #[test]
 fn test_compile_with_eclipse_tycho_jdt() {
+    let _serial = serial();
     test_non_standard_compiler_id("compile-with-tycho-jdt");
 }
 
@@ -94,12 +106,14 @@ fn collected_projects(name: &str) -> Vec<String> {
 
 #[test]
 fn test_invalid_projects() {
+    let _serial = serial();
     let projects = collected_projects("multimodule2");
     assert_eq!(projects.len(), 1);
 }
 
 #[test]
 fn test_multiple_projects() {
+    let _serial = serial();
     let projects = collected_projects("multimodule");
     assert_eq!(projects.len(), 4);
     for p in &projects {
@@ -111,6 +125,7 @@ fn test_multiple_projects() {
 
 #[test]
 fn test_ignore_inner_pom_changes() {
+    let _serial = serial();
     let mut ws = workspace();
     let project = import_maven_project(&mut ws, "archetyped");
     assert_eq!(
@@ -140,6 +155,7 @@ fn test_ignore_inner_pom_changes() {
 
 #[test]
 fn test_build_helper_support() {
+    let _serial = serial();
     let mut ws = workspace();
     let project = import_maven_project(&mut ws, "buildhelped");
     ws.build_workspace(true);
@@ -177,6 +193,7 @@ fn class_file_source(ws: &mut Workspace, uri: &str) -> Option<String> {
 
 #[test]
 fn test_download_sources() {
+    let _serial = serial();
     let file = local_repository_sources("org.apache.commons", "commons-lang3", "3.18.0");
     let _ = std::fs::remove_dir_all(file.parent().unwrap());
     let mut ws = workspace();
@@ -196,6 +213,7 @@ fn test_download_sources() {
 
 #[test]
 fn test_download_sources_when_sha1_search_fails() {
+    let _serial = serial();
     let sources = local_repository_sources("org.springframework", "spring-core", "7.0.2");
     let _ = std::fs::remove_dir_all(sources.parent().unwrap());
     let mut ws = workspace();
@@ -216,6 +234,7 @@ fn test_download_sources_when_sha1_search_fails() {
 
 #[test]
 fn test_update_snapshots() {
+    let _serial = serial();
     let mut ws = workspace();
     let project = import_maven_project(&mut ws, "salut3");
     ws.wait_for_background_jobs();
@@ -248,6 +267,7 @@ fn test_update_snapshots() {
 
 #[test]
 fn test_batch_import() {
+    let _serial = serial();
     let mut ws = workspace();
     let project = import_maven_project(&mut ws, "batch");
     ws.wait_for_background_jobs();
