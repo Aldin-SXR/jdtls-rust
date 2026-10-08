@@ -2420,6 +2420,23 @@ impl LanguageServer for JavaLanguageServer {
                 let uri = navigation::type_uri(&self.dispatcher, &arg(0), &arg(1)).await;
                 Ok(Some(uri.map(Value::String).unwrap_or(Value::Null)))
             }
+            "java.project.resolveStackTraceLocation" => {
+                let line = params.arguments.first().and_then(Value::as_str);
+                let project_names: Option<Vec<String>> = params
+                    .arguments
+                    .get(1)
+                    .and_then(Value::as_array)
+                    .map(|names| names.iter().filter_map(Value::as_str).map(str::to_owned).collect());
+                let ws = self.workspace_snapshot();
+                let uri = crate::features::resolve_source_mapping::resolve_stack_trace_location(
+                    &self.dispatcher,
+                    &ws,
+                    line,
+                    project_names.as_deref(),
+                )
+                .await;
+                Ok(uri.map(Value::String))
+            }
             "java.project.getAll" => {
                 // jdt.ls `ProjectCommand.getAllJavaProjects` / `getAllProjects`
                 // (`{"includeNonJava": true}`): `File.toURI()` of every

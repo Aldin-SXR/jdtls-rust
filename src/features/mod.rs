@@ -37,6 +37,7 @@ pub mod preferences;
 pub mod progress;
 pub mod project_commands;
 pub mod rename;
+pub mod resolve_source_mapping;
 pub mod scanner;
 pub mod selection_range;
 pub mod semantic;
