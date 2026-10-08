@@ -178,6 +178,8 @@ pub mod nflag {
     pub const BOXING: u32 = 1 << 8;
     pub const UNBOXING: u32 = 1 << 9;
     pub const COMMENT_ROOT: u32 = 1 << 10;
+    /// `isResolvedTypeInferredFromExpectedType()` of an invocation.
+    pub const INFERRED_FROM_EXPECTED: u32 = 1 << 11;
 }
 
 // ─── Model ────────────────────────────────────────────────────────────────────
