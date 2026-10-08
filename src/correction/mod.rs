@@ -29,6 +29,7 @@ pub mod assign_to_field;
 pub mod getter_setter;
 pub mod convert_proposals;
 pub mod inline;
+pub mod move_proposals;
 pub mod invert_boolean;
 pub mod javadoc_tags;
 pub mod local_corrections;

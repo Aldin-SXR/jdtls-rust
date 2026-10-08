@@ -68,6 +68,11 @@ async fn inline_local_variable(env: &Env<'_>, ctx: &Context, decl: Node<'_>, out
     if !refactoring.check_initial_conditions().is_ok() {
         return false;
     }
+    // A reference inside the initializer would be replaced by a copy of the
+    // initializer containing itself; JDT rejects it as a compile error.
+    if decl.child("initializer").is_some_and(|i| refactoring.references().iter().any(|r| i.is_ancestor_or_self_of(*r))) {
+        return false;
+    }
     let cu = refactoring.create_rewrite();
     let mut change = CuChange::rewrite(cu.rewrite).with_imports(cu.imports);
     if !crate::refactoring::check_source::check_new_source(env, &mut change).await.is_ok() || refactoring.references().is_empty() {
