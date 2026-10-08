@@ -9,6 +9,7 @@ use super::config::{BuildConfiguration, GradleDistribution, GradleSettings};
 use super::util::GradleVersion;
 use serde_json::Value;
 use std::collections::BTreeMap;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -275,6 +276,49 @@ fn run_helper(config: &BuildConfiguration, settings: &GradleSettings, mode: &str
 /// Fetch the `EclipseProject` model of the build in `config.root_project_directory`.
 pub fn fetch(config: &BuildConfiguration, settings: &GradleSettings) -> Result<GradleModel, FetchError> {
     parse(&run_helper(config, settings, "model")?)
+}
+
+/// The annotation processing configuration of one project.
+#[derive(Debug, Clone, Default)]
+pub struct AptConfiguration {
+    pub processors: Vec<PathBuf>,
+    pub compiler_args: Vec<String>,
+}
+
+/// `GradleBuildSupport.syncAnnotationProcessingConfiguration`: the custom
+/// model of the apt init script, by project directory.
+pub fn annotation_processing(
+    config: &BuildConfiguration,
+    settings: &GradleSettings,
+) -> Result<BTreeMap<PathBuf, AptConfiguration>, FetchError> {
+    let mut config = config.clone();
+    let script = super::config::gradle_init_script(settings, "/gradle/apt/init.gradle")
+        .ok_or_else(|| FetchError::Unavailable("the apt init script is missing".into()))?;
+    config.arguments.push("--init-script".to_owned());
+    config.arguments.push(script.to_string_lossy().into_owned());
+    let text = run_helper(&config, settings, "apt")?;
+    let json: Value = serde_json::from_str(&text)
+        .map_err(|e| FetchError::Unavailable(format!("invalid Gradle output: {e}")))?;
+    if let Some(error) = json["error"].as_str() {
+        return Err(FetchError::Failed { message: error.to_owned(), causes: Vec::new() });
+    }
+    Ok(json["apt"]
+        .as_object()
+        .map(|projects| {
+            projects
+                .iter()
+                .map(|(dir, info)| {
+                    (
+                        PathBuf::from(dir),
+                        AptConfiguration {
+                            processors: strings(&info["processors"]).into_iter().map(PathBuf::from).collect(),
+                            compiler_args: strings(&info["compilerArgs"]),
+                        },
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// The result of running the compile tasks of the non-Java languages.

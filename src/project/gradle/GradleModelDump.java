@@ -77,6 +77,11 @@ public class GradleModelDump {
                 connector.useGradleUserHomeDir(new File(userHome));
             }
             try (ProjectConnection connection = connector.connect()) {
+                if (mode.equals("apt")) {
+                    apt(sb, configure(connection.model(Map.class), javaHome, jvmArgs, buildArgs, offline).get());
+                    Files.writeString(new File(out).toPath(), sb.toString(), StandardCharsets.UTF_8);
+                    System.exit(0);
+                }
                 if (mode.equals("compile")) {
                     compile(sb, connection, javaHome);
                     Files.writeString(new File(out).toPath(), sb.toString(), StandardCharsets.UTF_8);
@@ -115,6 +120,41 @@ public class GradleModelDump {
         }
         Files.writeString(new File(out).toPath(), sb.toString(), StandardCharsets.UTF_8);
         System.exit(0);
+    }
+
+    /** The annotation processing configuration of every project (the apt init script's custom model). */
+    private static void apt(StringBuilder sb, Map<?, ?> model) {
+        sb.append("{\"apt\":{");
+        boolean first = true;
+        for (Map.Entry<?, ?> project : model.entrySet()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            str(sb, ((File) project.getKey()).getAbsolutePath());
+            sb.append(":{");
+            Map<?, ?> info = (Map<?, ?>) project.getValue();
+            boolean firstKey = true;
+            for (Map.Entry<?, ?> e : info.entrySet()) {
+                if (!firstKey) {
+                    sb.append(',');
+                }
+                firstKey = false;
+                str(sb, String.valueOf(e.getKey()));
+                sb.append(":[");
+                boolean firstItem = true;
+                for (Object item : (Iterable<?>) e.getValue()) {
+                    if (!firstItem) {
+                        sb.append(',');
+                    }
+                    firstItem = false;
+                    str(sb, item instanceof File f ? f.getAbsolutePath() : String.valueOf(item));
+                }
+                sb.append(']');
+            }
+            sb.append('}');
+        }
+        sb.append("}}");
     }
 
     private static final List<String> COMPILE_TASKS = List.of("compileKotlin", "compileTestKotlin", "compileGroovy", "compileTestGroovy", "compileAspectj", "compileTestAspectj", "compileScala", "compileTestScala");
