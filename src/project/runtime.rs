@@ -175,6 +175,17 @@ impl RuntimeRegistry {
         workspace.finish();
     }
     pub fn with_default_home(home: &Path) -> Self {
+        // The VM install types detect their installations first
+        // (`MacOSXVMInstallType` on macOS); `JVMConfigurator` then reuses the
+        // one at the default home.
+        let installs = platform_installs();
+        if let Some(vm) = installs.iter().find(|vm| vm.home == home) {
+            return Self {
+                default_vm: Some(vm.key()),
+                installs,
+                ..Default::default()
+            };
+        }
         let vm = VmInstall::from_home(
             home,
             "running".into(),
@@ -183,11 +194,69 @@ impl RuntimeRegistry {
                 .to_string_lossy()
                 .into(),
         );
+        let mut installs = installs;
+        let default_vm = Some(vm.key());
+        installs.insert(0, vm);
         Self {
-            default_vm: Some(vm.key()),
-            installs: vec![vm],
+            default_vm,
+            installs,
             ..Default::default()
         }
+    }
+    /// `VmCommand.getAllVmInstalls()`: every install of every VM install
+    /// type, in `JavaRuntime.getVMInstallTypes()` order.
+    pub fn all_vm_installs(&self) -> Vec<serde_json::Value> {
+        let rank = |kind: &str| match kind {
+            STANDARD_VM_TYPE => 0,
+            MACOSX_VM_TYPE => 1,
+            _ => 2,
+        };
+        let mut installs: Vec<&VmInstall> = self.installs.iter().collect();
+        installs.sort_by_key(|vm| rank(&vm.kind));
+        installs
+            .into_iter()
+            .map(|vm| {
+                let mut v = serde_json::json!({
+                    "typeName": vm_type_name(&vm.kind),
+                    "name": vm.name,
+                    "path": vm.home.to_string_lossy(),
+                });
+                if let Some(version) = &vm.version {
+                    v["version"] = serde_json::json!(version);
+                }
+                v
+            })
+            .collect()
+    }
+    /// `ProjectCommand.getVmInstallByPath`: the install at `path`, else a new
+    /// standard VM there (`VMStandin.convertToRealVM`), unless it has no Java
+    /// version.
+    pub fn vm_install_by_path(&mut self, path: &str) -> Option<VmInstall> {
+        let vm_path = PathBuf::from(path);
+        if let Some(vm) = self
+            .installs
+            .iter()
+            .find(|vm| normalize(&vm.home) == vm_path)
+        {
+            return Some(vm.clone());
+        }
+        let base = vm_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let mut name = base.clone();
+        let mut i = 1;
+        while self.installs.iter().any(|vm| vm.name == name) {
+            name = format!("{base}({i})");
+            i += 1;
+        }
+        let vm = VmInstall::from_home(&vm_path, self.unique_id(), name);
+        if !vm_path.is_dir() || vm.version.is_none() {
+            return None;
+        }
+        self.installs.push(vm.clone());
+        Some(vm)
     }
     pub fn default_install(&self) -> Option<&VmInstall> {
         self.default_vm
@@ -356,6 +425,100 @@ impl RuntimeRegistry {
         }
         self.default_install()
     }
+}
+
+/// `org.eclipse.jdt.internal.launching.macosx.MacOSXVMInstallType`.
+pub const MACOSX_VM_TYPE: &str = "org.eclipse.jdt.internal.launching.macosx.MacOSXType";
+/// The jdt.ls tests' `TestVMType`.
+pub const TEST_VM_TYPE: &str = "org.eclipse.jdt.ls.core.internal.TestVMType";
+
+/// `IVMInstallType.getName()`.
+pub fn vm_type_name(kind: &str) -> String {
+    match kind {
+        STANDARD_VM_TYPE => "Standard VM".to_owned(),
+        MACOSX_VM_TYPE => "MacOS X VM".to_owned(),
+        // `TestVMType.getName()`: "TestVMInstall-" + getId().
+        TEST_VM_TYPE => format!("TestVMInstall-{kind}"),
+        other => other.to_owned(),
+    }
+}
+
+/// `JavaRuntime.newJREContainerPath(vm)`.
+pub fn jre_container_path(vm: &VmInstall) -> String {
+    format!("{}/{}/{}", super::JRE_CONTAINER, vm.kind, vm.name)
+}
+
+/// `java.nio.file.Path.normalize()`: drop `.` segments, resolve `..`.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The installs the platform's VM install type detects:
+/// `MacOSXVMInstallType` lists `/usr/libexec/java_home -X`, naming each
+/// `"<JVMName> [<JVMVersion>]"`.
+fn platform_installs() -> Vec<VmInstall> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let Ok(out) = std::process::Command::new("/usr/libexec/java_home")
+        .arg("-X")
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    parse_java_home_plist(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_java_home_plist(text: &str) -> Vec<VmInstall> {
+    // roxmltree rejects DTDs by default; the plist DOCTYPE carries no data.
+    let text: String = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("<!DOCTYPE"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let Ok(doc) = roxmltree::Document::parse(&text) else {
+        return Vec::new();
+    };
+    let mut installs = Vec::new();
+    for dict in doc.descendants().filter(|n| n.has_tag_name("dict")) {
+        let mut props = BTreeMap::new();
+        let mut key = None;
+        for n in dict.children().filter(|n| n.is_element()) {
+            if n.has_tag_name("key") {
+                key = n.text().map(str::to_owned);
+            } else if let Some(k) = key.take() {
+                props.insert(k, n.text().unwrap_or("").to_owned());
+            }
+        }
+        let Some(home) = props.get("JVMHomePath").map(PathBuf::from) else {
+            continue;
+        };
+        let name = match (props.get("JVMName"), props.get("JVMVersion")) {
+            (Some(name), Some(version)) => format!("{name} [{version}]"),
+            (Some(name), None) => name.clone(),
+            _ => home.to_string_lossy().into_owned(),
+        };
+        let mut vm = VmInstall::from_home(&home, home.to_string_lossy().into_owned(), name);
+        vm.kind = MACOSX_VM_TYPE.into();
+        if vm.version.is_none() {
+            vm.version = props.get("JVMVersion").cloned();
+        }
+        installs.push(vm);
+    }
+    installs
 }
 
 pub fn valid_installation(home: &Path) -> bool {

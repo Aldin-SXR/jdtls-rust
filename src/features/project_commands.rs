@@ -4,6 +4,7 @@
 //! `java.project.listSourcePaths`, plus the project-level parts of
 //! `WorkspaceDiagnosticsHandler` and `ProjectsManager.registerWatchers`.
 
+use crate::project::runtime::RuntimeRegistry;
 use crate::project::{
     java_file_uri, ClasspathEntry, EntryKind, Project, ProjectKind, Workspace,
     MAVEN_NATURE, WORKSPACE_LINK,
@@ -338,10 +339,18 @@ pub fn get_classpaths(ws: &Workspace, uri: &str, scope: &str) -> Result<Value, S
     let mut entries: Vec<PathBuf> = Vec::new();
     let mut seen_projects = Vec::new();
     collect_runtime(ws, &project, test, true, &mut entries, &mut seen_projects);
-    let modular = project
-        .source_folders
-        .iter()
-        .any(|sf| sf.path.join("module-info.java").is_file());
+    let modular = has_module_description(&project);
+    if modular && test {
+        // JDT launching patches the test output folders into the module
+        // (`--patch-module`) instead of listing them.
+        let test_outputs: Vec<PathBuf> = project
+            .classpath
+            .iter()
+            .filter(|e| e.kind == EntryKind::Source && e.is_test())
+            .filter_map(|e| e.output.clone())
+            .collect();
+        entries.retain(|p| !test_outputs.contains(p));
+    }
     let paths: Vec<String> = entries.iter().map(|p| location_string(p)).collect();
     let (classpaths, modulepaths) = if modular {
         (Vec::new(), paths)
@@ -392,13 +401,22 @@ fn collect_runtime(
         }
     }
     let maven = project.has_nature(MAVEN_NATURE);
-    // The test output folders come first.
-    outputs.sort_by_key(|(_, t)| !*t);
-    for (o, t) in outputs {
-        if t && !test {
-            continue;
+    if project.has_nature(crate::project::GRADLE_NATURE) {
+        // Buildship's `GradleClasspathProvider`: a launch configuration
+        // without mapped resources includes every source set's output, in
+        // classpath order; only the libraries are filtered by test scope.
+        for (o, _) in outputs {
+            push(o, out);
         }
-        push(o, out);
+    } else {
+        // The test output folders come first.
+        outputs.sort_by_key(|(_, t)| !*t);
+        for (o, t) in outputs {
+            if t && !test {
+                continue;
+            }
+            push(o, out);
+        }
     }
     let mut stack: Vec<&ClasspathEntry> = project.classpath.iter().collect();
     stack.reverse();
@@ -719,4 +737,481 @@ pub fn resolve_source_attachment(ws: &Workspace, class_file_uri: Option<&str>) -
         "Cannot find the ClasspathEntry for the JAR '{}' of this class file",
         location_string(&jar)
     ))
+}
+
+/// `IJavaProject.getOwnModuleDescription() != null`.
+pub fn has_module_description(project: &Project) -> bool {
+    project
+        .source_folders
+        .iter()
+        .any(|sf| sf.path.join("module-info.java").is_file())
+}
+
+// ─── Updating the project (`ProjectCommand.update*`) ─────────────────────────
+
+/// A `ProjectClasspathEntry` sent by the client.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct ProjectClasspathEntry {
+    pub kind: i32,
+    pub path: Option<String>,
+    pub output: Option<String>,
+    pub attributes: Option<BTreeMap<String, String>>,
+}
+
+/// `ProjectClasspathEntries`.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProjectClasspathEntries {
+    pub classpath_entries: Vec<ProjectClasspathEntry>,
+}
+
+/// The segments of `IPath.fromOSString(path)` (canonicalized: `.` dropped,
+/// `..` resolved).
+fn segments(path: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in path.split(['/', '\\']).filter(|s| !s.is_empty() && *s != ".") {
+        if s == ".." && out.last().is_some_and(|l| l != "..") {
+            out.pop();
+        } else {
+            out.push(s.to_owned());
+        }
+    }
+    out
+}
+
+/// `project.getFolder(path).getFullPath()`: the segments of `path` appended
+/// to the project's full path, whether `path` is relative or not.
+fn folder_full_path(project: &Project, path: &str) -> String {
+    let mut full = format!("/{}", project.name);
+    for s in segments(path) {
+        full.push('/');
+        full.push_str(&s);
+    }
+    full
+}
+
+/// The output full path of a client source entry (`"."` is the project).
+fn output_full_path(project: &Project, output: Option<&str>) -> Option<String> {
+    output.map(|o| {
+        if o == "." {
+            format!("/{}", project.name)
+        } else {
+            folder_full_path(project, o)
+        }
+    })
+}
+
+/// `IPath.isPrefixOf`.
+fn is_prefix_of(prefix: &str, path: &str) -> bool {
+    path == prefix || path.starts_with(&format!("{}/", prefix.trim_end_matches('/')))
+}
+
+/// `path.makeRelativeTo(base).addTrailingSeparator()`.
+fn relative_with_separator(path: &str, base: &str) -> String {
+    let rel = path[base.trim_end_matches('/').len()..].trim_start_matches('/');
+    format!("{rel}/")
+}
+
+/// `ProjectUtils.resolveSourceClasspathEntries`: new source entries for
+/// `source_and_output` (full paths), child folders first, nested folders and
+/// the output location excluded from their parents.
+pub fn resolve_source_classpath_entries(
+    project: &Project,
+    source_and_output: &[(String, Option<String>)],
+    excluding_paths: &[String],
+    output_path: Option<&str>,
+) -> Vec<ClasspathEntry> {
+    let original: Vec<&ClasspathEntry> = project
+        .classpath
+        .iter()
+        .filter(|e| e.kind == EntryKind::Source)
+        .collect();
+    let mut source_paths: Vec<&String> = source_and_output.iter().map(|(s, _)| s).collect();
+    // Sort the source paths to make the child folders come first.
+    source_paths.sort_by(|a, b| b.cmp(a));
+    let default_output = project.output.as_deref().map(|o| project.full_path(o));
+    let output_path = output_path.map(str::to_owned).or(default_output);
+    let mut entries: Vec<ClasspathEntry> = Vec::new();
+    for current in source_paths {
+        let mut can_add = true;
+        let mut exclusions = Vec::new();
+        for e in &entries {
+            if e.path == *current {
+                tracing::error!("Skip duplicated source path: {current}");
+                can_add = false;
+                break;
+            }
+            if is_prefix_of(current, &e.path) {
+                exclusions.push(relative_with_separator(&e.path, current));
+            }
+        }
+        if let Some(output) = &output_path {
+            if is_prefix_of(current, output) {
+                exclusions.push(relative_with_separator(output, current));
+            }
+        }
+        if !can_add {
+            continue;
+        }
+        for exclusion in excluding_paths {
+            if is_prefix_of(current, exclusion) && exclusion != current {
+                exclusions.push(relative_with_separator(exclusion, current));
+            }
+        }
+        let specific_output = source_and_output
+            .iter()
+            .find(|(s, _)| s == current)
+            .and_then(|(_, o)| o.clone());
+        let mut entry = ClasspathEntry::new(EntryKind::Source, current.clone());
+        entry.location = project.location_of(current);
+        entry.output = specific_output.and_then(|o| project.location_of(&o));
+        if let Some(orig) = original.iter().find(|e| e.path == *current) {
+            entry.inclusions = orig.inclusions.clone();
+            entry.attributes = orig.attributes.clone();
+        }
+        entry.exclusions = exclusions;
+        entries.push(entry);
+    }
+    entries
+}
+
+/// `ClasspathEntry.validateClasspath`, for duplicate entries and nested
+/// output folders.
+fn validate_classpath(project: &Project, classpath: &[ClasspathEntry]) -> Result<(), String> {
+    // Output locations: the project's default output first, then the
+    // distinct custom outputs of the source entries.
+    let mut outputs: Vec<String> = vec![project
+        .output
+        .as_deref()
+        .map(|o| project.full_path(o))
+        .unwrap_or_else(|| format!("/{}/bin", project.name))];
+    let mut all_sources_have_custom_output = true;
+    for e in classpath.iter().filter(|e| e.kind == EntryKind::Source) {
+        match &e.output {
+            Some(o) => {
+                let full = project.full_path(o);
+                if !outputs.contains(&full) {
+                    outputs.push(full);
+                }
+            }
+            None => all_sources_have_custom_output = false,
+        }
+    }
+    let mut potential_nested_output = None;
+    for (i, custom) in outputs.iter().enumerate().skip(1) {
+        if let Some(index) = outputs.iter().position(|o| is_prefix_of(o, custom)) {
+            if index == 0 {
+                potential_nested_output.get_or_insert(custom.clone());
+            } else if index != i {
+                return Err(format!(
+                    "Cannot nest output folder '{}' inside output folder '{}'",
+                    custom.trim_start_matches('/'),
+                    outputs[index].trim_start_matches('/')
+                ));
+            }
+        }
+    }
+    if let Some(nested) = potential_nested_output.filter(|_| !all_sources_have_custom_output) {
+        return Err(format!(
+            "Cannot nest output folder '{}' inside output folder '{}'",
+            nested.trim_start_matches('/'),
+            outputs[0].trim_start_matches('/')
+        ));
+    }
+    for (i, e) in classpath.iter().enumerate() {
+        if classpath[..i].iter().any(|o| o.path == e.path) {
+            let segments: Vec<&str> = e.path.trim_start_matches('/').split('/').collect();
+            let message = if segments.first() == Some(&project.name.as_str()) {
+                segments[1..].join("/")
+            } else {
+                e.path.trim_start_matches('/').to_owned()
+            };
+            return Err(format!(
+                "Build path contains duplicate entry: '{message}' for project '{}'",
+                project.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `IJavaProject.setRawClasspath`: the model and `.classpath`.
+fn set_raw_classpath(project: &mut Project, classpath: Vec<ClasspathEntry>) -> Result<(), String> {
+    project.classpath = classpath;
+    project.derive_views();
+    crate::project::classpath::persist_raw_classpath(project).map_err(|e| e.to_string())
+}
+
+/// `ProjectCommand.updateSourcePaths(uri, sourceAndOutput)` on the project.
+pub fn update_source_paths(
+    project: &mut Project,
+    source_and_output: &[(String, Option<String>)],
+) -> Result<(), String> {
+    let full: Vec<(String, Option<String>)> = source_and_output
+        .iter()
+        .map(|(s, o)| (folder_full_path(project, s), output_full_path(project, o.as_deref())))
+        .collect();
+    // `ProjectUtils.resolveClassPathEntries(javaProject, map, [], null)`.
+    let mut entries: Vec<ClasspathEntry> = project
+        .classpath
+        .iter()
+        .filter(|e| e.kind != EntryKind::Source)
+        .cloned()
+        .collect();
+    entries.extend(resolve_source_classpath_entries(project, &full, &[], None));
+    validate_classpath(project, &entries)?;
+    set_raw_classpath(project, entries)
+}
+
+/// `ProjectCommand.convertClasspathEntry`.
+fn convert_classpath_entry(
+    project: &Project,
+    ws: &Workspace,
+    entry: &ProjectClasspathEntry,
+) -> Option<ClasspathEntry> {
+    let kind = match entry.kind {
+        5 => EntryKind::Container,
+        1 => EntryKind::Library,
+        2 => EntryKind::Project,
+        _ => return None,
+    };
+    let os_path = entry.path.clone().unwrap_or_default();
+    let mut path = String::new();
+    if os_path.starts_with('/') || os_path.starts_with('\\') {
+        path.push('/');
+    }
+    path.push_str(&segments(&os_path).join("/"));
+    let mut e = ClasspathEntry::new(kind, path.clone());
+    if let Some(attrs) = &entry.attributes {
+        e.attributes = attrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    }
+    if kind == EntryKind::Library {
+        let p = Path::new(&path);
+        e.location = Some(if p.exists() {
+            p.to_path_buf()
+        } else {
+            // A workspace path: `/project/lib/a.jar`.
+            path.trim_start_matches('/')
+                .split_once('/')
+                .and_then(|(name, rest)| {
+                    let owner = if name == project.name {
+                        Some(project)
+                    } else {
+                        ws.project(name)
+                    };
+                    owner.map(|o| o.location.join(rest))
+                })
+                .filter(|l| l.exists())
+                .unwrap_or_else(|| p.to_path_buf())
+        });
+        e.source_attachment = e
+            .location
+            .as_deref()
+            .and_then(crate::project::source_attachment);
+    }
+    Some(e)
+}
+
+/// `ProjectCommand.resolveDependencyEntries`: keep the current dependency
+/// entries when the new ones resolve to the same paths.
+fn resolve_dependency_entries(
+    project: &Project,
+    new_entries: Vec<ClasspathEntry>,
+) -> Vec<ClasspathEntry> {
+    let current: Vec<ClasspathEntry> = project
+        .classpath
+        .iter()
+        .filter(|e| {
+            e.kind != EntryKind::Source && !e.path.starts_with(crate::project::JRE_CONTAINER)
+        })
+        .cloned()
+        .collect();
+    fn expand<'a>(e: &'a ClasspathEntry, out: &mut Vec<&'a str>) {
+        if e.kind == EntryKind::Container {
+            for c in &e.children {
+                expand(c, out);
+            }
+        } else if !out.contains(&e.path.as_str()) {
+            out.push(&e.path);
+        }
+    }
+    let mut mapping: Vec<&str> = Vec::new();
+    for e in &current {
+        expand(e, &mut mapping);
+    }
+    if new_entries.len() != mapping.len()
+        || new_entries
+            .iter()
+            .any(|e| !mapping.contains(&e.path.as_str()))
+    {
+        return new_entries;
+    }
+    current
+}
+
+/// `ProjectCommand.getNewJdkEntry`.
+fn new_jdk_entry(
+    project: &Project,
+    registry: &mut RuntimeRegistry,
+    jdk_path: &str,
+) -> Result<ClasspathEntry, String> {
+    let Some(vm) = registry.vm_install_by_path(jdk_path) else {
+        return Err("The select JDK path is not valid.".to_owned());
+    };
+    let mut e = ClasspathEntry::new(
+        EntryKind::Container,
+        crate::project::runtime::jre_container_path(&vm),
+    );
+    if has_module_description(project) {
+        e.attributes.push(("module".into(), "true".into()));
+    }
+    Ok(e)
+}
+
+/// The project `uri` belongs to, mutably.
+fn project_mut<'a>(ws: &'a mut Workspace, uri: &str) -> Result<&'a mut Project, String> {
+    let name = java_project_from_uri(ws, uri)?.name;
+    ws.projects
+        .iter_mut()
+        .find(|p| p.name == name)
+        .ok_or_else(|| "Given URI does not belong to any Java project.".to_owned())
+}
+
+/// `ProjectCommand.updateClasspaths(uri, entries)`.
+pub fn update_classpaths(
+    ws: &mut Workspace,
+    registry: &mut RuntimeRegistry,
+    uri: &str,
+    entries: &[ProjectClasspathEntry],
+) -> Result<(), String> {
+    let snapshot = ws.clone();
+    let project = project_mut(ws, uri)?;
+    let mut source_and_output: Vec<(String, Option<String>)> = Vec::new();
+    let mut new_entries = Vec::new();
+    let mut dependencies = Vec::new();
+    for entry in entries {
+        match entry.kind {
+            3 => {
+                let path = folder_full_path(project, entry.path.as_deref().unwrap_or(""));
+                let output = output_full_path(project, entry.output.as_deref());
+                source_and_output.retain(|(s, _)| *s != path);
+                source_and_output.push((path, output));
+            }
+            5 => {
+                let path = entry.path.clone().unwrap_or_default();
+                if let Some(jdk_path) = path.strip_prefix(crate::project::JRE_CONTAINER) {
+                    new_entries.push(new_jdk_entry(project, registry, jdk_path)?);
+                } else {
+                    tracing::info!("The container entry {path} is not supported to be updated.");
+                }
+            }
+            _ => match convert_classpath_entry(project, &snapshot, entry) {
+                Some(e) => dependencies.push(e),
+                None => return Err("Invalid classpath entry".to_owned()),
+            },
+        }
+    }
+    new_entries.extend(resolve_source_classpath_entries(
+        project,
+        &source_and_output,
+        &[],
+        None,
+    ));
+    new_entries.extend(resolve_dependency_entries(project, dependencies));
+    validate_classpath(project, &new_entries)?;
+    set_raw_classpath(project, new_entries)
+}
+
+/// `ProjectCommand.updateProjectJdk(uri, jdkPath)`: a `JdkUpdateResult`.
+pub fn update_project_jdk(
+    ws: &mut Workspace,
+    registry: &mut RuntimeRegistry,
+    uri: &str,
+    jdk_path: &str,
+) -> Result<Value, String> {
+    let project = project_mut(ws, uri)?;
+    let mut classpath = Vec::new();
+    for e in &project.classpath {
+        if e.kind == EntryKind::Container && e.path.starts_with(crate::project::JRE_CONTAINER) {
+            match new_jdk_entry(project, registry, jdk_path) {
+                Ok(e) => classpath.push(e),
+                Err(message) => return Ok(json!({ "success": false, "message": message })),
+            }
+        } else {
+            classpath.push(e.clone());
+        }
+    }
+    if let Err(message) = set_raw_classpath(project, classpath) {
+        return Ok(json!({ "success": false, "message": message }));
+    }
+    Ok(json!({ "success": true, "message": jdk_path }))
+}
+
+/// What `ProjectCommand.updateProjectSettings` changed.
+#[derive(Debug, Default)]
+pub struct SettingsUpdate {
+    /// `javaProject.setOptions`: the project-specific options were written.
+    pub options_changed: bool,
+    /// The Maven resolver configuration changed: update this project.
+    pub update_project: Option<String>,
+}
+
+/// `ProjectCommand.updateProjectSettings(uri, options)`; `current` resolves
+/// the project's effective options (`javaProject.getOptions(true)`).
+pub fn update_project_settings(
+    ws: &mut Workspace,
+    uri: &str,
+    options: &Map<String, Value>,
+    current: impl Fn(&Project, &str) -> Option<String>,
+) -> Result<SettingsUpdate, String> {
+    let project = project_mut(ws, uri)?;
+    let mut update = SettingsUpdate::default();
+    let mut new_options: BTreeMap<String, String> = BTreeMap::new();
+    for (key, value) in options {
+        let text = match value {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        if key == M2E_SELECTED_PROFILES {
+            let selected = text
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(",");
+            if project.selected_profiles == selected {
+                continue;
+            }
+            crate::project::maven::write_resolver_configuration(&project.location, &selected)
+                .map_err(|e| e.to_string())?;
+            project.selected_profiles = selected;
+            update.update_project = Some(project.name.clone());
+            continue;
+        }
+        // Only valid keys whose values differ are updated.
+        if let Some(setting) = current(project, key) {
+            if setting != text.trim() {
+                new_options.insert(key.clone(), text);
+            }
+        }
+    }
+    if !new_options.is_empty() {
+        let prefs = project
+            .location
+            .join(".settings")
+            .join("org.eclipse.jdt.core.prefs");
+        let mut specific = crate::project::prefs::read_properties(&prefs).unwrap_or_default();
+        specific.extend(new_options.clone());
+        specific.insert("eclipse.preferences.version".into(), "1".into());
+        crate::project::prefs::write_properties(&prefs, &specific).map_err(|e| e.to_string())?;
+        project.options.extend(new_options);
+        update.options_changed = true;
+    }
+    Ok(update)
+}
+
+/// `VmCommand.getAllVmInstalls()`.
+pub fn get_all_vm_installs(registry: &RuntimeRegistry) -> Value {
+    Value::Array(registry.all_vm_installs())
 }

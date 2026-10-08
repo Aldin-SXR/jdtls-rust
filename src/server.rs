@@ -235,6 +235,9 @@ pub struct JavaLanguageServer {
 #[path = "server_projects.rs"]
 mod projects;
 
+#[path = "server_project_commands.rs"]
+mod project_command_handlers;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ClientFlavor {
     #[default]
@@ -2271,6 +2274,9 @@ impl LanguageServer for JavaLanguageServer {
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<Value>> {
+        if let Some(result) = self.project_command(&params).await {
+            return result;
+        }
         match params.command.as_str() {
             "java.edit.organizeImports" => {
                 let env = self.format_env().await;
@@ -2600,34 +2606,12 @@ impl LanguageServer for JavaLanguageServer {
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
                 let cfg = self.config.read().await.clone();
-                let vm = vm_home(&cfg);
-                let vm_version = vm.as_deref().and_then(crate::project::vm_version);
-                let formatter =
-                    formatting::options::workspace_formatter_options(&cfg.format, &cfg.root_paths);
-                let settings = crate::project::prefs::settings_url_options(
-                    crate::features::preferences::current().get_settings_url(),
-                    &cfg.root_paths,
-                );
                 let env = crate::features::project_commands::Env {
                     ws: &ws,
-                    vm_home: vm,
+                    vm_home: vm_home(&cfg),
                     root_paths: &cfg.root_paths,
                 };
-                let option = |p: &crate::project::Project, key: &str| -> Option<String> {
-                    if let Some(v) = p.options.get(key) {
-                        return Some(v.clone());
-                    }
-                    if let Some(v) = cfg.compiler_options.get(key) {
-                        return Some(v.clone());
-                    }
-                    if let Some(v) = formatter.get(key) {
-                        return Some(v.clone());
-                    }
-                    if let Some(v) = settings.get(key) {
-                        return Some(v.clone());
-                    }
-                    crate::project::effective_option(p, key, vm_version.as_deref())
-                };
+                let option = self.project_option_resolver().await;
                 crate::features::project_commands::get_settings(&env, &uri, &keys, option)
                     .map(Some)
                     .map_err(internal_error)

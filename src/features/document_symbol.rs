@@ -62,7 +62,7 @@ pub fn class_file_symbols(uri: &Url, src: &str, attached: bool) -> DocumentSymbo
     result
 }
 
-fn binary_type<'a>(types: &'a [TypeDecl], chain: &[&str]) -> Option<&'a TypeDecl> {
+pub(crate) fn binary_type<'a>(types: &'a [TypeDecl], chain: &[&str]) -> Option<&'a TypeDecl> {
     let (name, rest) = chain.split_first()?;
     let ty = types.iter().find(|t| t.name == *name)?;
     if rest.is_empty() {
