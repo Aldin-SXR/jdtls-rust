@@ -43,6 +43,7 @@ async fn main() {
         .custom_method("java/organizeImports", JavaLanguageServer::organize_imports)
         .custom_method("java/cleanup", JavaLanguageServer::cleanup)
         .custom_method("java/getRefactorEdit", JavaLanguageServer::get_refactor_edit)
+        .custom_method("java/inferSelection", JavaLanguageServer::infer_selection)
         .custom_method(
             "java/classFileContents",
             JavaLanguageServer::class_file_contents,

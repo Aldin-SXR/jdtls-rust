@@ -461,6 +461,16 @@ impl JavaLanguageServer {
         Ok(crate::correction::refactor_edit::get_refactor_edit(&env, params).await)
     }
 
+    pub async fn infer_selection(&self, params: Value) -> LspResult<Option<Value>> {
+        let format = self.format_env().await;
+        let env = crate::correction::edit::Env {
+            dispatcher: &self.dispatcher,
+            format: &format,
+            lifecycle: &self.lifecycle,
+        };
+        Ok(crate::correction::refactor_edit::infer_selection(&env, params).await)
+    }
+
     pub async fn list_overridable_methods(
         &self,
         params: CodeActionParams,
