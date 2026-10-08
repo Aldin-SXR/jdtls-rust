@@ -38,6 +38,7 @@ pub mod parentheses;
 pub mod serial_hash;
 pub mod serial_version;
 pub mod source_assist;
+pub mod suppress_warnings;
 pub mod infer_type_arguments;
 pub mod type_mismatch;
 pub mod unimplemented;

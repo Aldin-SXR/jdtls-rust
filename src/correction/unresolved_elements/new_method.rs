@@ -61,7 +61,11 @@ impl LazyChange for NewMethod {
             .and_then(|b| b.declaring_node())
             .ok_or_else(|| anyhow::anyhow!("no sender declaration"))?;
         let mut imports = ImportRewrite::create_for_corrections(target.clone(), &options);
-        let context = ConstructorImportContext { ast: target.clone(), declaration: Some(type_decl.id), nullness: None };
+        let context = ConstructorImportContext {
+            ast: target.clone(),
+            declaration: Some(type_decl.id),
+            nullness: crate::rewrite::import_rewrite::nullness::Filter::create(&target, Some(type_decl.id), &options),
+        };
         let mut rw = ASTRewrite::new(target.clone());
         let stub = self.stub(&mut rw, &mut imports, &context, sender, type_decl, &options, &profile)?;
         let members = type_decl.list("bodyDeclarations");

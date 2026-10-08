@@ -61,8 +61,12 @@ impl LazyChange for NewVariable {
     }
 }
 
-fn context_at(ast: &Arc<Ast>, node: Node<'_>) -> ConstructorImportContext {
-    ConstructorImportContext { ast: ast.clone(), declaration: find_parent_type(node).map(|n| n.id), nullness: None }
+fn context_at(ast: &Arc<Ast>, node: Node<'_>, options: &BTreeMap<String, String>) -> ConstructorImportContext {
+    ConstructorImportContext {
+        ast: ast.clone(),
+        declaration: find_parent_type(node).map(|n| n.id),
+        nullness: crate::rewrite::import_rewrite::nullness::Filter::create(ast, Some(node.id), options),
+    }
 }
 
 /// `ASTNodes.isControlStatementBody(locationInParent)`.
@@ -300,7 +304,7 @@ impl NewVariable {
         let decl = find_parent_body_declaration(node).filter(|d| d.is(NodeKind::MethodDeclaration)).ok_or_else(|| anyhow::anyhow!("no method"))?;
         let mut rw = ASTRewrite::new(ast.clone());
         let mut imports = ImportRewrite::create_for_corrections(ast.clone(), options);
-        let context = context_at(&ast, decl);
+        let context = context_at(&ast, decl, options);
         let new_decl = rw.new_node(NodeKind::SingleVariableDeclaration);
         let typ = self.evaluate_variable_type(&mut rw, &mut imports, &context, decl.binding(), TypeLocation::Parameter);
         rw.put_child(new_decl, "type", typ);
@@ -362,7 +366,7 @@ impl NewVariable {
             dominant_statement = dominant_statement.parent().unwrap();
         }
         let node = names[0];
-        let context = context_at(&ast, node);
+        let context = context_at(&ast, node, options);
 
         let is_assigned = dominant_statement.is(NodeKind::ExpressionStatement)
             && dominant_statement.child("expression").is_some_and(|e| e.is(NodeKind::Assignment) && e.child("leftHandSide") == Some(node));
@@ -486,7 +490,11 @@ impl NewVariable {
         let new_type_decl = target.binding_by_key(sender_key).and_then(|b| b.declaring_node()).ok_or_else(|| anyhow::anyhow!("no sender declaration"))?;
         let is_in_different_cu = self.target_uri.is_some();
         let mut imports = ImportRewrite::create_for_corrections(target.clone(), options);
-        let context = ConstructorImportContext { ast: target.clone(), declaration: Some(new_type_decl.id), nullness: None };
+        let context = ConstructorImportContext {
+            ast: target.clone(),
+            declaration: Some(new_type_decl.id),
+            nullness: crate::rewrite::import_rewrite::nullness::Filter::create(target, Some(new_type_decl.id), options),
+        };
         let mut rw = ASTRewrite::new(target.clone());
         let node = self.original(&self.source);
         let (typ, primitive) = self.evaluate_variable_type_code(&mut rw, &mut imports, &context, Some(sender), TypeLocation::Field);

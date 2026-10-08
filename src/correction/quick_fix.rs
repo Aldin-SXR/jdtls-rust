@@ -269,6 +269,7 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::MissingNonNullByDefaultAnnotationOnPackage => null::add_missing_default_nullness_proposal(env, ctx, problem, proposals).await,
         _ => {}
     }
+    super::suppress_warnings::suppress_warnings_proposals(env, ctx, problem, proposals).await;
 }
 
 /// `QuickFixProcessor.addAddAllMissingImportsProposal`: only when an
