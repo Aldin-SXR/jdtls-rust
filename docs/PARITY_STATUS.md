@@ -19,10 +19,10 @@ of `CompletionHandlerTest`'s 156.
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 1,583 | 74.8% |
-| Passing | 1,530 | 72.3% |
-| Ported but `#[ignore]`d | 53 | 2.5% |
-| Not ported yet | 534 | 25.2% |
+| Ported | 1,923 | 90.8% |
+| Passing | 1,852 | 87.5% |
+| Ported but `#[ignore]`d | 71 | 3.4% |
+| Not ported yet | 194 | 9.2% |
 
 Our own regression suites (`tests/lsp.rs`, `tests/*_regressions.rs`) and unit tests that
 are not ports are excluded from these counts.
@@ -31,16 +31,16 @@ are not ports are excluded from these counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 868 | 792 | 771 | 88% |
-| correction | 610 | 444 | 420 | 68% |
-| managers | 211 | 134 | 128 | 60% |
-| refactoring | 118 | 41 | 39 | 33% |
-| (root) | 72 | 8 | 8 | 11% |
-| commands | 60 | 59 | 59 | 98% |
+| handlers | 868 | 827 | 802 | 92% |
+| correction | 610 | 590 | 558 | 91% |
+| managers | 211 | 204 | 195 | 92% |
+| refactoring | 118 | 106 | 103 | 87% |
+| (root) | 72 | 10 | 10 | 13% |
+| commands | 60 | 60 | 60 | 100% |
 | preferences | 53 | 53 | 53 | 100% |
 | javadoc | 32 | 32 | 32 | 100% |
 | codemanipulation | 30 | 10 | 10 | 33% |
-| filesystem | 21 | 0 | 0 | 0% |
+| filesystem | 21 | 21 | 19 | 90% |
 | cleanup | 18 | 3 | 3 | 16% |
 | syntaxserver | 14 | 0 | 0 | 0% |
 | contentassist | 6 | 6 | 6 | 100% |
@@ -58,7 +58,7 @@ are not ports are excluded from these counts.
 | handlers/AdvancedOrganizeImportsHandlerTest | `handlers_advanced_organize_imports_handler_test` | 5 | 5 | 0 | 5/5; dynamic chooser replies and unchanged Maven fixtures |
 | handlers/BuildWorkspaceHandlerTest | `handlers_build_workspace_handler_test` | 5 | 5 | 0 | 5/5 |
 | handlers/CallHierarchyHandlerTest | `handlers_call_hierarchy_handler_test` | 10 | 10 | 0 | 10/10; restored stub-JDK source-location assertion verified |
-| handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 25 | 21 | 4 | 21/25 passing here; the 4 ignored pass on the oracle |
+| handlers/CodeActionHandlerTest | `handlers_code_action_handler_test` | 25 | 22 | 3 | 21/25 passing here; the 4 ignored pass on the oracle |
 | handlers/CodeLensHandlerTest | `handlers_code_lens_handler_test` | 14 | 14 | 0 | 14/14; restored two-lens binary assertion verified |
 | handlers/CompletionHandlerLazyResolveTest | `handlers_completion_handler_lazy_resolve_test` | 20 | 20 | 0 | 20/20 |
 | handlers/CompletionHandlerChainTest | `handlers_completion_handler_chain_test` | 12 | 12 | 0 | 12/12 |
@@ -98,13 +98,13 @@ are not ports are excluded from these counts.
 | handlers/SignatureHelpHandlerTest | `handlers_signature_help_handler_test` | 56 | 55 | 1 | 54/55; `test_signature_help_erasure_type`, where jdt.ls returns no doc |
 | handlers/SmartDetectionHandlerTest | `handlers_smart_detection_handler_test` | 2 | 2 | 0 | 2/2 |
 | handlers/TypeHierarchyHandlerTest | `handlers_type_hierarchy_handler_test` | 4 | 4 | 0 | 4/4 |
-| handlers/WorkspaceDiagnosticsHandlerTest | `handlers_workspace_diagnostics_handler_test` + `src/features/markers.rs` | 11 | 8 | 3 | 7/9 LSP cases (the two oracle failures are ignored here); marker conversion cases are unit tests. The m2e pom-marker cases (5) and `testEncoding` are not ported |
+| handlers/WorkspaceDiagnosticsHandlerTest | `handlers_workspace_diagnostics_handler_test` + `src/features/markers.rs` | 17 | 10 | 7 | 7/9 LSP cases (the two oracle failures are ignored here); marker conversion cases are unit tests. The m2e pom-marker cases (5) and `testEncoding` are not ported |
 | handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` + `src/features/execute_command.rs` | 5 | 5 | 0 | 1/1 LSP case; the delegate-handler cases are unit tests of the registry with the test plug-in's contributions. `testRegistryEventListener` (OSGi bundles) is not ported |
 | handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 19 | 0 | 19/19; all three restored stub-JDK assertions verified |
 | correction/AssignToVariableRefactorTest | `correction_assign_to_variable_refactor_test` | 2 | 2 | 0 | 2/2 (advanced assignment commands) |
 | cleanup/CleanUpsTest | `cleanup_clean_ups_test` | 3 | 3 | 0 | 3/3; no cleanup, invert equals, organize imports; 15 methods remain unported |
 | correction/AbstractMethodQuickFixTest | `correction_abstract_method_quick_fix_test` | 8 | 8 | 0 | 8/8 |
-| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 75 | 75 | 0 | 75/75 with `--test-threads=1`; 12 upstream methods remain unported |
+| correction/LocalCorrectionQuickFixTest | `correction_local_correction_quick_fix_test` | 87 | 86 | 1 | 75/75 with `--test-threads=1`; 12 upstream methods remain unported |
 | correction/ModifierCorrectionsQuickFixTest | `correction_modifier_corrections_quick_fix_test` | 42 | 40 | 2 | 42/42 |
 | correction/NonProjectFixTest | `correction_non_project_fix_test` | 2 | 2 | 0 | 2/2; original source, action order, titles and command arguments |
 | correction/OrganizeImportsActionTest | `correction_organize_imports_action_test` | 6 | 6 | 0 | 6/6; original sources and edit assertions |
@@ -130,11 +130,11 @@ are not ports are excluded from these counts.
 | managers/ContentProviderManagerTest | `managers_content_provider_manager_test` | 21 | 21 | 0 | 21/21 direct API calls against the actual manager in an isolated Eclipse test-extension product |
 | managers/BasicFileDetectorTest | `managers_basic_file_detector_test` | 12 | 12 | 0 | n/a (unit ports) |
 | managers/EclipseBuildSupportTest | `managers_eclipse_build_support_test` | 1 | 1 | 0 | 1/1 |
-| managers/EclipseProjectImporterTest | `managers_eclipse_project_importer_test` | 15 | 11 | 4 | 8/8 active LSP; 3 unit ports |
+| managers/EclipseProjectImporterTest | `managers_eclipse_project_importer_test` | 15 | 12 | 3 | 8/8 active LSP; 3 unit ports |
 | managers/InvisibleProjectBuildSupportTest | `managers_invisible_project_build_support_test` | 4 | 4 | 0 | 2/2 active LSP; 2 preference unit ports |
 | managers/InvisibleProjectImporterTest | `managers_invisible_project_importer_test` | 27 | 26 | 1 | active cases pass; helper assertions use the Rust port |
 | managers/InvisibleProjectPreferenceChangeListenerTest | `managers_invisible_project_preference_change_listener_test` | 6 | 6 | 0 | 6/6 |
-| managers/MavenProjectImporterTest | `managers_maven_project_importer_test` | 32 | 31 | 1 | 29/29 active LSP; 2 unit ports |
+| managers/MavenProjectImporterTest | `managers_maven_project_importer_test` | 34 | 32 | 2 | 29/29 active LSP; 2 unit ports |
 | managers/MultiRootTest | `managers_multi_root_test` | 2 | 2 | 0 | 2/2 |
 | managers/ProjectsManagerTest | `managers_projects_manager_test` | 13 | 12 | 1 | 12/12 active, including unchanged Gradle successful-update and reload-marker assertions on Java 21; invalid-build status remains ignored |
 | managers/StandardProjectManagerTest | `managers_standard_project_manager_test` | 1 | 1 | 0 | n/a (unit port) |
@@ -153,7 +153,7 @@ are not ports are excluded from these counts.
 | contentassist/SnippetUtilsTest | `src/features/completion/snippets.rs` | 5 | 5 | 0 | unit tests |
 | contentassist/SortTextHelperTest | `src/features/completion/sort_text.rs` | 1 | 1 | 0 | unit test |
 | corext/template/java/JavaLanguageServerTemplateStoreTest | `src/features/completion/template_store.rs` | 1 | 1 | 0 | unit test |
-| commands/ProjectCommandTest | `commands_project_command_test` | 27 | 27 | 0 | 27 of 28; all pass on the oracle; `testUpdateSourcePaths` has no LSP command |
+| commands/ProjectCommandTest | `commands_project_command_test` | 28 | 28 | 0 | 27 of 28; all pass on the oracle; `testUpdateSourcePaths` has no LSP command |
 | commands/SourceAttachmentCommandTest | `commands_source_attachment_command_test` | 8 | 8 | 0 | 8/8 |
 | commands/VmCommandTest | `src/project/runtime.rs` | 1 | 1 | 0 | unit test over a registry with a TestVMType install |
 | correction/ConstructorQuickFixTest | `correction_constructor_quick_fix_test` | 3 | 0 | 3 | 3/3; ignored until ConstructorFromSuperclassProposal is ported |
@@ -166,6 +166,54 @@ are not ports are excluded from these counts.
 | handlers/JDTLanguageServerTest | `handlers_jdt_language_server_test` | 3 | 3 | 0 | 3/3 |
 | refactoring/ExtractFieldTest | `refactoring_extract_field_test` | 16 | 16 | 0 | 16/16 through java/getRefactorEdit |
 | refactoring/ExtractMethodTest | `refactoring_extract_method_test` | 21 | 19 | 2 | 21/21 |
+| CancellableProgressMonitorTest | `cancellable_progress_monitor_test` | 2 | 2 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/AssignToFieldQuickAssistTest | `correction_assign_to_field_quick_assist_test` | 6 | 6 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/AssistQuickFixTest21 | `correction_assist_quick_fix_test21` | 6 | 0 | 6 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/ConvertMethodReferenceToLambdaTest | `correction_convert_method_reference_to_lambda_test` | 2 | 2 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/ConvertSwitchExpressionQuickAssistTest | `correction_convert_switch_expression_quick_assist_test` | 2 | 2 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/ConvertToTextBlockQuickFixTest | `correction_convert_to_text_block_quick_fix_test` | 2 | 2 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/ConvertVarQuickFixTest | `correction_convert_var_quick_fix_test` | 4 | 4 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/LambdaQuickFixTest | `correction_lambda_quick_fix_test` | 9 | 9 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/NullAnnotationsQuickFix1d8MixTest | `correction_null_annotations_quick_fix1d8_mix_test` | 2 | 2 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/NullAnnotationsQuickFix1d8Test | `correction_null_annotations_quick_fix1d8_test` | 21 | 21 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/NullAnnotationsQuickFix9Test | `correction_null_annotations_quick_fix9_test` | 2 | 1 | 1 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/NullAnnotationsQuickFixTest | `correction_null_annotations_quick_fix_test` | 47 | 47 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/ReorgQuickFixTest | `correction_reorg_quick_fix_test` | 18 | 18 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/SortMembersQuickAssistTest | `correction_sort_members_quick_assist_test` | 3 | 3 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/StaticImportQuickAssistTest | `correction_static_import_quick_assist_test` | 3 | 3 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/StringConcatenationQuickFixTest | `correction_string_concatenation_quick_fix_test` | 4 | 4 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| correction/VariableQuickFixTest | `correction_variable_quick_fix_test` | 3 | 3 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| filesystem/EclipseProjectMetadataFileTest | `filesystem_eclipse_project_metadata_file_test` | 3 | 3 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| filesystem/GradleProjectMetadataFileTest | `filesystem_gradle_project_metadata_file_test` | 4 | 3 | 1 | passes on this server; see the agent notes in the commit history for oracle runs |
+| filesystem/InvisibleProjectMetadataFileTest | `filesystem_invisible_project_metadata_file_test` | 4 | 3 | 1 | passes on this server; see the agent notes in the commit history for oracle runs |
+| filesystem/JLSFsUtilsTest | `filesystem_jls_fs_utils_test` | 4 | 4 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| filesystem/MavenProjectMetadataFileTest | `filesystem_maven_project_metadata_file_test` | 6 | 6 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| handlers/ClasspathUpdateHandlerTest | `handlers_classpath_update_handler_test` | 4 | 4 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| handlers/CreateModuleInfoHandlerTest | `handlers_create_module_info_handler_test` | 2 | 2 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| handlers/FindLinksHandlerTest | `handlers_find_links_handler_test` | 3 | 3 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| handlers/ImportNewProjectsTest | `handlers_import_new_projects_test` | 4 | 4 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| handlers/ProgressReporterManagerTest | `handlers_progress_reporter_manager_test` | 5 | 5 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| handlers/ProjectConfigurationUpdateHandlerTest | `handlers_project_configuration_update_handler_test` | 2 | 2 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| handlers/ResolveSourceMappingHandlerTest | `handlers_resolve_source_mapping_handler_test` | 5 | 5 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| handlers/WorkspaceEventHandlerTest | `handlers_workspace_event_handler_test` | 3 | 2 | 1 | passes on this server; see the agent notes in the commit history for oracle runs |
+| handlers/WorkspaceFolderChangeHandlerTest | `handlers_workspace_folder_change_handler_test` | 1 | 1 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| managers/GradleBuildSupportTest | `managers_gradle_build_support_test` | 2 | 2 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| managers/GradleProjectImporterTest | `managers_gradle_project_importer_test` | 45 | 43 | 2 | passes on this server; see the agent notes in the commit history for oracle runs |
+| managers/GradleUtilsTest | `managers_gradle_utils_test` | 3 | 3 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| managers/MavenBuildSupportTest | `managers_maven_build_support_test` | 12 | 12 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| managers/MavenClasspathTest | `managers_maven_classpath_test` | 3 | 3 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| managers/WrapperValidatorTest | `managers_wrapper_validator_test` | 3 | 3 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/AdvancedExtractTest | `refactoring_advanced_extract_test` | 6 | 6 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/AnonymousClassCreationToLambdaTest | `refactoring_anonymous_class_creation_to_lambda_test` | 11 | 10 | 1 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/ConvertForLoopTest | `refactoring_convert_for_loop_test` | 1 | 1 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/GetRefactorEditHandlerTest | `refactoring_get_refactor_edit_handler_test` | 7 | 7 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/InferSelectionHandlerTest | `refactoring_infer_selection_handler_test` | 4 | 4 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/InlineConstantTest | `refactoring_inline_constant_test` | 4 | 4 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/InlineVariableTest | `refactoring_inline_variable_test` | 2 | 2 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/InvertConditionTest | `refactoring_invert_condition_test` | 20 | 20 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/InvertVariableTest | `refactoring_invert_variable_test` | 3 | 3 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/LambdaToAnonymousClassCreationTest | `refactoring_lambda_to_anonymous_class_creation_test` | 1 | 1 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
+| refactoring/MoveTest | `refactoring_move_test` | 6 | 6 | 0 | passes on this server; see the agent notes in the commit history for oracle runs |
 
 ## Ignored tests
 
