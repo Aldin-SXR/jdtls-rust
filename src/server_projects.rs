@@ -50,6 +50,7 @@ impl JavaLanguageServer {
     /// Install `ws` as the workspace model: register its source files, the
     /// file watchers, and rebuild.
     pub(crate) async fn install_workspace(&self, mut ws: Workspace) {
+        let previous = self.workspace_snapshot();
         let settings = self.current_import_settings().await;
         ws.configure_filters(&settings.resource_filters);
         if let Some(registry) = &settings.runtime_registry {
@@ -71,6 +72,7 @@ impl JavaLanguageServer {
             .unwrap_or_else(|e| e.into_inner()) = ws;
         if self.service_ready.load(std::sync::atomic::Ordering::SeqCst) {
             self.register_watchers().await;
+            self.send_classpath_updates(&previous).await;
         }
         if self.legacy_diagnostics().await {
             self.request_compile();
@@ -82,6 +84,29 @@ impl JavaLanguageServer {
                 }
             }
         }
+    }
+
+    /// `ClasspathUpdateHandler.elementChanged`: the projects whose classpath
+    /// differs from `previous` are announced to the client.
+    pub(crate) async fn send_classpath_updates(&self, previous: &Workspace) {
+        let changed: Vec<PathBuf> = self
+            .workspace_snapshot()
+            .projects
+            .iter()
+            .filter(|p| previous.project(&p.name).is_some_and(|old| old.classpath != p.classpath))
+            .map(|p| p.root.clone())
+            .collect();
+        for root in changed {
+            let Ok(uri) = Url::from_directory_path(&root) else { continue };
+            let uri = uri.as_str().replacen("file:///", "file:/", 1);
+            self.send_event_notification(EventType::ClasspathUpdated, json!(uri)).await;
+        }
+    }
+
+    pub(crate) async fn send_event_notification(&self, event_type: EventType, data: Value) {
+        self.client
+            .send_notification::<EventNotification>(json!({ "eventType": event_type as i32, "data": data }))
+            .await;
     }
 
     /// The import settings with the trigger files opened since startup.
@@ -608,6 +633,20 @@ impl JavaLanguageServer {
     pub async fn project_configurations_update(&self, params: Value) {
         self.project_configuration_update(params).await;
     }
+}
+
+/// jdt.ls `language/eventNotification`.
+pub(crate) enum EventNotification {}
+
+impl tower_lsp::lsp_types::notification::Notification for EventNotification {
+    type Params = Value;
+    const METHOD: &'static str = "language/eventNotification";
+}
+
+/// jdt.ls `EventType`.
+#[derive(Clone, Copy)]
+pub(crate) enum EventType {
+    ClasspathUpdated = 100,
 }
 
 /// jdt.ls `language/actionableNotification`.

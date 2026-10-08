@@ -370,9 +370,10 @@ impl JavaLanguageServer {
         let settings = self.current_import_settings().await;
         let previous = self.workspace_snapshot();
         let import_progress = self.begin_maven_import_progress(&roots, &settings).await;
+        let before = previous.clone();
         let ws = tokio::task::spawn_blocking(move || {
             let mut ws = crate::project::Workspace::import_with_previous(
-                &roots, &settings, Some(&previous),
+                &roots, &settings, Some(&before),
             );
             ws.configure_filters(&settings.resource_filters);
             if let Err(error) = ws.ensure_default_project() {
@@ -406,6 +407,7 @@ impl JavaLanguageServer {
         self.record_build_file_digests();
         if self.service_ready.load(std::sync::atomic::Ordering::SeqCst) {
             self.register_watchers().await;
+            self.send_classpath_updates(&previous).await;
         }
     }
 
