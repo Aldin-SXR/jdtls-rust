@@ -6,6 +6,9 @@ use std::sync::Arc;
 
 mod lambda;
 mod method_ref;
+mod nls;
+mod string_concat;
+mod text_block;
 mod util;
 
 use super::edit::Env;
@@ -47,6 +50,10 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
         method_ref::clean_up_lambda(&req.context, &options, covering, &mut proposals);
         method_ref::convert_method_reference_to_lambda(&req.context, covering, &mut proposals);
         method_ref::convert_lambda_to_method_reference(&req.context, &options, covering, &mut proposals);
+        string_concat::convert_to_message_format(&req.context, &options, covering, &mut proposals);
+        string_concat::convert_to_string_buffer(&req.context, &options, covering, &mut proposals);
+        string_concat::convert_to_string_format(&req.context, &options, covering, &mut proposals);
+        text_block::string_concat_to_text_block(&req.context, &options, covering, &mut proposals);
     }
     // jdt.ls offers "Add Javadoc comment" only for units backed by a file
     // (verified against 1.58.0 for a working copy of a nonexistent file);
