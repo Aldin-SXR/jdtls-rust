@@ -94,6 +94,20 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::PackageIsNotExpectedPackage => super::reorg::wrong_package_decl_name_proposals(env, ctx, problem, proposals).await,
         p::FeatureNotSupported => super::reorg::need_higher_compliance_proposals(env, ctx, problem, proposals, None).await,
         p::MultiConstantCaseLabelsNotSupported => super::reorg::need_higher_compliance_proposals(env, ctx, problem, proposals, Some("14")).await,
+        p::LocalVariableHidingLocalVariable
+        | p::LocalVariableHidingField
+        | p::FieldHidingLocalVariable
+        | p::FieldHidingField
+        | p::ArgumentHidingLocalVariable
+        | p::ArgumentHidingField
+        | p::UseAssertAsAnIdentifier
+        | p::UseEnumAsAnIdentifier
+        | p::RedefinedLocal
+        | p::RedefinedArgument
+        | p::DuplicateField
+        | p::DuplicateMethod
+        | p::DuplicateTypeVariable
+        | p::DuplicateNestedType => super::local_corrections::invalid_variable_names(ctx, problem, proposals),
         p::UnusedObjectAllocation => super::local_corrections::unused_allocation(env, ctx, problem, proposals).await,
         p::UnterminatedString => super::local_corrections::add_quote(ctx, problem, proposals),
         p::InvalidOperator => super::local_corrections::invalid_operator(ctx, problem, proposals),

@@ -28,6 +28,7 @@ pub mod return_type;
 pub mod assign_to_field;
 pub mod getter_setter;
 pub mod javadoc_tags;
+pub mod linked_nodes;
 pub mod local_corrections;
 pub mod null_annotations;
 pub mod modifier_corrections;
