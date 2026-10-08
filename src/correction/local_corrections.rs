@@ -16,6 +16,7 @@ pub use static_access::correct_access_to_static;
 pub use exceptions::{unnecessary_throws, unreachable_catch};
 pub use allocation::proposals as unused_allocation;
 pub use assignment::{refactors as assignment_refactors, get_refactor_edit};
+pub(crate) use assignment::{used_names, variable_name};
 pub use uncaught::{proposals as uncaught_exception, resource_proposals, resource_assist};
 pub use unreachable::proposals as unreachable_code;
 pub use unused::{proposals as unused_member, type_parameter as unused_type_parameter};
