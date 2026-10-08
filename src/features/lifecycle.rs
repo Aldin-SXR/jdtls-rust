@@ -682,77 +682,83 @@ impl Lifecycle {
             if !project.is_java() || project.has_build_path_errors() {
                 continue;
             }
-            let ctx = self
-                .dispatcher
-                .context_with_files(&ws, Some(&project.name), false, disk.clone())
-                .await;
-            let mut roots = Vec::new();
-            let mut expected = HashMap::new();
-            for f in project.java_files() {
-                let Ok(u) = Url::from_file_path(&f) else {
-                    continue;
-                };
-                if !ctx.files.contains_key(u.as_str()) {
+            let scopes: &[bool] = if project.has_test_scope() { &[true, false] } else { &[false] };
+            for &main_only in scopes {
+                let ctx = self
+                    .dispatcher
+                    .context_scoped(&ws, Some(&project.name), false, disk.clone(), main_only)
+                    .await;
+                let mut roots = Vec::new();
+                let mut expected = HashMap::new();
+                for f in project.java_files() {
+                    let Ok(u) = Url::from_file_path(&f) else {
+                        continue;
+                    };
+                    if !ctx.files.contains_key(u.as_str()) {
+                        continue;
+                    }
+                    if project.has_test_scope() && project.is_main_source(&f) != main_only {
+                        continue;
+                    }
+                    if let Some(sf) = project.source_folder_for(&f) {
+                        expected.insert(u.to_string(), folder_package(&sf.path, &f));
+                    }
+                    roots.push(u.to_string());
+                    built_files.insert(u);
+                }
+                if roots.is_empty() {
                     continue;
                 }
-                if let Some(sf) = project.source_folder_for(&f) {
-                    expected.insert(u.to_string(), folder_package(&sf.path, &f));
-                }
-                roots.push(u.to_string());
-                built_files.insert(u);
-            }
-            if roots.is_empty() {
-                continue;
-            }
-            let own: HashSet<String> = roots.iter().cloned().collect();
-            match self.dispatcher.build_units(ctx, roots, expected).await {
-                Ok((items, generated_sources)) => {
-                    if let Some(folder) = project
-                        .classpath
-                        .iter()
-                        .find(|e| e.attribute("m2e-apt") == Some("true") && !e.is_test())
-                        .and_then(|e| e.location.as_ref())
-                    {
-                        for (relative, source) in generated_sources {
-                            let relative = std::path::Path::new(&relative);
-                            if relative
-                                .components()
-                                .any(|c| !matches!(c, std::path::Component::Normal(_)))
-                            {
-                                continue;
-                            }
-                            let path = folder.join(relative);
-                            if let Some(parent) = path.parent() {
-                                if let Err(e) = std::fs::create_dir_all(parent)
-                                    .and_then(|_| std::fs::write(&path, source))
+                let own: HashSet<String> = roots.iter().cloned().collect();
+                match self.dispatcher.build_units(ctx, roots, expected).await {
+                    Ok((items, generated_sources)) => {
+                        if let Some(folder) = project
+                            .classpath
+                            .iter()
+                            .find(|e| e.attribute("m2e-apt") == Some("true") && !e.is_test())
+                            .and_then(|e| e.location.as_ref())
+                        {
+                            for (relative, source) in generated_sources {
+                                let relative = std::path::Path::new(&relative);
+                                if relative
+                                    .components()
+                                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
                                 {
-                                    tracing::warn!("generated source {}: {e}", path.display());
+                                    continue;
+                                }
+                                let path = folder.join(relative);
+                                if let Some(parent) = path.parent() {
+                                    if let Err(e) = std::fs::create_dir_all(parent)
+                                        .and_then(|_| std::fs::write(&path, source))
+                                    {
+                                        tracing::warn!("generated source {}: {e}", path.display());
+                                    }
                                 }
                             }
                         }
+                        // WorkspaceDiagnosticsHandler: the build's problem and
+                        // task markers of each file.
+                        let tag_support = crate::features::client_caps::diagnostic_tags();
+                        let mut docs: HashMap<String, diag_conv::Doc16> = HashMap::new();
+                        for d in items.into_iter().filter(|d| own.contains(&d.uri)) {
+                            let (Some(problem), Some(text), Ok(u)) =
+                                (diag_conv::RawProblem::from_bridge(&d), disk.get(&d.uri), Url::parse(&d.uri))
+                            else {
+                                if let Some((u, diag)) = diag_conv::to_lsp(&d, None, tag_support) {
+                                    built.entry(u).or_default().push(diag);
+                                }
+                                continue;
+                            };
+                            let doc = docs.entry(d.uri.clone()).or_insert_with(|| diag_conv::Doc16::new(text));
+                            let marker = crate::features::markers::Marker::from_problem(&problem);
+                            built
+                                .entry(u)
+                                .or_default()
+                                .extend(crate::features::markers::to_diagnostics_array(doc, &[Some(&marker)], tag_support));
+                        }
                     }
-                    // WorkspaceDiagnosticsHandler: the build's problem and
-                    // task markers of each file.
-                    let tag_support = crate::features::client_caps::diagnostic_tags();
-                    let mut docs: HashMap<String, diag_conv::Doc16> = HashMap::new();
-                    for d in items.into_iter().filter(|d| own.contains(&d.uri)) {
-                        let (Some(problem), Some(text), Ok(u)) =
-                            (diag_conv::RawProblem::from_bridge(&d), disk.get(&d.uri), Url::parse(&d.uri))
-                        else {
-                            if let Some((u, diag)) = diag_conv::to_lsp(&d, None, tag_support) {
-                                built.entry(u).or_default().push(diag);
-                            }
-                            continue;
-                        };
-                        let doc = docs.entry(d.uri.clone()).or_insert_with(|| diag_conv::Doc16::new(text));
-                        let marker = crate::features::markers::Marker::from_problem(&problem);
-                        built
-                            .entry(u)
-                            .or_default()
-                            .extend(crate::features::markers::to_diagnostics_array(doc, &[Some(&marker)], tag_support));
-                    }
+                    Err(e) => tracing::warn!("build of {}: {e}", project.name),
                 }
-                Err(e) => tracing::warn!("build of {}: {e}", project.name),
             }
         }
         let target_names: HashSet<&str> = targets.iter().map(|p| p.name.as_str()).collect();

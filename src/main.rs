@@ -36,6 +36,15 @@ async fn main() {
         }
     }
 
+    for arg in &args {
+        if let Some((key, value)) = arg.strip_prefix("-D").and_then(|a| a.split_once('=')) {
+            if key == project::metadata::GENERATES_METADATA_FILES_AT_PROJECT_ROOT {
+                project::metadata::set_property(Some(value.to_owned()));
+            }
+        }
+    }
+    project::metadata::set_metadata_area(&server::data_dir());
+
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 

@@ -357,6 +357,7 @@ impl JavaLanguageServer {
     /// `java/classFileContents` (jdt.ls extension).
     pub async fn class_file_contents(&self, params: Value) -> LspResult<String> {
         let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
+        self.discover_source(uri).await;
         Ok(navigation::class_file_contents(&self.dispatcher, uri).await)
     }
 
@@ -377,6 +378,9 @@ impl JavaLanguageServer {
             ws.configure_filters(&settings.resource_filters);
             if let Err(error) = ws.ensure_default_project() {
                 tracing::error!("Unable to create default Java project: {error}");
+            }
+            for project in &ws.projects {
+                crate::project::metadata::persist(project, &settings.resource_filters);
             }
             ws
         })

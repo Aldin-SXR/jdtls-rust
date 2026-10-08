@@ -8,6 +8,62 @@ use crate::project::{invisible, ImportSettings, ProjectKind, Workspace};
 use std::path::{Path, PathBuf};
 
 impl JavaLanguageServer {
+    /// `MavenSourceDownloader.discoverSource` for the library of the class
+    /// file `uri`: download its sources (waiting up to `MAX_TIME_MILLIS`) and
+    /// attach them to the projects using the library.
+    pub(crate) async fn discover_source(&self, uri: &str) {
+        use crate::project::source_discovery as discovery;
+        let mut changed = false;
+        let mut ws = self.workspace_snapshot();
+        for (jar, sources, javadoc) in discovery::take_completed() {
+            changed |= attach_downloaded(&mut ws, &jar, sources, javadoc);
+        }
+        if let Some((desc, class_file)) = crate::features::navigation::class_file_target(&ws, uri) {
+            let jar = PathBuf::from(&desc.root);
+            let discovers = match ws.project(&class_file.project).map(|p| p.kind) {
+                Some(ProjectKind::Gradle) => false,
+                Some(ProjectKind::Eclipse) => {
+                    crate::features::preferences::get_bool("java.eclipse.downloadSources").unwrap_or(false)
+                }
+                _ => true,
+            };
+            let attached = ws.projects.iter().any(|p| {
+                p.libraries.iter().any(|l| {
+                    l.path == jar && l.source.as_ref().is_some_and(|s| s.exists())
+                })
+            });
+            if discovers && desc.module.is_none() && !attached && jar.is_file() && discovery::first_request(&jar) {
+                let settings = self.current_import_settings().await;
+                let job = tokio::task::spawn_blocking(move || {
+                    let resolver = crate::project::maven::Resolver::with_settings(&settings.maven);
+                    let key = discovery::identify_in_local_repository(&jar, &resolver.local_repo)?;
+                    let download = |classifier: &str| {
+                        resolver.download_artifact(&key.group, &key.artifact, &key.version, Some(classifier), "jar")
+                    };
+                    let sources = download("sources");
+                    let javadoc = download("javadoc");
+                    discovery::complete(jar, sources, javadoc);
+                    Some(())
+                });
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(3000), job).await;
+                for (jar, sources, javadoc) in discovery::take_completed() {
+                    changed |= attach_downloaded(&mut ws, &jar, sources, javadoc);
+                }
+            }
+        }
+        if changed {
+            let _guard = self.import_lock.lock().await;
+            let mut current = self.workspace_snapshot();
+            for p in current.projects.iter_mut() {
+                if let Some(updated) = ws.project(&p.name) {
+                    p.classpath = updated.classpath.clone();
+                }
+                p.derive_views();
+            }
+            self.install_workspace(current).await;
+        }
+    }
+
     pub(crate) async fn change_source_path(&self, uri: String, add: bool) -> LspResult<Value> {
         let _guard = self.import_lock.lock().await;
         let mut ws = self.workspace_snapshot();
@@ -723,4 +779,33 @@ impl JavaLanguageServer {
             }
         }
     }
+}
+
+/// Attaches downloaded sources and Javadoc to every classpath entry of `jar`.
+fn attach_downloaded(ws: &mut Workspace, jar: &Path, sources: Option<PathBuf>, javadoc: Option<PathBuf>) -> bool {
+    fn visit(entries: &mut [crate::project::ClasspathEntry], jar: &Path, sources: &Option<PathBuf>, javadoc: &Option<PathBuf>) -> bool {
+        let mut changed = false;
+        for e in entries {
+            if e.location.as_deref() == Some(jar) {
+                if let Some(s) = sources.as_ref().filter(|_| e.source_attachment.is_none()) {
+                    e.source_attachment = Some(s.clone());
+                    changed = true;
+                }
+                if let Some(j) = javadoc.as_ref().filter(|_| e.attribute("javadoc_location").is_none()) {
+                    e.set_attribute("javadoc_location", &format!("jar:file:{}!/", j.to_string_lossy()));
+                    changed = true;
+                }
+            }
+            changed |= visit(&mut e.children, jar, sources, javadoc);
+        }
+        changed
+    }
+    let mut changed = false;
+    for p in ws.projects.iter_mut() {
+        if visit(&mut p.classpath, jar, &sources, &javadoc) {
+            p.derive_views();
+            changed = true;
+        }
+    }
+    changed
 }

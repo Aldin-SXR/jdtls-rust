@@ -65,6 +65,8 @@ pub struct Model {
     pub compiler: BTreeMap<String, String>,
     pub compiler_args: Vec<String>,
     pub extra_sources: Vec<(String, bool)>,
+    /// `group:artifact:version` of a parent POM that cannot be resolved.
+    pub unresolved_parent: Option<String>,
 }
 
 fn child_text(node: roxmltree::Node, tag: &str) -> Option<String> {
@@ -367,6 +369,12 @@ impl Resolver {
         });
 
         let mut m = parent_model.clone().unwrap_or_default();
+        if m.unresolved_parent.is_none() && parent_model.is_none() {
+            m.unresolved_parent = raw
+                .parent
+                .as_ref()
+                .map(|p| format!("{}:{}:{}", p.group, p.artifact, p.version));
+        }
         // Modules and build directories are not inherited.
         m.modules = raw.modules.clone();
         m.extra_sources = raw.extra_sources.clone();
@@ -698,8 +706,8 @@ pub fn compiler_levels(model: &Model) -> (String, String) {
 
 /// `AbstractJavaProjectConfigurator.addJavaProjectOptions`, on top of the
 /// project's existing `.settings` options.
-pub fn compiler_options(model: &Model, dir: &Path, _vm: Option<&str>) -> BTreeMap<String, String> {
-    let mut options = project_prefs(dir);
+pub fn compiler_options(model: &Model, dir: &Path, name: &str, _vm: Option<&str>) -> BTreeMap<String, String> {
+    let mut options = super::project_prefs_of(dir, name);
     let (release, _, _) = compiler_parameters(model);
     let (source, target) = compiler_levels(model);
     let args = &model.compiler_args;
@@ -803,6 +811,97 @@ pub struct MavenSettings {
     pub user_settings: Option<PathBuf>,
     /// `java.configuration.maven.globalSettings`.
     pub global_settings: Option<PathBuf>,
+}
+
+/// The modules of the effective model of `pom`, `<modules>` plus those of
+/// the active profiles (`IMavenProjectFacade.getMavenProjectModules()`).
+pub fn active_modules(pom: &Path, selected_profiles: &str) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(pom) else {
+        return Vec::new();
+    };
+    let Ok(doc) = roxmltree::Document::parse(&text) else {
+        return Vec::new();
+    };
+    let selected: Vec<&str> = selected_profiles
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    let modules_of = |node: roxmltree::Node| -> Vec<String> {
+        node.children()
+            .filter(|n| n.has_tag_name("modules"))
+            .flat_map(|n| n.children().filter(|c| c.has_tag_name("module")))
+            .filter_map(|c| c.text().map(|t| t.trim().to_owned()))
+            .collect()
+    };
+    let root = doc.root_element();
+    let mut modules = modules_of(root);
+    let profiles: Vec<roxmltree::Node> = root
+        .children()
+        .filter(|n| n.has_tag_name("profiles"))
+        .flat_map(|n| n.children().filter(|c| c.has_tag_name("profile")))
+        .collect();
+    let id_of = |p: &roxmltree::Node| child_text(*p, "id").unwrap_or_default();
+    let explicitly_active = profiles.iter().any(|p| selected.contains(&id_of(p).as_str()));
+    for profile in &profiles {
+        let id = id_of(profile);
+        let active_by_default = profile
+            .children()
+            .find(|n| n.has_tag_name("activation"))
+            .and_then(|a| child_text(a, "activeByDefault"))
+            .is_some_and(|v| v == "true");
+        let active = if selected.iter().any(|s| s.strip_prefix('!') == Some(id.as_str())) {
+            false
+        } else {
+            selected.contains(&id.as_str()) || (active_by_default && !explicitly_active)
+        };
+        if active {
+            for module in modules_of(*profile) {
+                if !modules.contains(&module) {
+                    modules.push(module);
+                }
+            }
+        }
+    }
+    modules
+}
+
+/// `MavenBuildSupport.collectProjects`: the names of `project` and, for a
+/// `pom` packaging, of the open Maven projects named like its modules.
+pub fn collect_projects(ws: &Workspace, project: &Project) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_into(ws, project, &mut Resolver::with_settings(&Default::default()), &mut out);
+    out
+}
+
+fn collect_into(ws: &Workspace, project: &Project, resolver: &mut Resolver, out: &mut Vec<String>) {
+    if !project.has_nature(super::MAVEN_NATURE) {
+        return;
+    }
+    if !out.contains(&project.name) {
+        out.push(project.name.clone());
+    }
+    let pom = project.location.join(POM_FILE);
+    let Some(model) = resolver
+        .model(&super::canonicalize_lenient(&pom))
+        .filter(|m| m.unresolved_parent.is_none())
+    else {
+        return;
+    };
+    if model.packaging != "pom" {
+        return;
+    }
+    for module in active_modules(&pom, &project.selected_profiles) {
+        if let Some(p) = ws
+            .projects
+            .iter()
+            .find(|p| p.name == module && p.location.join(POM_FILE).exists())
+        {
+            if p.has_nature(super::MAVEN_NATURE) && !out.contains(&p.name) {
+                collect_into(ws, p, resolver, out);
+            }
+        }
+    }
 }
 
 /// `pom.xml`.
@@ -960,16 +1059,16 @@ fn apt_entry(
 const M2E_PREFS: &str = ".settings/org.eclipse.m2e.core.prefs";
 
 /// The selected profiles of m2e's persisted `ResolverConfiguration`.
-fn resolver_configuration(dir: &Path) -> String {
-    super::prefs::read_properties(&dir.join(M2E_PREFS))
+fn resolver_configuration(dir: &Path, name: &str) -> String {
+    super::prefs::read_properties(&super::metadata::resolve(dir, name, M2E_PREFS))
         .and_then(|p| p.get("activeProfiles").cloned())
         .unwrap_or_default()
 }
 
 /// `IProjectConfigurationManager.setResolverConfiguration`: persist the
 /// selected profiles (with `resolveWorkspaceProjects`).
-pub fn write_resolver_configuration(dir: &Path, selected_profiles: &str) -> std::io::Result<()> {
-    let path = dir.join(M2E_PREFS);
+pub fn write_resolver_configuration(dir: &Path, name: &str, selected_profiles: &str) -> std::io::Result<()> {
+    let path = super::metadata::resolve(dir, name, M2E_PREFS);
     let mut prefs = super::prefs::read_properties(&path).unwrap_or_default();
     prefs.insert("activeProfiles".into(), selected_profiles.to_owned());
     prefs.insert("eclipse.preferences.version".into(), "1".into());
@@ -988,7 +1087,7 @@ fn to_project(
 ) -> Project {
     let mut project = Project::new(name, dir, ProjectKind::Maven);
     project.build_files = vec![dir.join(POM_FILE)];
-    project.selected_profiles = resolver_configuration(dir);
+    project.selected_profiles = resolver_configuration(dir, name);
     // m2e sets the project encoding from `project.build.sourceEncoding`.
     project.encoding = model.properties.get("project.build.sourceEncoding").cloned();
     if model.packaging == "pom" {
@@ -1165,10 +1264,10 @@ fn to_project(
     }
     project.classpath.push(container);
 
-    let options = compiler_options(model, dir, settings.vm_version.as_deref());
+    let options = compiler_options(model, dir, name, settings.vm_version.as_deref());
     project.options = options;
     // Explicit raw libraries retained by m2e have authoritative attachments.
-    if let Ok(xml) = std::fs::read_to_string(dir.join(".classpath")) {
+    if let Ok(xml) = std::fs::read_to_string(super::metadata::resolve(dir, name, ".classpath")) {
         let mut raw = project.clone();
         raw.classpath.clear();
         super::eclipse::apply_classpath(&mut raw, &xml);
