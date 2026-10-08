@@ -157,6 +157,9 @@ final class AstBindingsService {
         parser.setUnitName(classFile == null ? unitName(req.uri) : ClassFileService.unitName(classFile));
         BridgeOptions.configureEnvironment(parser, cp, sourcepath);
         if (classFile == null) {
+            if (req.files != null) {
+                SignatureHelpService.injectSources(parser, new InMemorySourceClasspath(req.files, req.uri), false);
+            }
             String fragment = SourceLayout.fragmentPackages(req.files).get(req.uri);
             inPackageFragments(parser, fragment != null && !fragment.equals(InMemorySourceClasspath.packageOf(source)) ? fragment : null);
         }
