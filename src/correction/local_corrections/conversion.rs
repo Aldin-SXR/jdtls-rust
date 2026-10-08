@@ -149,11 +149,24 @@ fn parameter(method: BindingRef<'_>, index: usize) -> Option<BindingRef<'_>> {
         params.get(index).copied()
     }
 }
+/// `ASTNodes.isTargetAmbiguous(expression, expressionIsExplicitlyTyped)`.
+pub(crate) fn target_ambiguous(reference: Node<'_>, explicit: bool) -> bool {
+    ambiguous_impl(reference, None, None, true, Some(explicit))
+}
 fn ambiguous(
     reference: Node<'_>,
     initializer: Node<'_>,
     typ: BindingRef<'_>,
     functional: bool,
+) -> bool {
+    ambiguous_impl(reference, Some(initializer), Some(typ), functional, None)
+}
+fn ambiguous_impl(
+    reference: Node<'_>,
+    initializer: Option<Node<'_>>,
+    typ: Option<BindingRef<'_>>,
+    functional: bool,
+    explicit_override: Option<bool>,
 ) -> bool {
     let Some(p) = summary(reference) else {
         return false;
@@ -206,11 +219,15 @@ fn ambiguous(
             else {
                 continue;
             };
-            let explicit = initializer.is(NodeKind::LambdaExpression)
-                && initializer
-                    .list("parameters")
-                    .first()
-                    .is_none_or(|n| n.is(NodeKind::SingleVariableDeclaration));
+            let explicit = explicit_override.unwrap_or_else(|| {
+                initializer.is_some_and(|initializer| {
+                    initializer.is(NodeKind::LambdaExpression)
+                        && initializer
+                            .list("parameters")
+                            .first()
+                            .is_none_or(|n| n.is(NodeKind::SingleVariableDeclaration))
+                })
+            });
             if !explicit {
                 return true;
             }
@@ -245,13 +262,13 @@ fn ambiguous(
                         return assign(*old, *target);
                     }
                     if method.is_varargs() && p.index >= params.len().saturating_sub(1) {
-                        target.component_type().is_some_and(|c| assign(typ, c))
+                        target.component_type().is_some_and(|c| typ.is_some_and(|typ| assign(typ, c)))
                             || matches!(
                                 target.qualified_name(),
                                 "java.lang.Object" | "java.lang.Cloneable" | "java.io.Serializable"
                             )
                     } else {
-                        assign(typ, *target)
+                        typ.is_some_and(|typ| assign(typ, *target))
                     }
                 });
             if compatible {
@@ -261,7 +278,8 @@ fn ambiguous(
     }
     false
 }
-fn target(node: Node<'_>) -> Option<BindingRef<'_>> {
+/// `ASTNodes.getTargetType(expression)`.
+pub(crate) fn target(node: Node<'_>) -> Option<BindingRef<'_>> {
     let parent = node.parent()?;
     let loc = node.location()?;
     match (parent.kind(), loc) {

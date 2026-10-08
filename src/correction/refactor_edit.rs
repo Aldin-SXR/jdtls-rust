@@ -78,8 +78,31 @@ pub async fn get_refactor_edit(env: &Env<'_>, params: Value) -> Option<Value> {
             let (cus, positions) = change.create(options);
             refactor_workspace_edit(env, &ast, cus, first_by_sequence_rank(&positions)).await
         }
+        "extractVariable" | "extractVariableAllOccurrence" | "extractConstant" => {
+            if let Some((offset, length)) = to_selection_info(arguments.first()) {
+                ctx = Context::new(ast.clone(), offset, length);
+            }
+            let options = env.options(&ast.uri).await;
+            let cus = super::quick_assist::extract_variable_change(&command, &ctx, options)?;
+            let tracked = cus.first().and_then(|cu| cu.rewrite.as_ref()).and_then(new_declaration_name);
+            refactor_workspace_edit(env, &ast, cus, tracked).await
+        }
+        super::invert_boolean::INVERT_VARIABLE_COMMAND => {
+            let covering = ctx.covering_node()?;
+            let (rewrite, tracked) = super::invert_boolean::invert_variable_rewrite(&ctx, covering)?;
+            refactor_workspace_edit(env, &ast, vec![CuChange::rewrite(rewrite)], Some(tracked)).await
+        }
         _ => None,
     }
+}
+
+/// The name of the first new variable declaration fragment of a rewrite
+/// (the declaration position of the extract refactorings).
+fn new_declaration_name(rw: &crate::rewrite::ASTRewrite) -> Option<RNode> {
+    (0..rw.new_nodes.len() as u32).find_map(|i| {
+        let node = RNode::New(i);
+        (rw.kind(node) == NodeKind::VariableDeclarationFragment).then(|| rw.new_value(node, "name").node()).flatten()
+    })
 }
 
 /// `getFirstTrackedNodePositionBySequenceRank(positionGroup)`.
