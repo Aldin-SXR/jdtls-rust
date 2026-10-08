@@ -84,6 +84,9 @@ pub async fn refactor_proposals(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposa
     super::invert_boolean::inverse_condition_proposals(&req.context, covering, &mut proposals);
     let advanced = crate::features::preferences::extended_capability("advancedExtractRefactoringSupport");
     proposals.extend(super::invert_boolean::invert_variable_proposal(&req.context, covering, Some(req.params), advanced));
+    if crate::features::preferences::extended_capability("moveRefactoringSupport") {
+        super::move_proposals::move_refactoring_proposals(env, &req.context, req.params, &mut proposals).await;
+    }
     if no_errors_at_location(req, covering) {
         let problems_at_location = !req.locations.is_empty();
         extract_variable_proposals(env, req, problems_at_location, &mut proposals).await;

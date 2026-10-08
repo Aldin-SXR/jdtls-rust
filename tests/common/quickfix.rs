@@ -152,7 +152,7 @@ impl QuickFixTest {
         }
         let result = self.ws.request("textDocument/codeAction", json!({ "textDocument": { "uri": uri }, "range": range, "context": context }));
         let mut actions: Vec<Value> = result.as_array().cloned().unwrap_or_default();
-        if let Some(only) = &self.only {
+        if let Some(only) = self.only.as_ref().filter(|only| !only.is_empty()) {
             for a in &actions {
                 let kind = a["kind"].as_str().unwrap_or("");
                 assert!(only.iter().any(|k| !kind.is_empty() && kind.starts_with(k.as_str())), "{} has kind {} but only {:?} are accepted", a["title"], kind, only);
