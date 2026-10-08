@@ -5,7 +5,9 @@
 //! `editRange`/`insertTextFormat`/`insertTextMode` item defaults and the
 //! `AdjustIndentation` insert text mode. The mocked `ClientPreferences`
 //! become LSP client capabilities ([`Caps`]). Like upstream, the project
-//! runs on the rtstubs test JDK.
+//! runs on the rtstubs test JDK. `getWorkingCopy` reconciles the unit;
+//! jdt.ls does that before completion only with `java.lsp.joinOnCompletion`,
+//! so the oracle runs with it.
 
 mod common;
 use common::completion::*;
@@ -21,6 +23,7 @@ fn setup() -> T {
 fn setup_lazy(lazy_resolve_text_edit: bool) -> T {
     let mut t = setup_with(settings_with(true, lazy_resolve_text_edit));
     t.ws.use_upstream_test_jdk("hello");
+    t.ws.oracle_java_options.push("-Djava.lsp.joinOnCompletion=true".into());
     t.caps = Caps::mock(true, true, true);
     t
 }

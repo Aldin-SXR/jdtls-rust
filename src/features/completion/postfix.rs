@@ -158,7 +158,8 @@ pub struct PostfixContext {
     pub local_names: Option<Vec<String>>,
     pub imports: ImportEnv,
     /// `additionalTextEdits`: the import edits recorded per template name by
-    /// every evaluation of this context (completion and each resolve).
+    /// every evaluation of this context (completion and each resolve). They
+    /// are shared, mutable `TextEdit`s: see [`PostfixContext::convert_additional_text_edits`].
     pub recorded_edits: Arc<Mutex<HashMap<String, Vec<RawEdit>>>>,
 }
 
@@ -226,9 +227,18 @@ impl PostfixContext {
         Evaluation { content }
     }
 
-    /// `getAdditionalTextEdits(name)`.
-    pub fn additional_text_edits(&self, name: &str) -> Vec<RawEdit> {
-        self.recorded_edits.lock().unwrap_or_else(|e| e.into_inner()).get(name).cloned().unwrap_or_default()
+    /// `getAdditionalTextEdits(name)` converted by `TextEditConverter`. Its
+    /// `visit(MultiTextEdit)` applies each edit with `UPDATE_REGIONS`, so an
+    /// edit converted again covers the text it inserted (`offset`, length
+    /// of its new text) instead of its original region.
+    pub fn convert_additional_text_edits(&self, name: &str) -> Vec<RawEdit> {
+        let mut recorded = self.recorded_edits.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(edits) = recorded.get_mut(name) else { return Vec::new() };
+        let converted = edits.clone();
+        for edit in edits.iter_mut() {
+            edit.1 = utf16_len(&edit.2);
+        }
+        converted
     }
 }
 
@@ -940,7 +950,7 @@ pub fn complete(
             item.insert_text = content.clone();
         }
         if !client.resolve_additional_text_edits() {
-            item.additional_text_edits = Some(additional_text_edits(doc, range, &context.additional_text_edits(&template.name)));
+            item.additional_text_edits = Some(additional_text_edits(doc, range, &context.convert_additional_text_edits(&template.name)));
         }
         if client.label_details {
             item.label_details = Some(LabelDetails { detail: None, description: Some(template.description.clone()) });

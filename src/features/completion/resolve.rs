@@ -75,7 +75,7 @@ pub async fn resolve(env: &Env, mut item: Item) -> tower_lsp::jsonrpc::Result<It
             }
             if client.resolve_additional_text_edits() {
                 item.additional_text_edits =
-                    Some(postfix::additional_text_edits(&unit.doc, range, &postfix_context.additional_text_edits(&pp.template.name)));
+                    Some(postfix::additional_text_edits(&unit.doc, range, &postfix_context.convert_additional_text_edits(&pp.template.name)));
             }
         }
         item.data = None;
