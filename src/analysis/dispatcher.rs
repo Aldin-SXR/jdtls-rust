@@ -271,6 +271,11 @@ impl Dispatcher {
                 });
             }
             let mut options = crate::project::jdtls_default_options();
+        // `StandardProjectsManager.configureSettings`: `java.settings.url`.
+        options.extend(crate::project::prefs::settings_url_options(
+            crate::features::preferences::current().get_settings_url(),
+            &cfg.root_paths,
+        ));
             let vm = ws.runtime_registry.as_ref().and_then(|r| r.default_install());
             if let Some(version) = vm.and_then(crate::project::runtime::VmInstall::major_version) {
                 for key in [crate::project::SOURCE, crate::project::COMPLIANCE, crate::project::TARGET] {
@@ -321,6 +326,11 @@ impl Dispatcher {
         }
         classpath.extend(cfg.classpath.iter().cloned());
         let mut options = crate::project::jdtls_default_options();
+        // `StandardProjectsManager.configureSettings`: `java.settings.url`.
+        options.extend(crate::project::prefs::settings_url_options(
+            crate::features::preferences::current().get_settings_url(),
+            &cfg.root_paths,
+        ));
         if ws.runtime_registry.is_some() {
             if let Some(version) = &ws.vm_version {
                 for key in [crate::project::SOURCE, crate::project::COMPLIANCE, crate::project::TARGET] {
@@ -867,6 +877,11 @@ impl Dispatcher {
         let cfg = self.config.read().await.clone();
         let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner());
         let mut options = crate::project::jdtls_default_options();
+        // `StandardProjectsManager.configureSettings`: `java.settings.url`.
+        options.extend(crate::project::prefs::settings_url_options(
+            crate::features::preferences::current().get_settings_url(),
+            &cfg.root_paths,
+        ));
         if ws.runtime_registry.is_some() {
             if let Some(version) = &ws.vm_version {
                 for key in [crate::project::SOURCE, crate::project::COMPLIANCE, crate::project::TARGET] {

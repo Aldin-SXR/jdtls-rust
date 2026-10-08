@@ -102,3 +102,64 @@ mod tests {
         assert_eq!(p["key:x"], "ab");
     }
 }
+
+/// `EclipsePreferences.decodePath(fullPath)`: `(path, key)`.
+pub fn decode_path(full_path: &str) -> (Option<String>, String) {
+    let (path, key) = match full_path.find("//") {
+        Some(index) => (Some(&full_path[..index]), &full_path[index + 2..]),
+        None => match full_path.rfind('/') {
+            Some(last) => (Some(&full_path[..last]), &full_path[last + 1..]),
+            None => (None, full_path),
+        },
+    };
+    let path = path.filter(|p| !p.is_empty()).map(|p| p.strip_prefix('/').unwrap_or(p).to_owned());
+    (path, key.to_owned())
+}
+
+/// The JavaCore options `java.settings.url` contributes
+/// (`StandardProjectsManager.configureSettings`): every property of the
+/// file except `file_export_version` and the `@`/`!` entries, keyed by the
+/// preference key of its (possibly scoped) path. Empty when the URL is
+/// unset or doesn't resolve to a readable file.
+pub fn settings_url_options(url: Option<&str>, roots: &[std::path::PathBuf]) -> BTreeMap<String, String> {
+    use std::sync::Mutex;
+    type Cached = (std::path::PathBuf, Option<std::time::SystemTime>, BTreeMap<String, String>);
+    static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
+
+    let Some(path) = url.and_then(|u| crate::features::formatting::options::formatter_path(u, roots)) else {
+        return BTreeMap::new();
+    };
+    let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((p, m, options)) = cache.as_ref() {
+        if *p == path && *m == modified {
+            return options.clone();
+        }
+    }
+    let Some(properties) = read_properties(&path) else {
+        tracing::error!("Cannot read {}", path.display());
+        return BTreeMap::new();
+    };
+    let options: BTreeMap<String, String> = properties
+        .into_iter()
+        .filter(|(path, _)| path != "file_export_version" && !path.starts_with('@') && !path.starts_with('!'))
+        .map(|(path, value)| (decode_path(&path).1, value))
+        .collect();
+    *cache = Some((path, modified, options.clone()));
+    options
+}
+
+#[cfg(test)]
+mod settings_url_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_scoped_preference_paths() {
+        assert_eq!((None, "a.b".to_owned()), decode_path("a.b"));
+        assert_eq!(
+            (Some("instance/org.eclipse.jdt.core".to_owned()), "org.eclipse.jdt.core.x".to_owned()),
+            decode_path("/instance/org.eclipse.jdt.core/org.eclipse.jdt.core.x")
+        );
+        assert_eq!((Some("a/b".to_owned()), "c/d".to_owned()), decode_path("/a/b//c/d"));
+    }
+}

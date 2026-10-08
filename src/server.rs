@@ -1072,8 +1072,11 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         let old_import_settings = self.current_import_settings().await;
+        let old_settings_url = crate::features::preferences::current().get_settings_url().map(str::to_owned);
         navigation::update_settings(&params.settings);
         crate::features::preferences::update(&params.settings);
+        let settings_url_changed =
+            old_settings_url.as_deref() != crate::features::preferences::current().get_settings_url();
         if self.service_ready.load(std::sync::atomic::Ordering::SeqCst) {
             let changes =
                 crate::features::init::sync_capabilities_to_settings(&self.client_prefs(), false);
@@ -1107,6 +1110,11 @@ impl LanguageServer for JavaLanguageServer {
         self.on_import_settings_changed(&old_import_settings, &new_import_settings)
             .await;
         if !self.legacy_diagnostics().await {
+            // `StandardProjectsManager.configureSettings`: new JavaCore
+            // options clean-build the workspace.
+            if settings_url_changed && crate::features::preferences::current().is_autobuild_enabled() {
+                self.lifecycle.build(None).await;
+            }
             return;
         }
         let next = (*self.compile_tx.borrow()).wrapping_add(1);
@@ -1301,10 +1309,21 @@ impl LanguageServer for JavaLanguageServer {
         } else if self.on_files_changed(&changed_paths).await {
             should_recompile = true;
         }
+        // `StandardProjectsManager.fileChanged` of the `java.settings.url`
+        // file: `configureSettings` clean-builds the workspace.
+        let settings_file_changed = {
+            let roots = self.config.read().await.root_paths.clone();
+            crate::features::preferences::current()
+                .get_settings_url()
+                .and_then(|u| formatting::options::formatter_path(u, &roots))
+                .is_some_and(|p| changed_paths.contains(&crate::project::canonicalize_lenient(&p)))
+        };
         if !legacy {
-            if reimport {
+            if reimport || (settings_file_changed && crate::features::preferences::current().is_autobuild_enabled()) {
                 self.lifecycle.build(None).await;
-                self.register_watchers().await;
+                if reimport {
+                    self.register_watchers().await;
+                }
             } else if !file_changes.is_empty() {
                 self.lifecycle.files_changed(&file_changes).await;
             }
@@ -2584,6 +2603,10 @@ impl LanguageServer for JavaLanguageServer {
                 let vm_version = vm.as_deref().and_then(crate::project::vm_version);
                 let formatter =
                     formatting::options::workspace_formatter_options(&cfg.format, &cfg.root_paths);
+                let settings = crate::project::prefs::settings_url_options(
+                    crate::features::preferences::current().get_settings_url(),
+                    &cfg.root_paths,
+                );
                 let env = crate::features::project_commands::Env {
                     ws: &ws,
                     vm_home: vm,
@@ -2597,6 +2620,9 @@ impl LanguageServer for JavaLanguageServer {
                         return Some(v.clone());
                     }
                     if let Some(v) = formatter.get(key) {
+                        return Some(v.clone());
+                    }
+                    if let Some(v) = settings.get(key) {
                         return Some(v.clone());
                     }
                     crate::project::effective_option(p, key, vm_version.as_deref())
