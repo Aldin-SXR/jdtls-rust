@@ -8,6 +8,7 @@ mod lambda;
 mod convert_var;
 mod method_ref;
 mod nls;
+mod static_import;
 mod string_concat;
 mod switch_expression;
 mod text_block;
@@ -94,6 +95,7 @@ pub async fn refactor_proposals(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposa
         let options = env.options(&req.context.ast.uri).await;
         convert_var::convert_var_type_to_resolved_type(env, &req.context, &options, covering, &mut proposals).await;
         convert_var::convert_resolved_type_to_var_type(&req.context, &options, covering, &mut proposals);
+        static_import::add_static_import_proposals(&req.context, &options, covering, &mut proposals);
     }
     proposals.extend(super::local_corrections::assignment_refactors(env, req).await);
     proposals
