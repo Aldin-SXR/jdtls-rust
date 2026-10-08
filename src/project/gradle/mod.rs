@@ -3,6 +3,11 @@
 //! conventional layout, `sourceSets` overrides, Java version and declared
 //! dependencies (resolved from the Gradle and Maven local caches).
 
+pub mod checksums;
+pub mod config;
+mod sha256;
+pub mod util;
+
 use super::detect::FileDetector;
 use super::maven::{Dep, Model, Resolver};
 use super::{
