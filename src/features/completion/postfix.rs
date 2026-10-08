@@ -10,8 +10,10 @@
 //! repeated by `completionItem/resolve`.
 
 use super::doc::Doc;
-use super::handler::UnitInfo;
+use super::handler::{self, UnitInfo};
 use super::import_context::ImportContext;
+use super::Env;
+use crate::analysis::dispatcher::RequestContext;
 use super::imports::{ContainerTypes, CuStructure, ImportRewrite};
 use super::item::{item_kind, Item, ItemDefaults, LabelDetails};
 use super::prefs::{Client, Prefs};
@@ -20,7 +22,7 @@ use super::snippets::{beautify_document, set_insert_text_format, set_insert_text
 use super::sort_text::convert_relevance;
 use crate::semantic_ast::{Ast, BindingRef, Node, NodeId, NodeKind};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tower_lsp::lsp_types::{Range, TextEdit};
 
 /// `JavaPostfixContextType.ID_ALL`.
@@ -149,9 +151,13 @@ pub struct PostfixContext {
     /// `getInnerExpressionTypeSignature()`.
     pub inner_type: String,
     pub names: NameSources,
-    /// `getCompletion().getLocalVariableNames()` at the template start.
-    pub local_names: Vec<String>,
+    /// `getCompletion().getLocalVariableNames()` at the template start;
+    /// computed on first use (`None` until then).
+    pub local_names: Option<Vec<String>>,
     pub imports: ImportEnv,
+    /// `additionalTextEdits`: the import edits recorded per template name by
+    /// every evaluation of this context (completion and each resolve).
+    pub recorded_edits: Arc<Mutex<HashMap<String, Vec<RawEdit>>>>,
 }
 
 /// A stored postfix proposal (`PostfixCompletionProposal`).
@@ -168,8 +174,6 @@ pub type RawEdit = (usize, usize, String);
 pub struct Evaluation {
     /// `TemplateBuffer.getString()`, `None` when only whitespace.
     pub content: Option<String>,
-    /// `getAdditionalTextEdits(template)`: the import rewrites of `addImport`.
-    pub import_edits: Vec<RawEdit>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -212,7 +216,17 @@ impl PostfixContext {
             }
         }
         let content = if out.trim().is_empty() { None } else { Some(out) };
-        Evaluation { content, import_edits: ev.import_edits }
+        // addImport: the edits are recorded under the active template name
+        if !template.name.trim().is_empty() {
+            let mut recorded = self.recorded_edits.lock().unwrap_or_else(|e| e.into_inner());
+            recorded.entry(template.name.clone()).or_default().extend(ev.import_edits.iter().cloned());
+        }
+        Evaluation { content }
+    }
+
+    /// `getAdditionalTextEdits(name)`.
+    pub fn additional_text_edits(&self, name: &str) -> Vec<RawEdit> {
+        self.recorded_edits.lock().unwrap_or_else(|e| e.into_inner()).get(name).cloned().unwrap_or_default()
     }
 }
 
@@ -308,7 +322,7 @@ impl Evaluator<'_> {
 
     /// `JavaContextCore.computeExcludes`: local variable names and used names.
     fn excludes(&self) -> Vec<String> {
-        let mut ex = self.ctx.local_names.clone();
+        let mut ex = self.ctx.local_names.clone().unwrap_or_default();
         ex.extend(self.used.iter().cloned());
         ex
     }
@@ -371,9 +385,12 @@ impl Evaluator<'_> {
         let context = &env.context;
         let ctx = move |rw: &ImportRewrite, qualifier: &str, name: &str, kind: i32| -> i32 { context.find_in_context(rw, qualifier, name, kind) };
         let name = rewrite.add_import_with(ty, Some(&ctx));
-        if let Some(edit) = rewrite.rewrite(&env.container_types, &env.line_delimiter, env.blank_lines_between_import_groups, env.space_before_semicolon) {
-            self.import_edits.push(edit);
-        }
+        // rewriteImports is recorded even without changes: TextEditConverter
+        // turns the empty MultiTextEdit into an empty edit at offset 0.
+        let edit = rewrite
+            .rewrite(&env.container_types, &env.line_delimiter, env.blank_lines_between_import_groups, env.space_before_semicolon)
+            .unwrap_or((0, 0, String::new()));
+        self.import_edits.push(edit);
         name
     }
 
@@ -910,11 +927,10 @@ pub fn complete(
         let mut item = Item { label: template.name.clone(), kind: Some(item_kind::SNIPPET), ..Default::default() };
         set_insert_text_format(&mut item, client, defaults);
         set_insert_text_mode(&mut item, client, defaults);
-        let (content, import_edits) = if prefs.lazy_resolve_text_edit {
-            (Some(template_to_snippet(&template.pattern)), Vec::new())
+        let content = if prefs.lazy_resolve_text_edit {
+            Some(template_to_snippet(&template.pattern))
         } else {
-            let ev = context.evaluate(template);
-            (ev.content, ev.import_edits)
+            context.evaluate(template).content
         };
         if client.item_defaults_support() && defaults.edit_range.is_some() {
             item.text_edit_text = content.clone();
@@ -922,7 +938,7 @@ pub fn complete(
             item.insert_text = content.clone();
         }
         if !client.resolve_additional_text_edits() {
-            item.additional_text_edits = Some(additional_text_edits(doc, range, &import_edits));
+            item.additional_text_edits = Some(additional_text_edits(doc, range, &context.additional_text_edits(&template.name)));
         }
         if client.label_details {
             item.label_details = Some(LabelDetails { detail: None, description: Some(template.description.clone()) });
@@ -944,14 +960,14 @@ pub fn complete(
 }
 
 /// Builds the [`PostfixContext`] of an [`Analysis`].
-pub fn context_of(analysis: &Analysis, unit: &UnitInfo, prefs: &Prefs, import_context: ImportContext, container_types: ContainerTypes, local_names: Vec<String>) -> PostfixContext {
+pub fn context_of(analysis: &Analysis, unit: &UnitInfo, prefs: &Prefs, import_context: ImportContext, container_types: ContainerTypes) -> PostfixContext {
     PostfixContext {
         start: analysis.start,
         end: analysis.end,
         affected_statement: analysis.affected_statement.clone(),
         inner_type: analysis.inner_type.clone(),
         names: analysis.names.clone(),
-        local_names,
+        local_names: None,
         imports: ImportEnv {
             cu: unit.cu.clone(),
             context: import_context,
@@ -963,10 +979,63 @@ pub fn context_of(analysis: &Analysis, unit: &UnitInfo, prefs: &Prefs, import_co
             blank_lines_between_import_groups: unit.blank_lines_between_import_groups(),
             space_before_semicolon: unit.space_before_semicolon(),
         },
+        recorded_edits: Arc::default(),
     }
 }
 
 /// Whether evaluating `template` asks for variable names (`computeExcludes`).
 pub fn needs_local_names(template: &Template) -> bool {
     template.pattern.contains("newName") || template.pattern.contains("${index}")
+}
+
+/// `CompilationUnitCompletion.getLocalVariableNames()` of a code completion
+/// at the template start.
+pub async fn local_variable_names(env: &Env, ctx: &RequestContext, unit: &UnitInfo, start: usize) -> Vec<String> {
+    handler::template_scope_at(env, ctx, unit, start, start)
+        .await
+        .map(|scope| scope.locals.into_iter().map(|v| v.name).collect())
+        .unwrap_or_default()
+}
+
+/// `SnippetCompletionProposal.getPostfixSnippets`: the postfix items and the
+/// `CompletionResponse` that `PostfixTemplateEngine.complete` stores.
+pub async fn postfix_snippets(
+    env: &Env,
+    ctx: &RequestContext,
+    unit: &UnitInfo,
+    context: &Context,
+    client: &Client,
+    prefs: &Prefs,
+    defaults: &ItemDefaults,
+) -> Option<(Vec<Item>, handler::Response)> {
+    if !prefs.postfix || !can_resolve_postfix(context, &unit.doc) {
+        return None;
+    }
+    // PostfixCompletionProposalComputer.computeCompletionEngine
+    let ast = crate::semantic_ast::fetch_with(&env.dispatcher, unit.uri.as_str(), ctx.clone()).await.ok()?;
+    let all = templates();
+    let analysis = analyze(&ast, context, &unit.doc, &all)?;
+    let available: Vec<Template> = all.into_iter().zip(&analysis.can_evaluate).filter(|(_, ok)| **ok).map(|(t, _)| t).collect();
+    let container_types = handler::container_types(env, ctx, unit).await;
+    let mut import_context = ImportContext::collect(ast.root(), analysis.end);
+    import_context.package_types = container_types.get(&unit.cu.package_name).cloned();
+    let mut postfix_context = context_of(&analysis, unit, prefs, import_context, container_types.clone());
+    if !prefs.lazy_resolve_text_edit && available.iter().any(needs_local_names) {
+        postfix_context.local_names = Some(local_variable_names(env, ctx, unit, postfix_context.start).await);
+    }
+    let request_id = handler::next_id();
+    let (items, proposals) = complete(&unit.doc, &postfix_context, &available, client, prefs, defaults, request_id)?;
+    let response = handler::Response {
+        id: request_id,
+        uri: unit.uri.to_string(),
+        offset: context.offset.max(0) as usize,
+        context: context.clone(),
+        proposals: proposals.into_iter().map(handler::StoredProposal::Postfix).collect(),
+        visible_elements: Default::default(),
+        stubs: Default::default(),
+        container_types,
+        source_level: unit.compiler_source(),
+        template_scope: None,
+    };
+    Some((items, response))
 }

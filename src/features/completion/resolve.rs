@@ -2,7 +2,8 @@
 
 use super::description::required_type_proposal;
 use super::handler::{self, StoredProposal};
-use super::item::Item;
+use super::item::{Item, ItemTextEdit};
+use super::postfix;
 use super::prefs::{Client, GuessMode, Prefs};
 use super::proposal::{kind, Proposal};
 use super::replacement::ReplacementProvider;
@@ -12,7 +13,7 @@ use super::snippets::{beautify_document, evaluate, set_text_edit};
 use super::Env;
 use crate::features::hover::{self, Element};
 use serde_json::{json, Value};
-use tower_lsp::lsp_types::{Documentation, MarkupContent, MarkupKind, Url};
+use tower_lsp::lsp_types::{Documentation, MarkupContent, MarkupKind, TextEdit, Url};
 
 /// `CompletionResolveHandler.VALUE` / `DEFAULT`
 const VALUE: &str = "Value: ";
@@ -54,6 +55,27 @@ pub async fn resolve(env: &Env, mut item: Item) -> tower_lsp::jsonrpc::Result<It
             }
             if prefs.lazy_resolve_text_edit {
                 set_text_edit(&response.context, &unit.doc, &mut item, content.unwrap_or_else(|| "null".into()));
+            }
+        } else if let StoredProposal::Postfix(pp) = &stored {
+            let mut postfix_context = pp.context.clone();
+            if postfix_context.local_names.is_none() && postfix::needs_local_names(&pp.template) {
+                postfix_context.local_names = Some(postfix::local_variable_names(env, &ctx, &unit, postfix_context.start).await);
+            }
+            let content = postfix_context.evaluate(&pp.template).content;
+            let range = unit.doc.range(postfix_context.start, postfix_context.end.saturating_sub(postfix_context.start));
+            if prefs.lazy_resolve_text_edit {
+                item.text_edit = Some(ItemTextEdit::Edit(TextEdit::new(range, content.clone().unwrap_or_else(|| "null".into()))));
+            }
+            if client.resolve_documentation() {
+                item.documentation = Some(beautify_document(content.as_deref().unwrap_or("null"), client.documentation_markdown));
+            }
+            // upstream checks isCompletionResolveDocumentSupport here too
+            if client.resolve_documentation() {
+                item.detail = Some(pp.template.description.clone());
+            }
+            if client.resolve_additional_text_edits() {
+                item.additional_text_edits =
+                    Some(postfix::additional_text_edits(&unit.doc, range, &postfix_context.additional_text_edits(&pp.template.name)));
             }
         }
         item.data = None;

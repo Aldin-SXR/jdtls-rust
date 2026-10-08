@@ -23,6 +23,7 @@ use tracing::warn;
 pub enum StoredProposal {
     Jdt(Proposal),
     Snippet(SnippetProposal),
+    Postfix(super::postfix::PostfixProposal),
 }
 
 /// jdt.ls `CompletionResponse`.
@@ -99,7 +100,7 @@ static RESPONSES: Mutex<Vec<Response>> = Mutex::new(Vec::new());
 /// `Preferences.DISCOVERED_STATIC_IMPORTS`.
 static DISCOVERED_STATIC_IMPORTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-fn next_id() -> u64 {
+pub fn next_id() -> u64 {
     ID_SEED.fetch_add(1, Ordering::SeqCst)
 }
 
@@ -513,6 +514,10 @@ pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: 
         });
         items.extend(snippet_items);
         items.extend(super::javadoc_proposal::type_definition_snippets(&unit, &context, &client, &defaults));
+        if let Some((postfix_items, response)) = super::postfix::postfix_snippets(env, &ctx, &unit, &context, &client, &prefs, &defaults).await {
+            store(response);
+            items.extend(postfix_items);
+        }
     }
     items.extend(super::javadoc_proposal::javadoc_proposals(env, &ctx, &unit, offset, &context, &client, &defaults).await);
 
@@ -567,7 +572,7 @@ pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: 
 }
 
 /// Containers whose types matter for import conflict detection.
-async fn container_types(env: &Env, ctx: &RequestContext, unit: &UnitInfo) -> ContainerTypes {
+pub async fn container_types(env: &Env, ctx: &RequestContext, unit: &UnitInfo) -> ContainerTypes {
     let on_demand: Vec<String> = import_element_names(&unit.text)
         .into_iter()
         .filter_map(|(s, n)| if s { None } else { n.strip_suffix(".*").map(str::to_owned) })
@@ -597,6 +602,12 @@ pub async fn template_scope(env: &Env, ctx: &RequestContext, unit: &UnitInfo, co
     while start > 0 && super::replacement::is_unicode_identifier_part(unit.doc.char_at(start - 1)) {
         start -= 1;
     }
+    template_scope_at(env, ctx, unit, start, offset).await
+}
+
+/// The template variable scope of a code completion at `start`
+/// (`CompilationUnitCompletion`); `offset` is the completion offset.
+pub async fn template_scope_at(env: &Env, ctx: &RequestContext, unit: &UnitInfo, start: usize, offset: usize) -> Option<TemplateScope> {
     let tests = test_uris(env, ctx);
     let q = json!({ "op": "templateScope", "testUris": tests, "contextOffset": offset, "unitPackage": unit_package(env, &unit.uri) });
     let v = bridge(env, ctx, &unit.uri, start, q).await?;
