@@ -379,6 +379,9 @@ impl JavaLanguageServer {
             if let Err(error) = ws.ensure_default_project() {
                 tracing::error!("Unable to create default Java project: {error}");
             }
+            for project in &ws.projects {
+                crate::project::metadata::persist(project, &settings.resource_filters);
+            }
             ws
         })
         .await

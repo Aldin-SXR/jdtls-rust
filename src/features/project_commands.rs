@@ -1239,7 +1239,7 @@ pub fn update_project_settings(
             if project.selected_profiles == selected {
                 continue;
             }
-            crate::project::maven::write_resolver_configuration(&project.location, &selected)
+            crate::project::maven::write_resolver_configuration(&project.location, &project.name, &selected)
                 .map_err(|e| e.to_string())?;
             project.selected_profiles = selected;
             update.update_project = Some(project.name.clone());
@@ -1253,10 +1253,11 @@ pub fn update_project_settings(
         }
     }
     if !new_options.is_empty() {
-        let prefs = project
-            .location
-            .join(".settings")
-            .join("org.eclipse.jdt.core.prefs");
+        let prefs = crate::project::metadata::resolve(
+            &project.location,
+            &project.name,
+            ".settings/org.eclipse.jdt.core.prefs",
+        );
         let mut specific = crate::project::prefs::read_properties(&prefs).unwrap_or_default();
         specific.extend(new_options.clone());
         specific.insert("eclipse.preferences.version".into(), "1".into());

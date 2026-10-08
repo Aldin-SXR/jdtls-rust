@@ -18,6 +18,7 @@ pub mod invisible;
 pub mod jar;
 pub mod jdt_defaults;
 pub mod maven;
+pub mod metadata;
 pub mod null_analysis;
 pub mod prefs;
 pub mod resource_filters;
@@ -248,7 +249,11 @@ impl Project {
         if let Some(e) = &self.encoding {
             return Some(e.clone());
         }
-        let prefs = prefs::read_properties(&self.location.join(".settings").join("org.eclipse.core.resources.prefs"))?;
+        let prefs = prefs::read_properties(&metadata::resolve(
+            &self.location,
+            &self.name,
+            ".settings/org.eclipse.core.resources.prefs",
+        ))?;
         prefs.get("encoding/<project>").filter(|e| !e.is_empty()).cloned()
     }
 
@@ -579,6 +584,7 @@ impl Workspace {
     }
 
     pub fn configure_filters(&mut self, filters: &resource_filters::ResourceFilters) {
+        metadata::set_resource_patterns(Some(filters.clone()));
         for project in &mut self.projects {
             if project.kind != ProjectKind::Default {
                 project.resource_filters = filters.clone();
@@ -1022,7 +1028,12 @@ pub fn jdtls_default_options() -> BTreeMap<String, String> {
 
 /// Read `<root>/.settings/org.eclipse.jdt.core.prefs` if present.
 pub(crate) fn project_prefs(root: &Path) -> BTreeMap<String, String> {
-    prefs::read_properties(&root.join(".settings").join("org.eclipse.jdt.core.prefs"))
+    project_prefs_of(root, "")
+}
+
+/// [`project_prefs`] of a project whose metadata files may be redirected.
+pub(crate) fn project_prefs_of(root: &Path, name: &str) -> BTreeMap<String, String> {
+    prefs::read_properties(&metadata::resolve(root, name, ".settings/org.eclipse.jdt.core.prefs"))
         .map(|mut m| {
             m.remove("eclipse.preferences.version");
             m

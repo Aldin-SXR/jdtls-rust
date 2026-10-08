@@ -109,6 +109,7 @@ impl LspClient {
             if let Some(d) = data_dir {
                 c.arg("-data").arg(d.join("workspace"));
             }
+            c.args(java_options.iter().filter(|o| o.starts_with("-D")));
             c
         };
         if is_oracle() && !java_options.is_empty() {
@@ -290,7 +291,8 @@ pub struct Workspace {
     pub settings: Value,
     pub init_options: Value,
     pub capabilities: Value,
-    /// JVM properties set directly by the upstream test (oracle only).
+    /// JVM properties set directly by the upstream test; the server under
+    /// test receives the `-D` ones as arguments.
     pub oracle_java_options: Vec<String>,
     /// Isolated oracle product with test-only extensions, when needed.
     pub oracle_home: Option<PathBuf>,
@@ -929,15 +931,14 @@ fn project_name_of(dir: &Path) -> Option<String> {
         }
     }
     if let Ok(s) = std::fs::read_to_string(dir.join("pom.xml")) {
-        // artifactId directly under <project> (skip the <parent> block).
-        let without_parent = match (s.find("<parent>"), s.find("</parent>")) {
-            (Some(a), Some(b)) if a < b => format!("{}{}", &s[..a], &s[b..]),
-            _ => s.clone(),
-        };
-        if let Some(start) = without_parent.find("<artifactId>") {
-            let rest = &without_parent[start + 12..];
-            if let Some(end) = rest.find("</artifactId>") {
-                return Some(rest[..end].trim().to_owned());
+        if let Ok(doc) = roxmltree::Document::parse(&s) {
+            let artifact = doc
+                .root_element()
+                .children()
+                .find(|n| n.has_tag_name("artifactId"))
+                .and_then(|n| n.text());
+            if let Some(artifact) = artifact {
+                return Some(artifact.trim().to_owned());
             }
         }
     }

@@ -18,14 +18,21 @@ impl JavaLanguageServer {
         for (jar, sources, javadoc) in discovery::take_completed() {
             changed |= attach_downloaded(&mut ws, &jar, sources, javadoc);
         }
-        if let Some((desc, _)) = crate::features::navigation::class_file_target(&ws, uri) {
+        if let Some((desc, class_file)) = crate::features::navigation::class_file_target(&ws, uri) {
             let jar = PathBuf::from(&desc.root);
+            let discovers = match ws.project(&class_file.project).map(|p| p.kind) {
+                Some(ProjectKind::Gradle) => false,
+                Some(ProjectKind::Eclipse) => {
+                    crate::features::preferences::get_bool("java.eclipse.downloadSources").unwrap_or(false)
+                }
+                _ => true,
+            };
             let attached = ws.projects.iter().any(|p| {
                 p.libraries.iter().any(|l| {
                     l.path == jar && l.source.as_ref().is_some_and(|s| s.exists())
                 })
             });
-            if desc.module.is_none() && !attached && jar.is_file() && discovery::first_request(&jar) {
+            if discovers && desc.module.is_none() && !attached && jar.is_file() && discovery::first_request(&jar) {
                 let settings = self.current_import_settings().await;
                 let job = tokio::task::spawn_blocking(move || {
                     let resolver = crate::project::maven::Resolver::with_settings(&settings.maven);
