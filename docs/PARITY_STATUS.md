@@ -181,7 +181,7 @@ Rust run and is excluded from the upstream-port count.
 | Oracle publishes no "Unknown referenced nature" report (`isIgnored` drops CheckMissingNatures markers) | 1 | WorkspaceDiagnostics `test_missing_natures` |
 | Needs JDT incremental-builder semantics (duplicate class-file locator problems) | 1 | WorkspaceDiagnostics `test_bad_location_exception` |
 | The Rust build writes no class files to output folders | 1 | JavaSettings `test_configure_settings` |
-| Registers a Mockito ranking provider inside the Java server | 2 | `correction_ranking_provider_test` both cases (the ranking mechanism is ported in `ranking.rs`) |
+| Registers a Mockito ranking provider inside the Java server | 2 | `handlers_completion_ranking_provider_test` both cases (the ranking mechanism is ported in `ranking.rs`) |
 | `@Disabled` upstream (needs a real JDK) | 1 | `test_module_completion_resolve_shows_documentation` |
 
 ## Lifecycle/init integration evidence
