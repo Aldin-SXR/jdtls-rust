@@ -177,11 +177,6 @@ fn has_nls(comments: &[Node<'_>]) -> bool {
     comments.iter().any(|c| c.is(NodeKind::LineComment) && c.source_text().contains("$NON-NLS"))
 }
 
-fn trailing_comments<'a>(node: Node<'a>) -> Vec<Node<'a>> {
-    let extended_end = node.extended_start() + node.extended_length();
-    node.ast.comments.iter().map(|&id| node.ast.node(id)).filter(|c| c.start() > node.start() && c.start() < extended_end).collect()
-}
-
 fn comments_for_region<'a>(ast: &'a crate::semantic_ast::Ast, start: usize, length: usize) -> Vec<Node<'a>> {
     ast.comments.iter().map(|&id| ast.node(id)).filter(|c| c.start() > start && c.start() < start + length).collect()
 }
@@ -210,7 +205,7 @@ fn visit_infix<'a>(visited: Node<'a>) -> Option<Conversion<'a>> {
     let left = visited.child("leftOperand").filter(|l| l.is(NodeKind::StringLiteral))?;
     let right = visited.child("rightOperand").filter(|r| r.is(NodeKind::StringLiteral))?;
     let extended = visited.list("extendedOperands");
-    let mut has_comments = has_nls(&trailing_comments(right));
+    let mut has_comments = has_nls(&super::util::trailing_comments(right));
     let line_region = |literal: Node<'_>| {
         let line = ast.line_of(literal.start());
         let end = if line + 1 < ast.line_count() { ast.line_start(line + 1) } else { ast.source.len() };

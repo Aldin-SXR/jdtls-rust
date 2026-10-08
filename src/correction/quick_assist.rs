@@ -9,6 +9,7 @@ mod convert_var;
 mod method_ref;
 mod nls;
 mod string_concat;
+mod switch_expression;
 mod text_block;
 mod util;
 mod variable;
@@ -56,6 +57,7 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
         string_concat::convert_to_string_buffer(&req.context, &options, covering, &mut proposals);
         string_concat::convert_to_string_format(&req.context, &options, covering, &mut proposals);
         text_block::string_concat_to_text_block(&req.context, &options, covering, &mut proposals);
+        switch_expression::convert_to_switch_expression(&req.context, &options, covering, &mut proposals);
         variable::split_variable(&req.context, &options, covering, &mut proposals);
         variable::join_variable(&req.context, &options, covering, &mut proposals);
         variable::invert_equals(&req.context, covering, &mut proposals);

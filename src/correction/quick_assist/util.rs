@@ -44,3 +44,37 @@ pub fn parenthesize_if_needed(rw: &mut ASTRewrite, expression: RNode) -> RNode {
         _ => rw.new_parenthesized_expression(expression),
     }
 }
+
+/// `ASTNodes.getLeadingComments`.
+pub fn leading_comments<'a>(node: Node<'a>) -> Vec<Node<'a>> {
+    let ast = node.ast;
+    ast.comments
+        .iter()
+        .map(|&id| ast.node(id))
+        .filter(|c| c.start() >= node.extended_start() && c.end() < node.start())
+        .collect()
+}
+
+/// `ASTNodes.getTrailingComments`.
+pub fn trailing_comments<'a>(node: Node<'a>) -> Vec<Node<'a>> {
+    let ast = node.ast;
+    let extended_end = node.extended_start() + node.extended_length();
+    ast.comments
+        .iter()
+        .map(|&id| ast.node(id))
+        .filter(|c| c.start() > node.start() && c.start() < extended_end)
+        .collect()
+}
+
+/// `QuickAssistProcessorUtil.getIndex(offset, statements)`.
+pub fn statement_index(offset: usize, statements: &[Node<'_>]) -> i64 {
+    for (i, s) in statements.iter().enumerate() {
+        if offset <= s.start() {
+            return i as i64;
+        }
+        if offset < s.end() {
+            return -1;
+        }
+    }
+    statements.len() as i64
+}
