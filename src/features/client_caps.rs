@@ -346,6 +346,11 @@ pub fn symbol_tags() -> bool {
     with(ClientPreferences::is_symbol_tag_supported)
 }
 
+/// `ClientPreferences.isWorkspaceConfigurationSupported`.
+pub fn workspace_configuration() -> bool {
+    with(ClientPreferences::is_workspace_configuration_supported)
+}
+
 /// `ClientPreferences.isDiagnosticTagSupported`.
 pub fn diagnostic_tags() -> bool {
     with(ClientPreferences::is_diagnostic_tag_supported)

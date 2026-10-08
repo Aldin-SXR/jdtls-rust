@@ -132,6 +132,7 @@ fn contains_kind(kinds: &[String], base: &str) -> bool {
 /// `CodeActionHandler.getCodeActionCommands`.
 pub async fn code_actions(env: &Env<'_>, params: &CodeActionParams) -> Vec<CodeActionOrCommand> {
     let uri = params.text_document.uri.clone();
+    crate::features::configuration::apply_client_formatting_options(env.format.client, &uri).await;
     let Ok(ast) = crate::semantic_ast::fetch(env.dispatcher, &uri).await else { return Vec::new() };
     *ACTIVE_UNIT.lock().unwrap_or_else(|e| e.into_inner()) = Some(uri.clone());
     let doc = Doc16::new(ast.text());

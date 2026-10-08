@@ -59,7 +59,7 @@ pub async fn send_notification(client: &Client, id: &str, arguments: Vec<Value>)
 }
 
 #[cfg(test)]
-mod test_support {
+pub(crate) mod test_support {
     //! A server whose client side is played by the test: `connect` returns
     //! the server's `Client` and the socket on which the client's messages
     //! arrive (and answers go back).

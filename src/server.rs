@@ -1032,6 +1032,7 @@ impl LanguageServer for JavaLanguageServer {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
+        crate::features::configuration::discard_unit_options(&uri);
         if !self.legacy_diagnostics().await {
             self.lifecycle.did_close(&uri).await;
             return;

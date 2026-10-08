@@ -71,6 +71,10 @@ impl FormatEnv<'_> {
         options.extend(project_options);
         options.entry(COMPILER_SOURCE.to_owned()).or_insert_with(|| source_level.clone());
         options.entry(COMPILER_COMPLIANCE.to_owned()).or_insert(source_level);
+        // `cu.getOptions(true)` includes the working copy's custom options.
+        if let Some(unit_options) = uri.and_then(crate::features::configuration::unit_options) {
+            options.extend(unit_options);
+        }
         options
     }
 
