@@ -7,6 +7,7 @@ use std::sync::Arc;
 mod lambda;
 mod convert_var;
 mod method_ref;
+mod pattern_switch;
 mod nls;
 mod static_import;
 mod string_concat;
@@ -59,6 +60,7 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
         string_concat::convert_to_string_format(&req.context, &options, covering, &mut proposals);
         text_block::string_concat_to_text_block(&req.context, &options, covering, &mut proposals);
         switch_expression::convert_to_switch_expression(&req.context, &options, covering, &mut proposals);
+        pattern_switch::convert_pattern_instanceof_if_stmt_to_switch(&req.context, &options, covering, &mut proposals);
         variable::split_variable(&req.context, &options, covering, &mut proposals);
         variable::join_variable(&req.context, &options, covering, &mut proposals);
         variable::invert_equals(&req.context, covering, &mut proposals);
