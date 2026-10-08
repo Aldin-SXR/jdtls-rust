@@ -435,6 +435,35 @@ impl Workspace {
         }
     }
 
+    /// `IJavaProject.setOption`.
+    pub fn set_project_option(&mut self, root: &Path, key: &str, value: &str) {
+        let prefs = root.join(".settings").join("org.eclipse.jdt.core.prefs");
+        let mut options = BTreeMap::new();
+        for line in std::fs::read_to_string(&prefs).unwrap_or_default().lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                if k != "eclipse.preferences.version" {
+                    options.insert(k.to_owned(), v.replace("\\n", "\n").replace("\\\\", "\\"));
+                }
+            }
+        }
+        options.insert(key.to_owned(), value.to_owned());
+        self.set_project_options(root, &options);
+    }
+
+    /// `JavaProjectHelper.addLibrary`: a library jar copied into the project.
+    pub fn add_library(&mut self, root: &Path, jar: &Path) {
+        assert!(self.client.is_none(), "add libraries before the server starts");
+        let lib = root.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let name = jar.file_name().unwrap().to_string_lossy().into_owned();
+        std::fs::copy(jar, lib.join(&name)).unwrap();
+        let path = root.join(".classpath");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        let end = text.rfind("</classpath>").unwrap();
+        text.insert_str(end, &format!("\t<classpathentry kind=\"lib\" path=\"lib/{name}\"/>\n"));
+        std::fs::write(path, text).unwrap();
+    }
+
     /// `IPackageFragment.createCompilationUnit`: write a source file into
     /// `<project>/<source folder>/<package path>/<name>` and tell the server.
     pub fn create_cu(
