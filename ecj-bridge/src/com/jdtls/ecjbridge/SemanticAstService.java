@@ -97,6 +97,8 @@ final class SemanticAstService {
         public List<ProblemOut> problems;
         public int[] comments;
         public String cacheKey;
+        /** Whether the configured nullable / nonnull annotations are declared {@code @Target(TYPE_USE)}. */
+        public boolean nullableTypeUse, nonNullTypeUse;
 
         SemanticAstResponse(long id) {
             this.id = id;
@@ -281,6 +283,40 @@ final class SemanticAstService {
             res.bindings = bindings;
             res.problems = problems;
             res.comments = comments.stream().mapToInt(Integer::intValue).toArray();
+            res.nullableTypeUse = typeUse("org.eclipse.jdt.core.compiler.annotation.nullable");
+            res.nonNullTypeUse = typeUse("org.eclipse.jdt.core.compiler.annotation.nonnull");
+        }
+
+        private boolean typeUse(String option) {
+            String name = request.options == null ? null : request.options.get(option);
+            if (name == null || name.isEmpty()) {
+                return false;
+            }
+            ITypeBinding type = org.eclipse.jdt.core.dom.BridgeDomResolver.findType(cu, name);
+            if (type == null) {
+                return false;
+            }
+            for (IAnnotationBinding annotation : type.getAnnotations()) {
+                if (!"java.lang.annotation.Target".equals(annotation.getAnnotationType().getQualifiedName())) {
+                    continue;
+                }
+                for (IMemberValuePairBinding pair : annotation.getAllMemberValuePairs()) {
+                    Object value = pair.getValue();
+                    if (value instanceof Object[] values) {
+                        for (Object v : values) {
+                            if (isTypeUse(v)) return true;
+                        }
+                    } else if (isTypeUse(value)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            return false;
+        }
+
+        private static boolean isTypeUse(Object value) {
+            return value instanceof IVariableBinding variable && "TYPE_USE".equals(variable.getName());
         }
 
         private int str(String s) {

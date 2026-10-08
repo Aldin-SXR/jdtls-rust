@@ -134,4 +134,6 @@ pub struct SemanticAstData {
     pub problems: Vec<ProblemOut>,
     pub comments: Vec<i32>,
     pub cache_key: Option<String>,
+    pub nullable_type_use: bool,
+    pub non_null_type_use: bool,
 }
