@@ -60,6 +60,26 @@ pub fn class_instance_creation(node: Node<'_>) -> Option<Node<'_>> {
     }
 }
 
+/// `RefactorProcessor.getConvertLambdaToAnonymousClassCreationsProposals`.
+pub async fn convert_lambda_to_anonymous_proposal(env: &Env<'_>, ctx: &Context, covering: Node<'_>, out: &mut Vec<Proposal>) -> bool {
+    let lambda = if covering.is(NodeKind::LambdaExpression) {
+        covering
+    } else if covering.location_is("body") && covering.parent().is_some_and(|p| p.is(NodeKind::LambdaExpression)) {
+        covering.parent().expect("lambda")
+    } else {
+        return false;
+    };
+    if crate::refactoring::lambda_anonymous::lambda_functional_method(lambda).is_none() {
+        return false;
+    }
+    let options = env.options(&ctx.ast.uri).await;
+    let mut cu = CuRewrite::new(&ctx.ast, &options);
+    crate::refactoring::lambda_anonymous::create_anonymous_classes(&mut cu, &ctx.ast, &options, vec![lambda]);
+    let label = messages::fix("LambdaExpressionsFix_convert_to_anonymous_class_creation");
+    out.push(Proposal::new(label, kind::REFACTOR, relevance::CONVERT_TO_ANONYMOUS_CLASS_CREATION, super::Change::Cu(vec![cu.into_change()])));
+    true
+}
+
 /// `RefactorProcessor.getConvertAnonymousClassCreationsToLambdaProposals`.
 pub async fn convert_anonymous_to_lambda_proposal(env: &Env<'_>, ctx: &Context, covering: Node<'_>, out: &mut Vec<Proposal>) -> bool {
     let Some(cic) = class_instance_creation(covering) else { return false };

@@ -13,7 +13,7 @@ use crate::rewrite::{ASTRewrite, RNode};
 use crate::semantic_ast::resolve::unparenthesed_expression;
 use crate::semantic_ast::{modifier, Ast, BindingRef, Node, NodeKind};
 
-fn functional_method<'a>(t: BindingRef<'a>) -> Option<BindingRef<'a>> {
+pub(super) fn functional_method<'a>(t: BindingRef<'a>) -> Option<BindingRef<'a>> {
     t.data().functional_method.map(|id| t.ast.binding(id))
 }
 
@@ -350,7 +350,7 @@ fn check_method_invocation<'a>(visited: Node<'a>, invocation: Node<'a>) -> Optio
 }
 
 /// `ASTNodeFactory.newCreationType`.
-fn new_creation_type(cu: &mut CuRewrite, binding: BindingRef<'_>, context: &dyn crate::rewrite::import_rewrite::ImportRewriteContext) -> RNode {
+pub(super) fn new_creation_type(cu: &mut CuRewrite, binding: BindingRef<'_>, context: &dyn crate::rewrite::import_rewrite::ImportRewriteContext) -> RNode {
     if binding.is_parameterized_type() {
         let declaration = binding.type_declaration().unwrap_or(binding);
         let base = new_creation_type(cu, declaration, context);
@@ -375,7 +375,7 @@ fn new_creation_type(cu: &mut CuRewrite, binding: BindingRef<'_>, context: &dyn 
 }
 
 /// `StubUtility2Core.replaceWildcardsAndCaptures`.
-fn replace_wildcards_and_captures(t: BindingRef<'_>) -> Option<BindingRef<'_>> {
+pub(super) fn replace_wildcards_and_captures(t: BindingRef<'_>) -> Option<BindingRef<'_>> {
     let mut current = t;
     while current.is_wildcard_type() || current.is_capture() {
         match normalize_wildcard_type(current, true) {
@@ -912,7 +912,7 @@ fn names_in_method(method: Node<'_>) -> Vec<Node<'_>> {
 }
 
 /// `ASTNodes.getCopyOrReplacement(rewrite, node, group)`.
-fn copy_or_replacement(rw: &mut ASTRewrite, node: Node<'_>) -> RNode {
+pub(super) fn copy_or_replacement(rw: &mut ASTRewrite, node: Node<'_>) -> RNode {
     if let (Some(parent), Some(prop)) = (node.parent(), node.location()) {
         if let crate::rewrite::Value::Node(Some(rewritten)) = rw.new_value(RNode::Orig(parent.id), prop) {
             if rewritten != RNode::Orig(node.id) {
