@@ -1304,7 +1304,12 @@ impl LanguageServer for JavaLanguageServer {
                             .publish_diagnostics(change.uri, vec![], None)
                             .await;
                     } else {
+                        self.client.publish_diagnostics(change.uri.clone(), vec![], None).await;
+                        self.lifecycle.did_close(&change.uri).await;
+                        self.lifecycle.discard_working_copies(&change.uri);
+                        let files = self.store.workspace_files_under(&change.uri);
                         self.store.remove_workspace_path(&change.uri);
+                        self.on_project_folder_deleted(&change.uri, files).await;
                     }
                     should_recompile = true;
                 }

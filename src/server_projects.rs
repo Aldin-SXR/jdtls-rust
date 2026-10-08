@@ -629,6 +629,41 @@ impl JavaLanguageServer {
         }
     }
 
+    /// A deleted project folder: the projects below it leave the workspace, the
+    /// projects above it report their markers, and the stale diagnostics of the
+    /// removed resources are cleared (`WorkspaceDiagnosticsHandler.visit` of the
+    /// removal delta).
+    pub(crate) async fn on_project_folder_deleted(&self, uri: &Url, files: Vec<Url>) {
+        let Some(path) = crate::project::uri_to_path(uri) else { return };
+        let removed: Vec<crate::project::Project> =
+            self.workspace_snapshot().projects.iter().filter(|p| p.root.starts_with(&path)).cloned().collect();
+        if removed.is_empty() {
+            return;
+        }
+        self.reimport_workspace().await;
+        let parents: Vec<String> = self
+            .workspace_snapshot()
+            .projects
+            .iter()
+            .filter(|p| removed.iter().any(|r| r.root.starts_with(&p.root)))
+            .map(|p| p.name.clone())
+            .collect();
+        self.lifecycle.publish_project_markers(&parents).await;
+        for project in &removed {
+            let build_files = project.build_files.iter().map(|f| crate::project::resource_uri(f));
+            let project_folder = std::iter::once(crate::project::resource_uri(&project.location));
+            let sources = files
+                .iter()
+                .filter(|f| f.path().ends_with(".java") && crate::project::uri_to_path(f).is_some_and(|p| p.starts_with(&project.root)))
+                .map(Url::to_string);
+            for stale in build_files.chain(project_folder).chain(sources) {
+                if let Ok(stale) = Url::parse(&stale) {
+                    self.lifecycle.clean_up_diagnostics(&stale).await;
+                }
+            }
+        }
+    }
+
     /// `CreateModuleInfoHandler.createModuleInfo`: the URI of the created `module-info.java`.
     pub(crate) async fn create_module_info(&self, project_uri: &str) -> Option<String> {
         use crate::features::create_module_info as module_info;

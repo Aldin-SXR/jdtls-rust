@@ -137,6 +137,21 @@ impl DocumentStore {
         self.workspace.remove(uri);
     }
 
+    /// The workspace files at or below `uri`, in URI order.
+    pub fn workspace_files_under(&self, uri: &Url) -> Vec<Url> {
+        let path = uri.to_file_path().ok();
+        let mut files: Vec<Url> = self
+            .workspace
+            .iter()
+            .map(|e| e.key().clone())
+            .filter(|candidate| {
+                candidate == uri || path.as_ref().is_some_and(|root| candidate.to_file_path().is_ok_and(|p| p.starts_with(root)))
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
     /// A saved file or directory was deleted. Forget the disk-backed units
     /// below it, preserving working copies until the client closes them.
     pub fn remove_workspace_path(&self, uri: &Url) {
