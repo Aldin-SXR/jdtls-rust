@@ -793,7 +793,7 @@ pub fn enclosing_body(n: Node<'_>) -> Option<Node<'_>> {
 }
 
 /// `checkExpression()` (ExtractTemp).
-fn check_expression(e: Node<'_>) -> Option<Status> {
+pub(crate) fn check_expression(e: Node<'_>) -> Option<Status> {
     let parent = e.parent();
     match e.kind() {
         NodeKind::NullLiteral => Some(Status::fatal(msg("ExtractTempRefactoring_null_literals"))),
@@ -879,12 +879,12 @@ fn can_replace(node: Node<'_>) -> bool {
     true
 }
 
-fn is_method_parameter(node: Node<'_>) -> bool {
+pub(crate) fn is_method_parameter(node: Node<'_>) -> bool {
     node.is(NodeKind::SimpleName)
         && node.parent().is_some_and(|p| p.is(NodeKind::SingleVariableDeclaration) && p.parent().is_some_and(|pp| pp.is(NodeKind::MethodDeclaration)))
 }
 
-fn is_throwable_in_catch_block(node: Node<'_>) -> bool {
+pub(crate) fn is_throwable_in_catch_block(node: Node<'_>) -> bool {
     node.is(NodeKind::SimpleName)
         && node.parent().is_some_and(|p| p.is(NodeKind::SingleVariableDeclaration) && p.parent().is_some_and(|pp| pp.is(NodeKind::CatchClause)))
 }
@@ -899,7 +899,7 @@ fn is_left_value(node: Node<'_>) -> bool {
 }
 
 /// `isReferringToLocalVariableFromFor(expression)`.
-fn is_referring_to_local_variable_from_for(expression: Node<'_>) -> bool {
+pub(crate) fn is_referring_to_local_variable_from_for(expression: Node<'_>) -> bool {
     let mut current = expression;
     let mut parent = current.parent();
     while let Some(p) = parent {
@@ -936,7 +936,7 @@ fn is_referring_to_local_variable_from_for(expression: Node<'_>) -> bool {
 }
 
 /// `isUsedInForInitializerOrUpdater(expression)`.
-fn is_used_in_for_initializer_or_updater(expression: Node<'_>) -> bool {
+pub(crate) fn is_used_in_for_initializer_or_updater(expression: Node<'_>) -> bool {
     expression.parent().is_some_and(|p| p.is(NodeKind::ForStatement)) && (expression.location_is("initializers") || expression.location_is("updaters"))
 }
 

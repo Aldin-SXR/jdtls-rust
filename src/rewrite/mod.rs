@@ -221,6 +221,21 @@ pub struct ASTRewrite {
     no_comment_ranges: bool,
     /// Original nodes passed to `track(node)`.
     tracked: HashSet<NodeId>,
+    /// `ListRewrite.createMoveTarget(first, last, replacingNode)` ranges
+    /// (`RewriteEventStore.NodeRangeInfo`); range `k` is represented by the
+    /// synthetic internal placeholder node `NodeId(ast.node_count() + k)`.
+    pub range_copies: Vec<RangeCopy>,
+}
+
+/// `RewriteEventStore.NodeRangeInfo`.
+#[derive(Clone, Debug)]
+pub struct RangeCopy {
+    pub parent: RNode,
+    pub prop: &'static str,
+    pub first: NodeId,
+    pub last: NodeId,
+    pub is_move: bool,
+    pub replacing: Option<RNode>,
 }
 
 impl ASTRewrite {
@@ -235,6 +250,7 @@ impl ASTRewrite {
             source_ranges: std::collections::HashMap::new(),
             no_comment_ranges: false,
             tracked: HashSet::new(),
+            range_copies: Vec::new(),
         }
     }
 
@@ -257,6 +273,7 @@ impl ASTRewrite {
 
     pub fn kind(&self, n: RNode) -> NodeKind {
         match n {
+            RNode::Orig(id) if self.synthetic(id).is_some() => NodeKind::Block,
             RNode::Orig(id) => self.ast.data(id).kind,
             RNode::New(i) => self.new_nodes[i as usize].kind,
         }
@@ -274,6 +291,11 @@ impl ASTRewrite {
     }
 
     fn access_original(&self, parent: RNode, prop: &str) -> Value {
+        if let RNode::Orig(id) = parent {
+            if let Some(range) = self.synthetic(id) {
+                return if prop == "statements" { Value::List(self.range_children(range)) } else { Value::Simple(None) };
+            }
+        }
         match parent {
             RNode::Orig(id) => match self.ast.node(id).prop(prop) {
                 Some(PropValue::Child(c)) => Value::Node(c.map(RNode::Orig)),
@@ -337,6 +359,7 @@ impl ASTRewrite {
     /// Structural property ids of a node, in descriptor order.
     pub fn property_names(&self, n: RNode) -> Vec<&'static str> {
         match n {
+            RNode::Orig(id) if self.synthetic(id).is_some() => vec!["statements"],
             RNode::Orig(id) => self.ast.node(id).props().iter().map(|(p, _)| *p).collect(),
             RNode::New(i) => {
                 let nn = &self.new_nodes[i as usize];
@@ -399,6 +422,30 @@ impl ASTRewrite {
 
     pub fn set_source_range(&mut self, n: NodeId, start: usize, length: usize) {
         self.source_ranges.insert(n, (start, length));
+    }
+
+    /// The internal placeholder of a range move/copy (`NodeRangeInfo`).
+    pub fn synthetic(&self, id: NodeId) -> Option<&RangeCopy> {
+        let count = self.ast.node_count();
+        (id.0 as usize).checked_sub(count).and_then(|k| self.range_copies.get(k))
+    }
+
+    /// The original list elements a range placeholder stands for.
+    fn range_children(&self, range: &RangeCopy) -> Vec<RNode> {
+        let list = self.access_original(range.parent, range.prop).list();
+        let i = list.iter().position(|&n| n == RNode::Orig(range.first)).unwrap_or(0);
+        let j = list.iter().position(|&n| n == RNode::Orig(range.last)).unwrap_or(list.len().saturating_sub(1));
+        list[i..=j.max(i)].to_vec()
+    }
+
+    /// `node.getStartPosition(), node.getLength()` (the internal range
+    /// placeholders use the range set by `updatePlaceholderSourceRanges`).
+    pub fn node_range(&self, n: NodeId) -> (usize, usize) {
+        if self.synthetic(n).is_some() {
+            return self.source_ranges.get(&n).copied().unwrap_or((0, 0));
+        }
+        let node = self.ast.node(n);
+        (node.start(), node.length())
     }
 
     // ── Events ──────────────────────────────────────────────────────────────
@@ -815,6 +862,45 @@ impl ASTRewrite {
         placeholder
     }
 
+    /// `ListRewrite.createMoveTarget(first, last, replacingNode, editGroup)`
+    /// (`createCopyTarget(first, last)` when `is_move` is false):
+    /// `RewriteEventStore.createRangeCopy`.
+    pub fn list_create_range_target(&mut self, parent: RNode, prop: &'static str, first: NodeId, last: NodeId, replacing: Option<RNode>, is_move: bool) -> RNode {
+        let synthetic = NodeId((self.ast.node_count() + self.range_copies.len()) as u32);
+        self.range_copies.push(RangeCopy { parent, prop, first, last, is_move, replacing });
+        self.list_event(parent, prop);
+        self.copy_sources.push(CopySourceInfo { location: None, node: synthetic, is_move, range: Some((first, last)) });
+        let info = self.copy_sources.len() - 1;
+        let kind = self.ast.data(first).kind;
+        let placeholder = self.new_placeholder_node(kind);
+        if let RNode::New(i) = placeholder {
+            self.new_nodes[i as usize].placeholder = Some(Placeholder::Copy(info));
+        }
+        placeholder
+    }
+
+    /// `RewriteEventStore.prepareNodeRangeCopies` / `processListWithRanges`.
+    fn prepare_node_range_copies(&mut self) {
+        let count = self.ast.node_count();
+        for k in 0..self.range_copies.len() {
+            let range = self.range_copies[k].clone();
+            let synthetic = NodeId((count + k) as u32);
+            // `NodeRangeInfo.updatePlaceholderSourceRanges`.
+            let (start, _) = self.extended_range(range.first);
+            let (last_start, last_length) = self.extended_range(range.last);
+            self.source_ranges.insert(synthetic, (start, last_start + last_length - start));
+            let Event::List { original, entries } = self.list_event(range.parent, range.prop) else { continue };
+            let Some(i) = entries.iter().position(|e| e.original == Some(RNode::Orig(range.first))) else { continue };
+            let Some(j) = entries.iter().position(|e| e.original == Some(RNode::Orig(range.last))) else { continue };
+            let inner: Vec<ListEntry> = entries[i..=j].to_vec();
+            let new = if range.is_move { range.replacing } else { Some(RNode::Orig(synthetic)) };
+            entries.splice(i..=j, [ListEntry { original: Some(RNode::Orig(synthetic)), new }]);
+            *original = entries.iter().filter_map(|e| e.original).collect();
+            let inner_original = inner.iter().filter_map(|e| e.original).collect();
+            self.events.push((RNode::Orig(synthetic), "statements", Event::List { original: inner_original, entries: inner }));
+        }
+    }
+
     /// `ASTRewrite.createStringPlaceholder(code, nodeType)`.
     pub fn create_string_placeholder(&mut self, code: &str, kind: NodeKind) -> RNode {
         let placeholder = self.new_placeholder_node(kind);
@@ -863,6 +949,7 @@ impl ASTRewrite {
     pub fn rewrite_ast(&self, options: &BTreeMap<String, String>, formatter: &mut dyn formatter::CodeFormatter) -> Result<text_edit::EditTree, RewriteError> {
         let mut rw = self.clone();
         rw.prepare_moved_nodes();
+        rw.prepare_node_range_copies();
         analyzer::rewrite(&rw, options, formatter)
     }
 

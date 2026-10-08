@@ -31,6 +31,7 @@ pub mod javadoc_tags;
 pub mod local_corrections;
 pub mod modifier_corrections;
 pub mod quick_assist;
+pub mod refactor_edit;
 pub mod quick_fix;
 pub mod parentheses;
 pub mod serial_hash;

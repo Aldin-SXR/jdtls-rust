@@ -3916,7 +3916,11 @@ fn ecj_code_action_extract_method_for_loop() {
     assert!(has_call, "expected a newText containing 'extracted(' in edits, got: {new_texts:?}");
 
     // "items" should be the only parameter — not "String", "System", "out", or "println".
-    let call_text = new_texts.iter().find(|t| t.contains("extracted(")).unwrap();
+    // jdt.ls returns a single edit holding the call and the new method, so
+    // only the call expression (up to its closing parenthesis) is checked.
+    let edit_text = new_texts.iter().find(|t| t.contains("extracted(")).unwrap();
+    let call_start = edit_text.find("extracted(").unwrap();
+    let call_text = &edit_text[call_start..call_start + edit_text[call_start..].find(')').unwrap() + 1];
     assert!(
         !call_text.contains("String") && !call_text.contains("System")
             && !call_text.contains("out") && !call_text.contains("println"),
