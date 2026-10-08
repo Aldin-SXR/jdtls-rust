@@ -841,7 +841,7 @@ fn throws_proposal(
             if let Some(tag) = method.child("javadoc").and_then(|doc| {
                 doc.list("tags").into_iter().find(|tag| {
                     matches!(tag.simple("tagName"), Some("@throws" | "@exception"))
-                        && super::javadoc::argument(*tag).as_deref()
+                        && crate::correction::javadoc_tags::argument(*tag).as_deref()
                             == Some(super::exceptions::type_name(*typ, false).as_str())
                 })
             }) {
@@ -856,9 +856,9 @@ fn throws_proposal(
         if let Some(doc) = method.child("javadoc") {
             if !doc.list("tags").iter().any(|tag| {
                 matches!(tag.simple("tagName"), Some("@throws" | "@exception"))
-                    && super::javadoc::argument(*tag).as_deref() == Some(name.as_str())
+                    && crate::correction::javadoc_tags::argument(*tag).as_deref() == Some(name.as_str())
             }) {
-                super::javadoc::insert_throws_tag(&mut rw, doc, &name, &original);
+                crate::correction::javadoc_tags::insert_throws_tag(&mut rw, doc, &name, &original);
             }
         }
     }

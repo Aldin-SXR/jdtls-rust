@@ -1316,8 +1316,10 @@ impl<'a, 'f> Analyzer<'a, 'f> {
             }
             Javadoc => {
                 let start_pos = self.start(node) + 3;
-                let separator = self.line_delimiter() + &self.indent_at_offset(self.start(node)) + " * ";
-                self.rewrite_node_list_end(node, "tags", start_pos, &separator, &separator, &separator)?;
+                // `ASTRewriteAnalyzer.visit(Javadoc)`: a plain list rewrite (no end keyword).
+                let prefix = if self.rw.ast.node(node).flag("markdown") { "///" } else { " * " };
+                let separator = self.line_delimiter() + &self.indent_at_offset(self.start(node)) + prefix;
+                self.rewrite_node_list(node, "tags", start_pos, &separator, &separator)?;
             }
             JavaDocTextElement | TextElement => {
                 let v = self.new_value(node, "text").simple().unwrap_or("").to_owned();

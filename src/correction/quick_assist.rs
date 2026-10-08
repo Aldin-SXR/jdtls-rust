@@ -26,6 +26,11 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
     }) {
         super::local_corrections::resource_assist(env, &req.context, &mut proposals).await;
     }
+    if !req.locations.iter().any(|p| p.problem_id == crate::semantic_ast::problem::JavadocMissing) {
+        if let Some(covering) = req.context.covering_node() {
+            super::javadoc_tags::missing_javadoc_comment_proposals(env, &req.context, covering, kind::QUICK_ASSIST, &mut proposals).await;
+        }
+    }
     proposals
 }
 

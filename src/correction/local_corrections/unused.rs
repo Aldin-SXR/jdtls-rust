@@ -524,7 +524,7 @@ pub async fn proposals(
         return;
     }
     if id == p::ArgumentIsNeverUsed {
-        super::javadoc::document_unused(env, ctx, problem, proposals).await;
+        crate::correction::javadoc_tags::unused_and_undocumented_parameter_or_exception_proposals(env, ctx, problem, proposals).await;
         if let Some(proposal) = remove_parameter(ctx, name) {
             proposals.push(proposal);
         }
@@ -562,5 +562,5 @@ pub async fn type_parameter(
             rw,
         ));
     }
-    super::javadoc::document_unused(env, ctx, problem, proposals).await;
+    crate::correction::javadoc_tags::unused_and_undocumented_parameter_or_exception_proposals(env, ctx, problem, proposals).await;
 }

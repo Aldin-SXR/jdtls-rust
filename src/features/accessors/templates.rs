@@ -72,6 +72,13 @@ impl Profile {
             .map(String::as_str)
             .unwrap_or(default)
     }
+    /// The project-specific code template `key`, if the project defines one
+    /// (`ProjectTemplateStore.findTemplateById` before the instance store).
+    pub(crate) fn project_template(&self, key: &str) -> Option<&str> {
+        self.templates
+            .get(&format!("org.eclipse.jdt.ui.text.codetemplates.{key}"))
+            .map(String::as_str)
+    }
 }
 
 pub(super) fn stub(

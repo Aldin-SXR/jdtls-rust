@@ -204,6 +204,20 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::IncompatibleTypesInForeach => super::type_mismatch::type_mismatch_in_for_each(env, ctx, problem, proposals).await,
         p::IncompatibleReturnType => super::type_mismatch::incompatible_return_type(env, ctx, problem, proposals).await,
         p::IncompatibleExceptionInThrowsClause => super::type_mismatch::incompatible_throws(env, ctx, problem, proposals).await,
+        p::JavadocMissing => {
+            if let Some(node) = problem.covering_node(ctx.ast()) {
+                super::javadoc_tags::missing_javadoc_comment_proposals(env, ctx, node, super::kind::QUICK_FIX, proposals).await;
+            }
+        }
+        p::JavadocMissingParamTag | p::JavadocMissingReturnTag | p::JavadocMissingThrowsTag => super::javadoc_tags::missing_javadoc_tag_proposals(ctx, problem, proposals),
+        p::JavadocInvalidThrowsClassName
+        | p::JavadocDuplicateThrowsClassName
+        | p::JavadocDuplicateReturnTag
+        | p::JavadocDuplicateParamName
+        | p::JavadocInvalidParamName
+        | p::JavadocUnexpectedTag
+        | p::JavadocInvalidTag => super::javadoc_tags::remove_javadoc_tag_proposals(ctx, problem, proposals),
+        p::JavadocInvalidMemberTypeQualification => super::javadoc_tags::invalid_qualification_proposals(ctx, problem, proposals),
         p::UnsafeTypeConversion | p::RawTypeReference | p::UnsafeRawMethodInvocation | p::UnsafeElementTypeConversion => super::infer_type_arguments::raw_type_reference_proposals(env, ctx, problem, proposals).await,
         _ => {}
     }
