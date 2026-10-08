@@ -29,6 +29,7 @@ pub mod assign_to_field;
 pub mod getter_setter;
 pub mod javadoc_tags;
 pub mod local_corrections;
+pub mod null_annotations;
 pub mod modifier_corrections;
 pub mod quick_assist;
 pub mod refactor_edit;

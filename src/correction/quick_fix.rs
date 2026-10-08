@@ -9,6 +9,7 @@ use tower_lsp::lsp_types::{CodeAction, CodeActionOrCommand, Command};
 use super::edit::Env;
 use super::handler::{Entry, Request};
 use super::{kind, messages, ProblemLocation, Proposal};
+use super::null_annotations as null;
 use crate::semantic_ast::problem as p;
 
 /// `DiagnosticsHandler.NON_PROJECT_JAVA_FILE` / `NOT_ON_CLASSPATH`.
@@ -225,6 +226,47 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         | p::JavadocInvalidTag => super::javadoc_tags::remove_javadoc_tag_proposals(ctx, problem, proposals),
         p::JavadocInvalidMemberTypeQualification => super::javadoc_tags::invalid_qualification_proposals(ctx, problem, proposals),
         p::UnsafeTypeConversion | p::RawTypeReference | p::UnsafeRawMethodInvocation | p::UnsafeElementTypeConversion => super::infer_type_arguments::raw_type_reference_proposals(env, ctx, problem, proposals).await,
+        p::IllegalReturnNullityRedefinition | p::IllegalDefinitionToNonNullParameter | p::IllegalRedefinitionToNonNullParameter => {
+            let is_arg_problem = id != p::IllegalReturnNullityRedefinition;
+            null::null_annotation_in_signature_proposal(env, ctx, problem, proposals, null::ChangeKind::Local, is_arg_problem).await;
+            null::null_annotation_in_signature_proposal(env, ctx, problem, proposals, null::ChangeKind::Overridden, is_arg_problem).await;
+        }
+        p::RequiredNonNullButProvidedSpecdNullable
+        | p::RequiredNonNullButProvidedUnknown
+        | p::RequiredNonNullButProvidedNull
+        | p::RequiredNonNullButProvidedPotentialNull
+        | p::NullityUncheckedTypeAnnotation
+        | p::ParameterLackingNonNullAnnotation
+        | p::ParameterLackingNullableAnnotation => {
+            if matches!(id, p::RequiredNonNullButProvidedSpecdNullable | p::RequiredNonNullButProvidedUnknown) {
+                null::extract_checked_local_proposal(ctx, problem, proposals);
+            }
+            null::return_and_argument_type_proposal(env, ctx, problem, null::ChangeKind::Local, proposals).await;
+            null::return_and_argument_type_proposal(env, ctx, problem, null::ChangeKind::Target, proposals).await;
+        }
+        p::RedundantNullCheckAgainstNonNullType | p::SpecdNonNullLocalVariableComparisonYieldsFalse | p::RedundantNullCheckOnSpecdNonNullLocalVariable => {
+            if null::null_analysis_enabled(env, ctx).await {
+                null::return_and_argument_type_proposal(env, ctx, problem, null::ChangeKind::Local, proposals).await;
+            }
+        }
+        p::RedundantNullAnnotation
+        | p::RedundantNullDefaultAnnotationPackage
+        | p::RedundantNullDefaultAnnotationType
+        | p::RedundantNullDefaultAnnotationMethod
+        | p::RedundantNullDefaultAnnotationLocal
+        | p::RedundantNullDefaultAnnotationField => null::remove_redundant_annotation_proposal(ctx, problem, proposals),
+        p::NullableFieldReference => null::extract_checked_local_proposal(ctx, problem, proposals),
+        p::ConflictingNullAnnotations | p::ConflictingInheritedNullAnnotations => {
+            null::return_and_argument_type_proposal(env, ctx, problem, null::ChangeKind::Local, proposals).await;
+            null::return_and_argument_type_proposal(env, ctx, problem, null::ChangeKind::Inverse, proposals).await;
+            null::return_and_argument_type_proposal(env, ctx, problem, null::ChangeKind::Overridden, proposals).await;
+        }
+        p::PotentialNullLocalVariableReference => {
+            if null::null_analysis_enabled(env, ctx).await {
+                null::local_variable_annotation_proposal(env, ctx, problem, proposals).await;
+            }
+        }
+        p::MissingNonNullByDefaultAnnotationOnPackage => null::add_missing_default_nullness_proposal(env, ctx, problem, proposals).await,
         _ => {}
     }
 }

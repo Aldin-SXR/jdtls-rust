@@ -299,6 +299,9 @@ pub struct Ast {
     subtree_end: Vec<u32>,
     /// Bridge cache key of this AST (for follow-up queries).
     pub cache_key: Option<String>,
+    /// The configured nullable / nonnull annotations are `@Target(TYPE_USE)`.
+    pub nullable_type_use: bool,
+    pub non_null_type_use: bool,
 }
 
 static PROP_NAMES: Lazy<Mutex<HashMap<String, &'static str>>> = Lazy::new(|| Mutex::new(HashMap::new()));
@@ -482,6 +485,8 @@ impl Ast {
             comments: data.comments.iter().filter_map(|&i| opt_id(i).map(NodeId)).collect(),
             line_starts,
             cache_key: data.cache_key,
+            nullable_type_use: data.nullable_type_use,
+            non_null_type_use: data.non_null_type_use,
         }
     }
 

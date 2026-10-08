@@ -508,6 +508,13 @@ impl Workspace {
         );
     }
 
+    /// Start the server and wait until the initial project build and the
+    /// settings it triggers (null analysis options, ...) have been applied.
+    pub fn wait_projects_built(&mut self) {
+        self.wait_idle();
+        self.client().settle(Duration::from_secs(4), Duration::from_secs(60));
+    }
+
     /// Start the server (if needed) and return the client.
     pub fn client(&mut self) -> &mut LspClient {
         if self.client.is_none() {
