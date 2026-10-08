@@ -641,6 +641,21 @@ impl Workspace {
             for p in eclipse::import(root, settings, &ws, configs.as_deref()) {
                 ws.add(p);
             }
+            // The workspace keeps an Eclipse project whose `.classpath` was
+            // deleted, without its Java nature (`ProjectUtils.removeJavaNatureAndBuilder`).
+            for p in previous.iter().flat_map(|w| &w.projects) {
+                if p.kind == ProjectKind::Eclipse
+                    && p.root.starts_with(root)
+                    && !ws.projects.iter().any(|q| q.location == p.location)
+                    && p.root.join(eclipse::DESCRIPTION_FILE).is_file()
+                    && !p.root.join(eclipse::CLASSPATH_FILE).exists()
+                {
+                    let mut kept = Project::new(&p.name, &p.root, ProjectKind::Eclipse);
+                    kept.natures = p.natures.iter().filter(|n| *n != JAVA_NATURE).cloned().collect();
+                    kept.build_files = vec![p.root.join(eclipse::DESCRIPTION_FILE)];
+                    ws.add(kept);
+                }
+            }
             if let Some(prev) = previous.and_then(|w| {
                 w.projects
                     .iter()
