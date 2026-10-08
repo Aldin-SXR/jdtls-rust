@@ -725,6 +725,7 @@ pub fn update_source_attachment(ws: &mut Workspace, class_file_uri: &str, attrib
         (None, Some(a)) => entry.attributes.push(a),
         (None, None) => {}
     }
+    project.derive_views();
     if let Err(e) = crate::project::classpath::persist_raw_classpath(project) {
         return error(format!("Update the ClasspathEntry to the project failure. Reason: \"{e}\""));
     }
