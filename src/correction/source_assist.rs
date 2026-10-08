@@ -33,7 +33,13 @@ pub async fn source_actions(
         kinds.push((kind::SOURCE, true));
     }
     let resolve = crate::features::client_caps::resolve_code_action();
-    let mut out = Vec::new();
+    // `SourceAssistProcessor.getSourceActionCommands` order: constructors,
+    // organize imports, add all missing imports, override/implement,
+    // accessors, hashCode/equals, toString, delegates.
+    let mut out: Vec<(Entry, Option<Proposal>)> = Vec::new();
+    let first = |out: &Vec<(Entry, Option<Proposal>)>| next_proposal + out.iter().filter(|(_, p)| p.is_some()).count();
+    let at = first(&out);
+    out.extend(crate::features::constructors::actions::actions(env, req, at).await);
     for (kind, restore) in kinds {
         if req.params.context.only.as_ref().is_some_and(|only| {
             !only.is_empty() && !only.iter().any(|k| kind.starts_with(k.as_str()))
@@ -54,13 +60,14 @@ pub async fn source_actions(
                 changes_only: true,
             })),
         );
+        let index = first(&out);
         if let Some(mut entry) = super::handler::code_action_from_proposal(
             env,
             &req.uri,
             &mut proposal,
             &req.params.context.diagnostics,
             resolve,
-            next_proposal + out.len(),
+            index,
         )
         .await
         {
@@ -81,15 +88,13 @@ pub async fn source_actions(
             out.push((entry, resolve.then_some(proposal)));
         }
     }
-    let first = next_proposal + out.iter().filter(|(_, p)| p.is_some()).count();
-    out.extend(crate::features::accessors::actions::actions(env, req, first).await);
-    let first = next_proposal + out.iter().filter(|(_, p)| p.is_some()).count();
-    out.extend(crate::features::constructors::actions::actions(env, req, first).await);
-    let first = next_proposal + out.iter().filter(|(_, p)| p.is_some()).count();
-    out.extend(crate::features::tostring::actions::actions(env, req, first).await);
-    out.extend(crate::features::hashcode::actions::actions(env, req).await);
-    out.extend(crate::features::delegates::actions::actions(env, req).await);
     out.extend(crate::features::overrides::actions::actions(env, req).await);
+    let at = first(&out);
+    out.extend(crate::features::accessors::actions::actions(env, req, at).await);
+    out.extend(crate::features::hashcode::actions::actions(env, req).await);
+    let at = first(&out);
+    out.extend(crate::features::tostring::actions::actions(env, req, at).await);
+    out.extend(crate::features::delegates::actions::actions(env, req).await);
     out
 }
 

@@ -83,7 +83,8 @@ pub(crate) async fn actions(
                         req.params.context.diagnostics.clone()
                     });
                 }
-                entry.data = Some(ActionData {
+                // `getCodeActionFromProposal`: data only for clients that resolve.
+                entry.data = resolve.then_some(ActionData {
                     proposal: resolve.then_some(index),
                     priority: 40,
                 });
