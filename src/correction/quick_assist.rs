@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod lambda;
+mod convert_var;
 mod method_ref;
 mod nls;
 mod string_concat;
@@ -44,7 +45,7 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
         let options = env.options(&req.context.ast.uri).await;
         lambda::add_inferred_lambda_parameter_types(&req.context, &options, covering, &mut proposals);
         lambda::add_var_lambda_parameter_types(&req.context, &options, covering, &mut proposals);
-        lambda::remove_var_or_inferred_lambda_parameter_types(&req.context, covering, &mut proposals);
+        lambda::remove_var_or_inferred_lambda_parameter_types(&req.context, &options, covering, &mut proposals);
         lambda::change_lambda_body_to_block(&req.context, covering, &mut proposals);
         lambda::change_lambda_body_to_expression(&req.context, covering, &mut proposals);
         method_ref::clean_up_lambda(&req.context, &options, covering, &mut proposals);
@@ -84,6 +85,9 @@ pub async fn refactor_proposals(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposa
         if let Some(p) = extract_field_proposal(env, req, problems_at_location).await {
             proposals.push(p);
         }
+        let options = env.options(&req.context.ast.uri).await;
+        convert_var::convert_var_type_to_resolved_type(env, &req.context, &options, covering, &mut proposals).await;
+        convert_var::convert_resolved_type_to_var_type(&req.context, &options, covering, &mut proposals);
     }
     proposals.extend(super::local_corrections::assignment_refactors(env, req).await);
     proposals

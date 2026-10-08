@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use super::util::{is_11_or_higher, is_var_type, replace_wildcards_and_captures};
 use crate::correction::type_mismatch::proposals::import_context;
 use crate::correction::{kind, messages, relevance, Change, Context, CuChange, Proposal};
+use crate::rewrite::import_remover::ImportRemover;
 use crate::rewrite::import_rewrite::{ImportRewrite, TypeLocation};
 use crate::rewrite::{ASTRewrite, RNode};
 use crate::semantic_ast::{Node, NodeKind};
@@ -149,6 +150,8 @@ pub fn add_var_lambda_parameter_types(ctx: &Context, options: &BTreeMap<String, 
         return;
     }
     let mut rw = ASTRewrite::new(ctx.ast.clone());
+    let mut imports = ImportRewrite::create_for_corrections(ctx.ast.clone(), options);
+    let mut remover = ImportRemover::new();
     rw.set_simple(RNode::Orig(lambda.id), "parentheses", Some("true"));
     for param in &parameters {
         let old_type = if param.is(NodeKind::SingleVariableDeclaration) { param.child("type") } else { None };
@@ -156,6 +159,7 @@ pub fn add_var_lambda_parameter_types(ctx: &Context, options: &BTreeMap<String, 
             let name = rw.new_name("var");
             let var = rw.new_simple_type(name);
             rw.replace(RNode::Orig(old.id), Some(var));
+            remover.register_removed_node(old.id);
         } else {
             let new_param = rw.new_node(NodeKind::SingleVariableDeclaration);
             let Some(name) = param.child("name") else { return };
@@ -168,11 +172,17 @@ pub fn add_var_lambda_parameter_types(ctx: &Context, options: &BTreeMap<String, 
         }
     }
     let key = if explicit_type { "QuickAssistProcessor_replace_lambda_parameter_types_with_var" } else { "QuickAssistProcessor_add_var_lambda_parameter_types" };
-    out.push(Proposal::rewrite(messages::correction(key), kind::QUICK_ASSIST, relevance::LAMBDA_EXPRESSION_AND_METHOD_REF_CLEANUP, rw));
+    remover.apply_removes(&ctx.ast, &mut imports);
+    out.push(Proposal::new(
+        messages::correction(key),
+        kind::QUICK_ASSIST,
+        relevance::LAMBDA_EXPRESSION_AND_METHOD_REF_CLEANUP,
+        Change::Cu(vec![CuChange::rewrite(rw).with_imports(imports)]),
+    ));
 }
 
 /// `QuickAssistProcessor.getRemoveVarOrInferredLambdaParameterTypesProposal`.
-pub fn remove_var_or_inferred_lambda_parameter_types(ctx: &Context, covering: Node<'_>, out: &mut Vec<Proposal>) {
+pub fn remove_var_or_inferred_lambda_parameter_types(ctx: &Context, options: &BTreeMap<String, String>, covering: Node<'_>, out: &mut Vec<Proposal>) {
     let Some(parent) = covering.parent() else { return };
     let lambda = if covering.is(NodeKind::LambdaExpression) {
         covering
@@ -192,14 +202,28 @@ pub fn remove_var_or_inferred_lambda_parameter_types(ctx: &Context, covering: No
         return;
     }
     let mut rw = ASTRewrite::new(ctx.ast.clone());
+    let mut imports = ImportRewrite::create_for_corrections(ctx.ast.clone(), options);
+    let mut remover = ImportRemover::new();
+    let check_for_var_types = is_11_or_higher(options);
     rw.set_simple(RNode::Orig(lambda.id), "parentheses", Some("true"));
     for param in &parameters {
         if param.is(NodeKind::SingleVariableDeclaration) {
+            if let Some(old_type) = param.child("type") {
+                if !check_for_var_types || !is_var_type(old_type) {
+                    remover.register_removed_node(old_type.id);
+                }
+            }
             let Some(name) = param.child("name") else { return };
             let fragment = rw.new_variable_declaration_fragment(&name.identifier(), None);
             rw.replace(RNode::Orig(param.id), Some(fragment));
         }
     }
+    remover.apply_removes(&ctx.ast, &mut imports);
     let label = messages::correction("QuickAssistProcessor_remove_lambda_parameter_types");
-    out.push(Proposal::rewrite(label, kind::QUICK_ASSIST, relevance::LAMBDA_EXPRESSION_AND_METHOD_REF_CLEANUP, rw));
+    out.push(Proposal::new(
+        label,
+        kind::QUICK_ASSIST,
+        relevance::LAMBDA_EXPRESSION_AND_METHOD_REF_CLEANUP,
+        Change::Cu(vec![CuChange::rewrite(rw).with_imports(imports)]),
+    ));
 }
