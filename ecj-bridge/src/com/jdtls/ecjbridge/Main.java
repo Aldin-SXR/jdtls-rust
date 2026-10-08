@@ -49,6 +49,12 @@ public class Main {
         stderrHandler.setLevel(Level.ALL);
         root.addHandler(stderrHandler);
 
+        // JavaLanguageServerPlugin.start: turn off substring code completion
+        // (AssistOptions.PROPERTY_SubstringMatch) if it isn't explicitly set.
+        if (System.getProperty("jdt.codeCompleteSubstringMatch") == null) {
+            System.setProperty("jdt.codeCompleteSubstringMatch", "false");
+        }
+
         // Build jrt:/ index eagerly in background so the first import completion
         // doesn't block the request thread (~1 s on cold start).
         Thread indexThread = new Thread(() -> CompletionService.ensureJrtIndex(), "jrt-index-builder");

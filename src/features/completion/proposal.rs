@@ -107,6 +107,9 @@ pub struct Proposal {
     /// Set for proposals jdt.ls creates itself (getter/setter): the field.
     #[serde(skip)]
     pub getter_setter: Option<GetterSetter>,
+    /// The aggregated result of the ranking providers (`proposalToRankingResult`).
+    #[serde(skip)]
+    pub ranking: Option<super::ranking::CompletionRankingAggregation>,
 }
 
 #[derive(Debug, Clone)]

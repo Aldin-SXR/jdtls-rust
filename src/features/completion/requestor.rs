@@ -291,8 +291,17 @@ impl<'a> Collector<'a> {
 
     /// Sort with `ProposalComparator` and apply the result limit; returns the
     /// proposals kept (in item order).
-    pub fn sorted_limited(&mut self) -> Vec<Proposal> {
+    pub fn sorted_limited(&mut self, uri: &str) -> Vec<Proposal> {
         let mut props = std::mem::take(&mut self.proposals);
+        let aggregated_ranks = super::ranking::aggregated_ranking_result(&props, self.context, uri);
+        for (proposal, rank) in props.iter_mut().zip(aggregated_ranks) {
+            if let Some(rank) = rank {
+                // we assume there won't be overflow for now since the the score from
+                // each provider can only be 100 at most.
+                proposal.relevance += rank.score();
+                proposal.ranking = Some(rank);
+            }
+        }
         props.sort_by(compare_proposals);
         let limit = props.len().min(self.prefs.max_results);
         if props.len() > limit {
