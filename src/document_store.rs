@@ -41,15 +41,58 @@ pub struct DocumentStore {
     parser: Mutex<JavaParser>,
     /// CoreASTProvider's active Java element; closing a buffer does not clear it.
     active_java_uri: Mutex<Option<Url>>,
+    /// `BaseDocumentLifeCycleHandler.documentVersions`: the client's version
+    /// of each open document (`didOpen`/`didChange`), removed on `didClose`.
+    document_versions: DashMap<Url, i32>,
+}
+
+/// `BaseDocumentLifeCycleHandler.DocumentMonitor`: detects that a document
+/// changed while a request was being computed.
+pub struct DocumentMonitor<'a> {
+    store: &'a DocumentStore,
+    uri: Url,
+    initial_version: Option<i32>,
+}
+
+impl DocumentMonitor<'_> {
+    /// `true` if the document has changed since the creation of this monitor.
+    /// A document that is not open (no version before and now) is assumed not
+    /// to have changed.
+    pub fn has_changed(&self) -> bool {
+        self.initial_version != self.store.document_version(&self.uri)
+    }
+
+    /// `checkChanged()`: a `ContentModified` response error if the document
+    /// [`has_changed`](Self::has_changed).
+    pub fn check_changed(&self) -> Result<(), tower_lsp::jsonrpc::Error> {
+        if self.has_changed() {
+            return Err(tower_lsp::jsonrpc::Error {
+                code: tower_lsp::jsonrpc::ErrorCode::ServerError(-32801),
+                message: "Document changed, request invalid".into(),
+                data: None,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl DocumentStore {
+    /// `new DocumentMonitor(uri)`.
+    pub fn monitor(&self, uri: &Url) -> DocumentMonitor<'_> {
+        DocumentMonitor { store: self, uri: uri.clone(), initial_version: self.document_version(uri) }
+    }
+
+    fn document_version(&self, uri: &Url) -> Option<i32> {
+        self.document_versions.get(uri).map(|v| *v)
+    }
+
     pub fn new() -> Self {
         Self {
             files: Arc::new(DashMap::new()),
             workspace: Arc::new(DashMap::new()),
             parser: Mutex::new(JavaParser::new()),
             active_java_uri: Mutex::new(None),
+            document_versions: DashMap::new(),
         }
     }
 
@@ -62,6 +105,7 @@ impl DocumentStore {
     }
 
     pub fn open(&self, uri: Url, language_id: String, version: i32, text: String, parser: &mut JavaParser) {
+        self.document_versions.insert(uri.clone(), version);
         let rope = Rope::from_str(&text);
         let tree = parser.parse_fresh(&text).map(Arc::new);
         if self.files.get(&uri).is_some_and(|s| s.open) {
@@ -80,6 +124,7 @@ impl DocumentStore {
     /// Close a client document.  Workspace files fall back to their disk
     /// content; virtual documents are forgotten.
     pub fn close(&self, uri: &Url) {
+        self.document_versions.remove(uri);
         self.files.remove(uri);
         if self.workspace.contains_key(uri) {
             self.load_from_disk(uri);
@@ -183,6 +228,7 @@ impl DocumentStore {
         changes: Vec<TextDocumentContentChangeEvent>,
         parser: &mut JavaParser,
     ) {
+        self.document_versions.insert(uri.clone(), version);
         if let Some(mut state) = self.files.get_mut(uri) {
             for change in changes {
                 match change.range {
@@ -293,5 +339,63 @@ impl DocumentStore {
 impl Default for DocumentStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod document_life_cycle_handler_test {
+    //! The `DocumentMonitor` cases of
+    //! `org.eclipse.jdt.ls.core.internal.handlers.DocumentLifeCycleHandlerTest`
+    //! (the others are in `tests/handlers_document_life_cycle_handler_test.rs`).
+
+    use super::*;
+
+    fn open_document(store: &DocumentStore, uri: &Url, content: &str, version: i32) {
+        store.open(uri.clone(), "java".into(), version, content.into(), &mut JavaParser::new());
+    }
+
+    fn change_document_full(store: &DocumentStore, uri: &Url, content: &str, version: i32) {
+        let change = TextDocumentContentChangeEvent { range: None, range_length: None, text: content.into() };
+        store.apply_changes(uri, version, vec![change], &mut JavaParser::new());
+    }
+
+    fn assert_changed(monitor: &DocumentMonitor<'_>) {
+        let error = monitor.check_changed().expect_err("ResponseErrorException expected");
+        assert_eq!(tower_lsp::jsonrpc::ErrorCode::ServerError(-32801), error.code);
+        assert_eq!("Document changed, request invalid", error.message);
+    }
+
+    fn cu() -> Url {
+        Url::parse("file:///tmp/TestProject/src/foo/Foo.java").unwrap()
+    }
+
+    #[test]
+    fn test_document_monitor() {
+        let store = DocumentStore::new();
+        let content = "package foo;\n";
+        let cu = cu();
+
+        open_document(&store, &cu, content, 1);
+        let document_monitor = store.monitor(&cu);
+        document_monitor.check_changed().unwrap();
+        change_document_full(&store, &cu, content, 2);
+        assert_changed(&document_monitor);
+        store.close(&cu);
+    }
+
+    #[test]
+    fn test_document_monitor_closed_document() {
+        let store = DocumentStore::new();
+        let content = "package foo;\n";
+        let cu = cu();
+
+        let document_monitor_before_open = store.monitor(&cu);
+        open_document(&store, &cu, content, 1);
+        change_document_full(&store, &cu, content, 2);
+        assert_changed(&document_monitor_before_open); // Version changed (null -> 2)
+        store.close(&cu);
+
+        let document_monitor_after_close = store.monitor(&cu);
+        document_monitor_after_close.check_changed().unwrap(); // Version not changed (null -> null)
     }
 }

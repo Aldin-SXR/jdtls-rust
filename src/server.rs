@@ -2086,12 +2086,14 @@ impl LanguageServer for JavaLanguageServer {
         params: SemanticTokensParams,
     ) -> LspResult<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
+        let document_monitor = self.store.monitor(uri);
         let empty = || {
             Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
                 result_id: None,
                 data: Vec::new(),
             })))
         };
+        document_monitor.check_changed()?;
         // jdt.ls waits for the document life-cycle jobs; wait for the bridge.
         for _ in 0..600 {
             if self.dispatcher.is_ecj_ready().await {
@@ -2099,6 +2101,7 @@ impl LanguageServer for JavaLanguageServer {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        document_monitor.check_changed()?;
         let Some(text) = crate::features::document_text(&self.dispatcher, uri).await else {
             return empty();
         };
@@ -2111,6 +2114,7 @@ impl LanguageServer for JavaLanguageServer {
         else {
             return empty();
         };
+        document_monitor.check_changed()?;
         let ast = crate::features::semantic_tokens::Ast::from_bridge(&strings, &nodes, &bindings);
         let data = crate::features::semantic_tokens::semantic_tokens(&text, &ast);
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
