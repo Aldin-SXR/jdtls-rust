@@ -20,6 +20,7 @@ use super::prefs::{Client, Prefs};
 use super::proposal::{tl, Context};
 use super::snippets::{beautify_document, set_insert_text_format, set_insert_text_mode, template_to_snippet, translate, Template};
 use super::sort_text::convert_relevance;
+use super::template_store;
 use crate::semantic_ast::{Ast, BindingRef, Node, NodeId, NodeKind};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -57,33 +58,34 @@ const WHILE_CONTENT: &str = "while (${i:inner_expression(boolean)}) {\n\t$${0}\n
 
 /// `PostfixTemplate.values()` in declaration order (`createTemplate`).
 pub fn templates() -> Vec<Template> {
-    let t = |name: &str, pattern: &str, desc: &str| Template {
+    let t = |id: &str, name: &str, pattern: &str, desc: &str| Template {
+        id: id.to_owned(),
         name: name.to_owned(),
         description: desc.to_owned(),
         context_type: ID_ALL.to_owned(),
         pattern: pattern.to_owned(),
     };
     vec![
-        t("assert", ASSERT_CONTENT, "Creates an assert statement"),
-        t("cast", CAST_CONTENT, "Casts the expression to a new type"),
-        t("if", IF_CONTENT, "Creates a if statement"),
-        t("else", ELSE_CONTENT, "Creates a negated if statement"),
-        t("for", FOR_CONTENT, "Creates a for statement"),
-        t("fori", FORI_CONTENT, "Creates a for statement which iterates over an array"),
-        t("forr", FORR_CONTENT, "Creates a for statement which iterates over an array in reverse order"),
-        t("format", FORMAT_CONTENT, "Sends the affected object to the String.format(..) method"),
-        t("nnull", NNULL_CONTENT, "Creates an if statement and checks if the expression does not resolve to null"),
-        t("null", NULL_CONTENT, "Creates an if statement which checks if expression resolves to null"),
-        t("not", NOT_CONTENT, "Negates the expression"),
-        t("opt", OPT_CONTENT, "Creates an Optional.ofNullable(..) call"),
-        t("sysout", SYSOUT_CONTENT, "Sends the affected object to a System.out.println(..) call"),
-        t("sysouf", SYSOUF_CONTENT, "Sends the affected object to a System.out.printf(..) call"),
-        t("sysoutv", SYSOUTV_CONTENT, "Sends the affected object to a System.out.println(..) call"),
-        t("syserr", SYSERR_CONTENT, "Sends the affected object to a System.err.println(..) call"),
-        t("throw", THROW_CONTENT, "Throws the given Exception"),
-        t("var", VAR_CONTENT, "Creates a new variable"),
-        t("par", PAR_CONTENT, "Places the expression in parentheses"),
-        t("while", WHILE_CONTENT, "Creates a while loop"),
+        t("org.eclipse.jdt.postfixcompletion.assert", "assert", ASSERT_CONTENT, "Creates an assert statement"),
+        t("org.eclipse.jdt.postfixcompletion.cast", "cast", CAST_CONTENT, "Casts the expression to a new type"),
+        t("org.eclipse.jdt.ls.postfixcompletion.if", "if", IF_CONTENT, "Creates a if statement"),
+        t("org.eclipse.jdt.ls.postfixcompletion.else", "else", ELSE_CONTENT, "Creates a negated if statement"),
+        t("org.eclipse.jdt.postfixcompletion.for", "for", FOR_CONTENT, "Creates a for statement"),
+        t("org.eclipse.jdt.postfixcompletion.fori", "fori", FORI_CONTENT, "Creates a for statement which iterates over an array"),
+        t("org.eclipse.jdt.postfixcompletion.forr", "forr", FORR_CONTENT, "Creates a for statement which iterates over an array in reverse order"),
+        t("org.eclipse.jdt.postfixcompletion.format", "format", FORMAT_CONTENT, "Sends the affected object to the String.format(..) method"),
+        t("org.eclipse.jdt.postfixcompletion.nnull", "nnull", NNULL_CONTENT, "Creates an if statement and checks if the expression does not resolve to null"),
+        t("org.eclipse.jdt.postfixcompletion.null", "null", NULL_CONTENT, "Creates an if statement which checks if expression resolves to null"),
+        t("org.eclipse.jdt.postfixcompletion.not", "not", NOT_CONTENT, "Negates the expression"),
+        t("org.eclipse.jdt.postfixcompletion.opt", "opt", OPT_CONTENT, "Creates an Optional.ofNullable(..) call"),
+        t("org.eclipse.jdt.postfixcompletion.sysout", "sysout", SYSOUT_CONTENT, "Sends the affected object to a System.out.println(..) call"),
+        t("org.eclipse.jdt.postfixcompletion.sysouf", "sysouf", SYSOUF_CONTENT, "Sends the affected object to a System.out.printf(..) call"),
+        t("org.eclipse.jdt.postfixcompletion.sysoutv", "sysoutv", SYSOUTV_CONTENT, "Sends the affected object to a System.out.println(..) call"),
+        t("org.eclipse.jdt.postfixcompletion.syserr", "syserr", SYSERR_CONTENT, "Sends the affected object to a System.err.println(..) call"),
+        t("org.eclipse.jdt.postfixcompletion.throw", "throw", THROW_CONTENT, "Throws the given Exception"),
+        t("org.eclipse.jdt.postfixcompletion.var", "var", VAR_CONTENT, "Creates a new variable"),
+        t("org.eclipse.jdt.postfixcompletion.par", "par", PAR_CONTENT, "Places the expression in parentheses"),
+        t("org.eclipse.jdt.postfixcompletion.while", "while", WHILE_CONTENT, "Creates a while loop"),
     ]
 }
 
@@ -107,7 +109,7 @@ pub fn can_resolve_postfix(context: &Context, doc: &Doc) -> bool {
         return false;
     }
     let token = token.to_lowercase();
-    templates().iter().any(|t| t.name.to_lowercase().starts_with(&token))
+    template_store::templates_of(ID_ALL).iter().any(|t| t.name.to_lowercase().starts_with(&token))
 }
 
 // ─── The postfix context (data the template evaluation needs) ───────────────
@@ -1013,7 +1015,7 @@ pub async fn postfix_snippets(
     }
     // PostfixCompletionProposalComputer.computeCompletionEngine
     let ast = crate::semantic_ast::fetch_with(&env.dispatcher, unit.uri.as_str(), ctx.clone()).await.ok()?;
-    let all = templates();
+    let all = template_store::templates_of(ID_ALL);
     let analysis = analyze(&ast, context, &unit.doc, &all)?;
     let available: Vec<Template> = all.into_iter().zip(&analysis.can_evaluate).filter(|(_, ok)| **ok).map(|(t, _)| t).collect();
     let container_types = handler::container_types(env, ctx, unit).await;
@@ -1036,6 +1038,9 @@ pub async fn postfix_snippets(
         container_types,
         source_level: unit.compiler_source(),
         template_scope: None,
+        items: Vec::new(),
+        completion_item_data: Vec::new(),
+        common_data: Default::default(),
     };
     Some((items, response))
 }

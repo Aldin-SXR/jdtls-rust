@@ -20,6 +20,8 @@ pub const ID_STATEMENTS: &str = "java-statements";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Template {
+    /// `TemplatePersistenceData.getId()` (`CodeSnippetTemplate.getId()`, `PostfixTemplate.getId()`).
+    pub id: String,
     pub name: String,
     pub description: String,
     pub context_type: String,
@@ -50,41 +52,42 @@ const INTERFACE_METHOD_SNIPPET: &str = "$${1|public,private|} $${2:void} $${3:na
 
 /// `CodeSnippetTemplate.values()` in declaration order.
 pub fn templates() -> Vec<Template> {
-    let t = |name: &str, ctx: &str, pattern: &str, desc: &str| Template {
+    let t = |id: &str, name: &str, ctx: &str, pattern: &str, desc: &str| Template {
+        id: format!("org.eclipse.jdt.ls.templates.{id}"),
         name: name.to_owned(),
         description: desc.to_owned(),
         context_type: ctx.to_owned(),
         pattern: pattern.to_owned(),
     };
     vec![
-        t("sysout", ID_STATEMENTS, SYSOUT_CONTENT, "print to standard out"),
-        t("syserr", ID_STATEMENTS, SYSERR_CONTENT, "print to standard err"),
-        t("systrace", ID_STATEMENTS, SYSTRACE_CONTENT, "print current method to standard out"),
-        t("foreach", ID_STATEMENTS, FOREACH_CONTENT, "iterate over an array or Iterable"),
-        t("fori", ID_STATEMENTS, FORI_CONTENT, "iterate over array"),
-        t("while", ID_STATEMENTS, WHILE_CONTENT, "while statement"),
-        t("dowhile", ID_STATEMENTS, DOWHILE_CONTENT, "do-while statement"),
-        t("if", ID_STATEMENTS, IF_CONTENT, "if statement"),
-        t("ifelse", ID_STATEMENTS, IFELSE_CONTENT, "if-else statement"),
-        t("ifnull", ID_STATEMENTS, IFNULL_CONTENT, "if statement checking for null"),
-        t("ifnotnull", ID_STATEMENTS, IFNOTNULL_CONTENT, "if statement checking for not null"),
-        t("switch", ID_STATEMENTS, SWITCH_CONTENT, "switch statement"),
-        t("try_catch", ID_STATEMENTS, TRYCATCH_CONTENT, "try/catch block"),
-        t("try_resources", ID_STATEMENTS, TRYRESOURCES_CONTENT, "try/catch block with resources"),
-        t("ctor", ID_MEMBERS, CTOR_CONTENT, "constructor"),
-        t("method", ID_MEMBERS, METHOD_CONTENT, "method"),
-        t("static_method", ID_MEMBERS, STATIC_METHOD_CONTENT, "static method"),
-        t("field", ID_MEMBERS, FIELD_CONTENT, "field"),
-        t("main", ID_MEMBERS, MAIN_CONTENT, "public static main method"),
-        t("new", ID_ALL, NEW_CONTENT, "create new object"),
-        t("sout", ID_STATEMENTS, SYSOUT_CONTENT, "print to standard out"),
-        t("serr", ID_STATEMENTS, SYSERR_CONTENT, "print to standard err"),
-        t("soutm", ID_STATEMENTS, SYSTRACE_CONTENT, "print current method to standard out"),
-        t("iter", ID_STATEMENTS, FOREACH_CONTENT, "iterate over an array or Iterable"),
-        t("psvm", ID_MEMBERS, MAIN_CONTENT, "public static main method"),
-        t("System.out.println()", ID_STATEMENTS, SYSOUT_CONTENT, "print to standard out"),
-        t("System.err.println()", ID_STATEMENTS, SYSERR_CONTENT, "print to standard err"),
-        t("public static void main(String[] args)", ID_MEMBERS, MAIN_CONTENT, "public static main method"),
+        t("sysout", "sysout", ID_STATEMENTS, SYSOUT_CONTENT, "print to standard out"),
+        t("syserr", "syserr", ID_STATEMENTS, SYSERR_CONTENT, "print to standard err"),
+        t("systrace", "systrace", ID_STATEMENTS, SYSTRACE_CONTENT, "print current method to standard out"),
+        t("for_array", "foreach", ID_STATEMENTS, FOREACH_CONTENT, "iterate over an array or Iterable"),
+        t("for_iterable", "fori", ID_STATEMENTS, FORI_CONTENT, "iterate over array"),
+        t("while_condition", "while", ID_STATEMENTS, WHILE_CONTENT, "while statement"),
+        t("do", "dowhile", ID_STATEMENTS, DOWHILE_CONTENT, "do-while statement"),
+        t("if", "if", ID_STATEMENTS, IF_CONTENT, "if statement"),
+        t("ifelse", "ifelse", ID_STATEMENTS, IFELSE_CONTENT, "if-else statement"),
+        t("ifnull", "ifnull", ID_STATEMENTS, IFNULL_CONTENT, "if statement checking for null"),
+        t("ifnotnull", "ifnotnull", ID_STATEMENTS, IFNOTNULL_CONTENT, "if statement checking for not null"),
+        t("switch", "switch", ID_STATEMENTS, SWITCH_CONTENT, "switch statement"),
+        t("trycatch", "try_catch", ID_STATEMENTS, TRYCATCH_CONTENT, "try/catch block"),
+        t("tryresources", "try_resources", ID_STATEMENTS, TRYRESOURCES_CONTENT, "try/catch block with resources"),
+        t("ctor", "ctor", ID_MEMBERS, CTOR_CONTENT, "constructor"),
+        t("method", "method", ID_MEMBERS, METHOD_CONTENT, "method"),
+        t("staticmethod", "static_method", ID_MEMBERS, STATIC_METHOD_CONTENT, "static method"),
+        t("field", "field", ID_MEMBERS, FIELD_CONTENT, "field"),
+        t("main", "main", ID_MEMBERS, MAIN_CONTENT, "public static main method"),
+        t("new", "new", ID_ALL, NEW_CONTENT, "create new object"),
+        t("sout", "sout", ID_STATEMENTS, SYSOUT_CONTENT, "print to standard out"),
+        t("serr", "serr", ID_STATEMENTS, SYSERR_CONTENT, "print to standard err"),
+        t("soutm", "soutm", ID_STATEMENTS, SYSTRACE_CONTENT, "print current method to standard out"),
+        t("iter", "iter", ID_STATEMENTS, FOREACH_CONTENT, "iterate over an array or Iterable"),
+        t("psvm", "psvm", ID_MEMBERS, MAIN_CONTENT, "public static main method"),
+        t("sys_out", "System.out.println()", ID_STATEMENTS, SYSOUT_CONTENT, "print to standard out"),
+        t("sys_err", "System.err.println()", ID_STATEMENTS, SYSERR_CONTENT, "print to standard err"),
+        t("publicmain", "public static void main(String[] args)", ID_MEMBERS, MAIN_CONTENT, "public static main method"),
     ]
 }
 
@@ -483,7 +486,7 @@ pub fn generic_snippets(
     } else {
         return (Vec::new(), Vec::new());
     };
-    let all = templates();
+    let all = super::template_store::templates();
     let key = if token_len == 0 { template_key(doc, offset) } else { template_key(doc, offset) };
     let after_dot = is_after_dot(doc, offset);
     let specific: Vec<Template> = all.iter().filter(|t| t.context_type == context_id).cloned().collect();
@@ -710,5 +713,79 @@ mod tests {
         let con = ScopeVariable { name: "con".into(), signature: "Z".into(), ..Default::default() };
         let scope = TemplateScope { locals: vec![con], ..Default::default() };
         assert_eq!(evaluate(WHILE_CONTENT, &scope).unwrap(), "while (${1:con}) {\n\t$TM_SELECTED_TEXT${0}\n}");
+    }
+}
+
+/// Port of `org.eclipse.jdt.ls.core.internal.contentassist.SnippetUtilsTest`:
+/// the mocked `isSupportsCompletionDocumentationMarkdown` is the `markdown`
+/// argument of [`beautify_document`].
+#[cfg(test)]
+mod snippet_utils_test {
+    use super::*;
+
+    fn left(result: &Documentation) -> Option<&str> {
+        match result {
+            Documentation::String(s) => Some(s),
+            Documentation::MarkupContent(_) => None,
+        }
+    }
+
+    fn right(result: &Documentation) -> Option<&MarkupContent> {
+        match result {
+            Documentation::String(_) => None,
+            Documentation::MarkupContent(m) => Some(m),
+        }
+    }
+
+    #[test]
+    fn test_when_mark_down_supported() {
+        let raw = "System.out.println(${0});";
+        let result = beautify_document(raw, true);
+
+        assert!(left(&result).is_none());
+        assert!(right(&result).is_some());
+
+        assert_eq!(right(&result).unwrap().value, "```java\nSystem.out.println();\n```");
+    }
+
+    #[test]
+    fn test_when_mark_down_not_supported() {
+        let raw = "System.out.println(${0});";
+        let result = beautify_document(raw, false);
+
+        assert!(right(&result).is_none());
+        assert!(left(&result).is_some());
+
+        assert_eq!(left(&result).unwrap(), "System.out.println();");
+    }
+
+    #[test]
+    fn test_complicated_input() {
+        let raw = "/**\n * ${1:A}\n */\npublic class ${1:A} {\n\n\t${0}\n}";
+        let result = beautify_document(raw, false);
+
+        let expected = "/**\n * A\n */\npublic class A {\n\n\t\n}";
+
+        assert_eq!(left(&result).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_multiple_variables_input() {
+        let raw = "for (${1:int} ${2:i} = ${3:0}; ${2:i} < ${4:args.length}; ${2:i}++) {\n\t${0}\n}";
+        let result = beautify_document(raw, false);
+
+        let expected = "for (int i = 0; i < args.length; i++) {\n\t\n}";
+
+        assert_eq!(left(&result).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_selected_text_placeholder() {
+        let raw = "for (${1:int} ${2:i} = ${3:0}; ${2:i} < ${4:args.length}; ${2:i}++) {\n\t$TM_SELECTED_TEXT${0}\n}";
+        let result = beautify_document(raw, false);
+
+        let expected = "for (int i = 0; i < args.length; i++) {\n\t\n}";
+
+        assert_eq!(left(&result).unwrap(), expected);
     }
 }

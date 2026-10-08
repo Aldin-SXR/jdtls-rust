@@ -21,6 +21,7 @@ pub mod overrides;
 pub mod postfix;
 pub mod prefs;
 pub mod proposal;
+pub mod ranking;
 pub mod replacement;
 pub mod requestor;
 pub mod resolve;
@@ -28,6 +29,7 @@ pub mod service;
 pub mod signature;
 pub mod snippets;
 pub mod sort_text;
+pub mod template_store;
 
 use std::sync::{Arc, Mutex, OnceLock};
 

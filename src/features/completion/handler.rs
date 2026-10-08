@@ -39,6 +39,12 @@ pub struct Response {
     pub container_types: ContainerTypes,
     pub source_level: String,
     pub template_scope: Option<TemplateScope>,
+    /// `getItems()`: the items of the proposals, indexed like them.
+    pub items: Vec<Item>,
+    /// `getCompletionItemData`: the data the ranking providers contributed.
+    pub completion_item_data: Vec<HashMap<String, String>>,
+    /// `getCommonData` besides the URI (`COMPLETION_EXECUTION_TIME`).
+    pub common_data: HashMap<String, String>,
 }
 
 /// `CompletionHandler.selectedProposal`, consumed by signature-help selection.
@@ -84,13 +90,30 @@ pub async fn on_did_select(env: &Env, request_id: &str, proposal_id: &str) -> to
     let request_id = request_id.parse::<u64>().map_err(|_| invalid())?;
     let proposal_id = proposal_id.parse::<usize>().map_err(|_| invalid())?;
     let response = get(request_id).ok_or_else(invalid)?;
-    let proposal = response.proposals.get(proposal_id).ok_or_else(invalid)?;
-    match proposal {
+    if response.items.len() <= proposal_id || response.proposals.len() <= proposal_id {
+        return Err(invalid());
+    }
+    match &response.proposals[proposal_id] {
         StoredProposal::Jdt(proposal) if matches!(proposal.kind,
             kind::METHOD_REF | kind::CONSTRUCTOR_INVOCATION | kind::METHOD_REF_WITH_CASTED_RECEIVER) => {
             *SELECTED_PROPOSAL.lock().unwrap_or_else(|e| e.into_inner()) = Some(proposal.clone());
         }
         _ => {},
+    }
+    let mut item = response.items[proposal_id].clone();
+    let mut data = item.data.take().and_then(|d| d.as_object().cloned()).unwrap_or_default();
+    // get the cached completion execution time and set it to the selected item in case that providers need it.
+    if let Some(execution_time) = response.common_data.get(super::ranking::COMPLETION_EXECUTION_TIME) {
+        data.insert(super::ranking::COMPLETION_EXECUTION_TIME.to_owned(), json!(execution_time));
+    }
+    if let Some(contributed_data) = response.completion_item_data.get(proposal_id) {
+        for (key, value) in contributed_data {
+            data.insert(key.clone(), json!(value));
+        }
+    }
+    item.data = Some(Value::Object(data));
+    for provider in super::ranking::ranking_providers() {
+        provider.on_did_completion_item_select(&item);
     }
     Ok(())
 }
@@ -110,6 +133,32 @@ pub fn store(r: Response) {
 
 pub fn get(id: u64) -> Option<Response> {
     RESPONSES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|r| r.id == id).cloned()
+}
+
+/// `CompletionResponse.setItems`: the final items of each stored response.
+fn set_items(items: &[Item]) {
+    let mut responses = RESPONSES.lock().unwrap_or_else(|e| e.into_inner());
+    for response in responses.iter_mut() {
+        let rid = response.id.to_string();
+        let mut own: Vec<(usize, Item)> = items
+            .iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("rid")).and_then(Value::as_str) == Some(rid.as_str()))
+            .filter_map(|i| Some((i.data.as_ref()?.get("pid")?.as_str()?.parse::<usize>().ok()?, i.clone())))
+            .collect();
+        if own.is_empty() {
+            continue;
+        }
+        own.sort_by_key(|(pid, _)| *pid);
+        response.items = own.into_iter().map(|(_, i)| i).collect();
+    }
+}
+
+/// `CompletionResponse.setCommonData`.
+fn set_common_data(id: u64, key: &str, value: String) {
+    let mut responses = RESPONSES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = responses.iter_mut().find(|r| r.id == id) {
+        r.common_data.insert(key.to_owned(), value);
+    }
 }
 
 fn clear() {
@@ -364,6 +413,7 @@ fn is_completion_for_constructor(text: &str, doc: &Doc, offset: usize) -> bool {
 
 /// `textDocument/completion`.
 pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: Option<&str>, trigger_kind: Option<i64>) -> List {
+    let start_time = std::time::Instant::now();
     clear();
     let prefs = Prefs::load();
     let client = Client::load();
@@ -418,7 +468,7 @@ pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: 
             collector.accept(p);
         }
     }
-    let kept = collector.sorted_limited();
+    let kept = collector.sorted_limited(uri.as_str());
     let is_complete = collector.is_complete;
     let collapsed = collector.collapsed.clone();
     let completion_kinds: Vec<i32> = result.completion_kinds.clone();
@@ -427,6 +477,7 @@ pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: 
     let container_types = container_types(env, &ctx, &unit).await;
 
     let mut items: Vec<Item> = Vec::new();
+    let mut contributed_data: Vec<HashMap<String, String>> = Vec::new();
     let mut defaults = ItemDefaults::default();
     {
         let provider = ReplacementProvider {
@@ -459,7 +510,20 @@ pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: 
             initialize_item_defaults(first, &provider, &client, &mut defaults);
         }
         for (i, p) in kept.iter().enumerate() {
-            items.push(to_completion_item(p, i, request_id, &description, &provider, &client, &defaults));
+            let mut item = to_completion_item(p, i, request_id, &description, &provider, &client, &defaults);
+            if let Some(ranking_result) = &p.ranking {
+                let decorators = ranking_result.decorators();
+                if !decorators.is_empty() {
+                    item.label = format!("{decorators} {}", item.label);
+                    // when the item has decorators, set the filter text to avoid client takes the
+                    // decorators into consideration when filtering.
+                    if item.filter_text.as_deref().unwrap_or("").is_empty() {
+                        item.filter_text = item.insert_text.clone();
+                    }
+                }
+                contributed_data.push(ranking_result.data().clone());
+            }
+            items.push(item);
         }
     }
     // see https://github.com/eclipse/eclipse.jdt.ls/issues/2669
@@ -488,6 +552,9 @@ pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: 
         container_types: container_types.clone(),
         source_level: unit.compiler_source(),
         template_scope: None,
+        items: Vec::new(),
+        completion_item_data: contributed_data,
+        common_data: HashMap::new(),
     });
 
     let unsupported = matches!(unit.file_name.as_str(), "module-info.java" | "package-info.java");
@@ -511,6 +578,9 @@ pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: 
             container_types: ContainerTypes::new(),
             source_level: unit.compiler_source(),
             template_scope: scope,
+            items: Vec::new(),
+            completion_item_data: Vec::new(),
+            common_data: HashMap::new(),
         });
         items.extend(snippet_items);
         items.extend(super::javadoc_proposal::type_definition_snippets(&unit, &context, &client, &defaults));
@@ -555,6 +625,9 @@ pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: 
     items.sort_by(|a, b| a.sort_text.as_deref().unwrap_or(&default_sort).cmp(b.sort_text.as_deref().unwrap_or(&default_sort)));
 
     // CompletionHandler.completion: onDidSelect command for items with resolve data.
+    set_items(&items);
+    let execution_time = start_time.elapsed().as_millis();
+    let mut last_request_id: Option<String> = None;
     for item in &mut items {
         let rid = item.data.as_ref().and_then(|d| d.get("rid")).and_then(Value::as_str).unwrap_or("").to_owned();
         let pid = item.data.as_ref().and_then(|d| d.get("pid")).and_then(Value::as_str).unwrap_or("").to_owned();
@@ -562,6 +635,17 @@ pub async fn completion(env: &Env, uri: &Url, position: Position, trigger_char: 
             continue;
         }
         item.command = Some(Command { title: String::new(), command: "java.completion.onDidSelect".into(), arguments: Some(vec![json!(rid), json!(pid)]) });
+        if last_request_id.as_deref() == Some(rid.as_str()) {
+            continue;
+        }
+        last_request_id = Some(rid.clone());
+        let (Ok(p_id), Ok(r_id)) = (pid.parse::<usize>(), rid.parse::<u64>()) else { continue };
+        match get(r_id) {
+            Some(response) if response.proposals.len() > p_id => {
+                set_common_data(r_id, super::ranking::COMPLETION_EXECUTION_TIME, execution_time.to_string());
+            }
+            _ => warn!("Failed to save common data for completion items."),
+        }
     }
     let _ = trigger_kind;
     List {
