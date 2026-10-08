@@ -37,3 +37,41 @@ pub async fn convert_for_loop_proposal(env: &Env<'_>, ctx: &Context, node: Node<
     out.push(Proposal::new(label, kind::REFACTOR, relevance::CONVERT_FOR_LOOP_TO_ENHANCED, super::Change::Cu(vec![CuChange::rewrite(cu.rewrite).with_imports(cu.imports)])));
     true
 }
+
+/// `RefactorProcessor.getClassInstanceCreation`.
+pub fn class_instance_creation(node: Node<'_>) -> Option<Node<'_>> {
+    let mut node = node;
+    loop {
+        let climb = matches!(node.kind(), NodeKind::SimpleName | NodeKind::QualifiedName | NodeKind::ModuleQualifiedName | NodeKind::Dimension)
+            || node.kind().is_type()
+            || node.parent().is_some_and(|p| p.is(NodeKind::MethodDeclaration))
+            || (node.location_is("bodyDeclarations") && node.parent().is_some_and(|p| p.is(NodeKind::AnonymousClassDeclaration)));
+        if !climb {
+            break;
+        }
+        node = node.parent()?;
+    }
+    if node.is(NodeKind::ClassInstanceCreation) {
+        Some(node)
+    } else if node.location_is("anonymousClassDeclaration") {
+        node.parent()
+    } else {
+        None
+    }
+}
+
+/// `RefactorProcessor.getConvertAnonymousClassCreationsToLambdaProposals`.
+pub async fn convert_anonymous_to_lambda_proposal(env: &Env<'_>, ctx: &Context, covering: Node<'_>, out: &mut Vec<Proposal>) -> bool {
+    let Some(cic) = class_instance_creation(covering) else { return false };
+    let Some(removes_annotations) = crate::refactoring::lambda_fix::functional_anonymous(cic) else { return false };
+    let options = env.options(&ctx.ast.uri).await;
+    let mut cu = CuRewrite::new(&ctx.ast, &options);
+    crate::refactoring::lambda_fix::create_lambdas(&mut cu, &ctx.ast, &options, vec![cic], true);
+    let label = if removes_annotations {
+        messages::fix("LambdaExpressionsFix_convert_to_lambda_expression_removes_annotations")
+    } else {
+        messages::fix("LambdaExpressionsFix_convert_to_lambda_expression")
+    };
+    out.push(Proposal::new(label, kind::REFACTOR, relevance::CONVERT_TO_LAMBDA_EXPRESSION, super::Change::Cu(vec![cu.into_change()])));
+    true
+}

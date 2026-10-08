@@ -70,6 +70,7 @@ pub async fn refactor_proposals(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposa
     }
     proposals.extend(super::local_corrections::assignment_refactors(env, req).await);
     if no_errors_at_location(req, covering) {
+        super::convert_proposals::convert_anonymous_to_lambda_proposal(env, &req.context, covering, &mut proposals).await;
         super::convert_proposals::convert_for_loop_proposal(env, &req.context, covering, &mut proposals).await;
         super::inline::inline_proposals(env, &req.context, covering, &mut proposals).await;
     }
