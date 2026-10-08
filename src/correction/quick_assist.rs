@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod lambda;
+mod method_ref;
 mod util;
 
 use super::edit::Env;
@@ -43,6 +44,9 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
         lambda::remove_var_or_inferred_lambda_parameter_types(&req.context, covering, &mut proposals);
         lambda::change_lambda_body_to_block(&req.context, covering, &mut proposals);
         lambda::change_lambda_body_to_expression(&req.context, covering, &mut proposals);
+        method_ref::clean_up_lambda(&req.context, &options, covering, &mut proposals);
+        method_ref::convert_method_reference_to_lambda(&req.context, covering, &mut proposals);
+        method_ref::convert_lambda_to_method_reference(&req.context, &options, covering, &mut proposals);
     }
     // jdt.ls offers "Add Javadoc comment" only for units backed by a file
     // (verified against 1.58.0 for a working copy of a nonexistent file);
