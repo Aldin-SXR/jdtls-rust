@@ -65,6 +65,8 @@ pub struct Model {
     pub compiler: BTreeMap<String, String>,
     pub compiler_args: Vec<String>,
     pub extra_sources: Vec<(String, bool)>,
+    /// `group:artifact:version` of a parent POM that cannot be resolved.
+    pub unresolved_parent: Option<String>,
 }
 
 fn child_text(node: roxmltree::Node, tag: &str) -> Option<String> {
@@ -367,6 +369,12 @@ impl Resolver {
         });
 
         let mut m = parent_model.clone().unwrap_or_default();
+        if m.unresolved_parent.is_none() && parent_model.is_none() {
+            m.unresolved_parent = raw
+                .parent
+                .as_ref()
+                .map(|p| format!("{}:{}:{}", p.group, p.artifact, p.version));
+        }
         // Modules and build directories are not inherited.
         m.modules = raw.modules.clone();
         m.extra_sources = raw.extra_sources.clone();
@@ -803,6 +811,97 @@ pub struct MavenSettings {
     pub user_settings: Option<PathBuf>,
     /// `java.configuration.maven.globalSettings`.
     pub global_settings: Option<PathBuf>,
+}
+
+/// The modules of the effective model of `pom`, `<modules>` plus those of
+/// the active profiles (`IMavenProjectFacade.getMavenProjectModules()`).
+pub fn active_modules(pom: &Path, selected_profiles: &str) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(pom) else {
+        return Vec::new();
+    };
+    let Ok(doc) = roxmltree::Document::parse(&text) else {
+        return Vec::new();
+    };
+    let selected: Vec<&str> = selected_profiles
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    let modules_of = |node: roxmltree::Node| -> Vec<String> {
+        node.children()
+            .filter(|n| n.has_tag_name("modules"))
+            .flat_map(|n| n.children().filter(|c| c.has_tag_name("module")))
+            .filter_map(|c| c.text().map(|t| t.trim().to_owned()))
+            .collect()
+    };
+    let root = doc.root_element();
+    let mut modules = modules_of(root);
+    let profiles: Vec<roxmltree::Node> = root
+        .children()
+        .filter(|n| n.has_tag_name("profiles"))
+        .flat_map(|n| n.children().filter(|c| c.has_tag_name("profile")))
+        .collect();
+    let id_of = |p: &roxmltree::Node| child_text(*p, "id").unwrap_or_default();
+    let explicitly_active = profiles.iter().any(|p| selected.contains(&id_of(p).as_str()));
+    for profile in &profiles {
+        let id = id_of(profile);
+        let active_by_default = profile
+            .children()
+            .find(|n| n.has_tag_name("activation"))
+            .and_then(|a| child_text(a, "activeByDefault"))
+            .is_some_and(|v| v == "true");
+        let active = if selected.iter().any(|s| s.strip_prefix('!') == Some(id.as_str())) {
+            false
+        } else {
+            selected.contains(&id.as_str()) || (active_by_default && !explicitly_active)
+        };
+        if active {
+            for module in modules_of(*profile) {
+                if !modules.contains(&module) {
+                    modules.push(module);
+                }
+            }
+        }
+    }
+    modules
+}
+
+/// `MavenBuildSupport.collectProjects`: the names of `project` and, for a
+/// `pom` packaging, of the open Maven projects named like its modules.
+pub fn collect_projects(ws: &Workspace, project: &Project) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_into(ws, project, &mut Resolver::with_settings(&Default::default()), &mut out);
+    out
+}
+
+fn collect_into(ws: &Workspace, project: &Project, resolver: &mut Resolver, out: &mut Vec<String>) {
+    if !project.has_nature(super::MAVEN_NATURE) {
+        return;
+    }
+    if !out.contains(&project.name) {
+        out.push(project.name.clone());
+    }
+    let pom = project.location.join(POM_FILE);
+    let Some(model) = resolver
+        .model(&super::canonicalize_lenient(&pom))
+        .filter(|m| m.unresolved_parent.is_none())
+    else {
+        return;
+    };
+    if model.packaging != "pom" {
+        return;
+    }
+    for module in active_modules(&pom, &project.selected_profiles) {
+        if let Some(p) = ws
+            .projects
+            .iter()
+            .find(|p| p.name == module && p.location.join(POM_FILE).exists())
+        {
+            if p.has_nature(super::MAVEN_NATURE) && !out.contains(&p.name) {
+                collect_into(ws, p, resolver, out);
+            }
+        }
+    }
 }
 
 /// `pom.xml`.
