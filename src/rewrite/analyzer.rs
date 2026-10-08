@@ -152,11 +152,11 @@ impl<'a, 'f> Analyzer<'a, 'f> {
     // ── Infrastructure ──────────────────────────────────────────────────────
 
     fn start(&self, n: NodeId) -> i32 {
-        self.rw.ast.node(n).start() as i32
+        self.rw.node_range(n).0 as i32
     }
 
     fn length(&self, n: NodeId) -> i32 {
-        self.rw.ast.node(n).length() as i32
+        self.rw.node_range(n).1 as i32
     }
 
     fn end(&self, n: NodeId) -> i32 {
@@ -1092,11 +1092,12 @@ impl<'a, 'f> Analyzer<'a, 'f> {
                 self.rewrite_paragraph_list(node, "moduleDirectives", start_pos, indent, 0, 1)?;
             }
             Block => {
-                let collapsed = false;
+                // The internal placeholder of a range move is collapsed.
+                let collapsed = self.rw.synthetic(node).is_some();
                 let start_pos = if collapsed { self.start(node) } else { self.pos_after_left_brace(self.start(node))? };
                 let mut need_parent_indent = false;
-                let n = self.rw.ast.node(node);
-                if n.location_is("body") && n.parent().is_some_and(|p| p.kind() == TryStatement) {
+                let n = self.rw.ast.node(if collapsed { self.rw.ast.root().id } else { node });
+                if !collapsed && n.location_is("body") && n.parent().is_some_and(|p| p.kind() == TryStatement) {
                     let parent = n.parent().unwrap();
                     let resources = parent.list("resources");
                     if let Some(last) = resources.last() {
@@ -2641,8 +2642,9 @@ impl<'a, 'f> Analyzer<'a, 'f> {
         lr.start_pos = offset;
         lr.node_indent_pos = offset;
         lr.list = self.event(parent, prop).map(Event::children).unwrap_or_default();
-        let pnode = self.rw.ast.node(parent);
-        if pnode.location_is("body") && pnode.parent().is_some_and(|p| p.kind() == NodeKind::TryStatement) {
+        let synthetic = self.rw.synthetic(parent).is_some();
+        let pnode = self.rw.ast.node(if synthetic { self.rw.ast.root().id } else { parent });
+        if !synthetic && pnode.location_is("body") && pnode.parent().is_some_and(|p| p.kind() == NodeKind::TryStatement) {
             let try_parent = pnode.parent().unwrap();
             let resources = try_parent.list("resources");
             if let Some(last) = resources.last() {

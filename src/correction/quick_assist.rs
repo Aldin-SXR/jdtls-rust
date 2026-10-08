@@ -9,6 +9,7 @@ use super::handler::Request;
 use super::{kind, messages, relevance, Change, Context, CuChange, LazyChange, Proposal};
 use crate::refactoring::extract_constant::ExtractConstant;
 use crate::refactoring::extract_field::{self, ExtractField};
+use crate::refactoring::extract_method::ExtractMethod;
 use crate::refactoring::extract_temp::ExtractTemp;
 use crate::semantic_ast::{Ast, NodeKind};
 
@@ -17,6 +18,9 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
     let mut proposals = Vec::new();
     super::assign_to_field::assign_param_to_field_proposals(env, &req.context, &mut proposals)
         .await;
+    if let Some(p) = extract_method_from_lambda_proposal(env, &req.context, !req.locations.is_empty()).await {
+        proposals.push(p);
+    }
     if !req.locations.iter().any(|p| {
         matches!(
             p.problem_id,
@@ -39,6 +43,11 @@ pub async fn refactor_proposals(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposa
     if no_errors_at_location(req, covering) {
         let problems_at_location = !req.locations.is_empty();
         extract_variable_proposals(env, req, problems_at_location, &mut proposals).await;
+        let return_as_command = crate::features::preferences::extended_capability("advancedExtractRefactoringSupport");
+        let infer_selection = crate::features::preferences::extended_capability_list_contains("inferSelectionSupport", "extractMethod");
+        if let Some(p) = extract_method_proposal_for(env, &req.context, problems_at_location, return_as_command, infer_selection, Some(req.params)).await {
+            proposals.push(p);
+        }
         if let Some(p) = extract_field_proposal(env, req, problems_at_location).await {
             proposals.push(p);
         }
@@ -394,4 +403,225 @@ pub async fn extract_field_proposal_for(
     }
     let change = ExtractFieldChange { ast: ctx.ast.clone(), offset: ctx.selection_offset, length: ctx.selection_length, initialize_in: scope };
     Some(Proposal::new(label, kind::REFACTOR_EXTRACT_FIELD, relevance, Change::Lazy(Box::new(change))))
+}
+
+/// The `ExtractMethodRefactoring` behind an "Extract to method" proposal.
+pub struct ExtractMethodChange {
+    pub ast: Arc<Ast>,
+    pub offset: usize,
+    pub length: usize,
+    pub method_name: String,
+}
+
+impl ExtractMethodChange {
+    /// `createTextChange()`: the change and the `"name"` linked positions.
+    pub fn create(&self, options: BTreeMap<String, String>) -> (Vec<CuChange>, Vec<(crate::rewrite::RNode, i32)>) {
+        let mut r = ExtractMethod::new(self.ast.clone(), options, self.offset, self.length);
+        r.set_method_name(&self.method_name);
+        if r.check_initial_conditions().has_fatal_error() {
+            return (Vec::new(), Vec::new());
+        }
+        if r.check_final_conditions().has_fatal_error() {
+            return (Vec::new(), Vec::new());
+        }
+        let cu = r.create_change();
+        (vec![CuChange::rewrite(cu.rewrite).with_imports(cu.imports)], r.name_positions.clone())
+    }
+}
+
+#[tower_lsp::async_trait]
+impl LazyChange for ExtractMethodChange {
+    async fn compute(&self, env: &Env<'_>) -> anyhow::Result<Vec<CuChange>> {
+        let options = env.options(&self.ast.uri).await;
+        Ok(self.create(options).0)
+    }
+}
+
+/// `RefactorProposalUtility.getIndex(offset, statements)`.
+fn statement_index(offset: usize, statements: &[crate::semantic_ast::Node<'_>]) -> i64 {
+    for (i, s) in statements.iter().enumerate() {
+        if offset <= s.start() {
+            return i as i64;
+        }
+        if offset < s.end() {
+            return -1;
+        }
+    }
+    statements.len() as i64
+}
+
+/// `StringUtils.capitalize`.
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+/// `RefactorProposalUtility.proposeMethodNameHeuristic(context, coveringNode)`.
+fn propose_method_name_heuristic(ctx: &Context, covering: crate::semantic_ast::Node<'_>) -> String {
+    let ast = ctx.ast.clone();
+    let (sel_start, sel_end) = (ctx.selection_offset as i32, (ctx.selection_offset + ctx.selection_length) as i32);
+    let mut unused: Option<&crate::semantic_ast::AstProblem> = None;
+    for p in &ast.problems {
+        if p.id == crate::semantic_ast::problem::LocalVariableIsNeverUsed && p.source_start >= sel_start && p.source_end <= sel_end {
+            // `Stream.max`: the last of equal maxima wins.
+            if unused.is_none_or(|b| p.source_start - b.source_start >= 0) {
+                unused = Some(p);
+            }
+        }
+    }
+    if let Some(problem) = unused {
+        let finder = crate::semantic_ast::finder::NodeFinder::new(ast.root(), problem.source_start.max(0) as usize, (problem.source_end - problem.source_start).max(0) as usize);
+        if let Some(n) = finder.covering.filter(|n| n.is(NodeKind::SimpleName)) {
+            return format!("get{}", capitalize(&n.identifier()));
+        }
+    }
+    let selection = crate::refactoring::selection::Selection::from_start_length(ctx.selection_offset, ctx.selection_length);
+    let analyzer = crate::refactoring::selection::SelectionAnalyzer::analyze(selection, true, ast.root());
+    let mut var_decls: Vec<crate::semantic_ast::Node<'_>> = analyzer.selected_nodes(ast.root()).into_iter().filter(|n| n.is(NodeKind::VariableDeclarationStatement)).collect();
+    if var_decls.is_empty() && covering.is(NodeKind::VariableDeclarationStatement) {
+        var_decls.push(covering);
+    } else if covering.is(NodeKind::ExpressionStatement) {
+        if let Some(lhs) = covering.child("expression").filter(|e| e.is(NodeKind::Assignment)).and_then(|a| a.child("leftHandSide")) {
+            if lhs.is(NodeKind::SimpleName) {
+                return format!("get{}", capitalize(&lhs.identifier()));
+            }
+        }
+    }
+    if let Some(last) = var_decls.last() {
+        if let Some(name) = last.list("fragments").first().and_then(|f| f.child("name")) {
+            return format!("get{}", capitalize(&name.identifier()));
+        }
+    }
+    "extracted".to_owned()
+}
+
+/// `RefactorProposalUtility.getUniqueMethodName(astNode, suggestedName)`.
+fn unique_method_name(node: crate::semantic_ast::Node<'_>, suggested: &str) -> String {
+    let typ = std::iter::once(node).chain(node.ancestors()).find(|n| n.is(NodeKind::TypeDeclaration) || n.is(NodeKind::AnonymousClassDeclaration));
+    let Some(t) = typ.filter(|t| t.is(NodeKind::TypeDeclaration) && t.binding().is_some()) else { return suggested.to_owned() };
+    let methods: Vec<String> = t.list("bodyDeclarations").iter().filter(|d| d.is(NodeKind::MethodDeclaration)).filter_map(|d| d.child("name")).map(|n| n.identifier()).collect();
+    let mut postfix = 2;
+    let mut result = suggested.to_owned();
+    while postfix < 1000 {
+        if !methods.contains(&result) {
+            return result;
+        }
+        result = format!("{suggested}{postfix}");
+        postfix += 1;
+    }
+    suggested.to_owned()
+}
+
+/// `RefactorProposalUtility.getExtractMethodProposal(params, context,
+/// coveringNode, problemsAtLocation, formattingOptions, returnAsCommand,
+/// inferSelectionSupport)`.
+pub async fn extract_method_proposal_for(
+    env: &Env<'_>,
+    ctx: &Context,
+    problems_at_location: bool,
+    return_as_command: bool,
+    infer_selection: bool,
+    params: Option<&tower_lsp::lsp_types::CodeActionParams>,
+) -> Option<Proposal> {
+    let ast = ctx.ast.clone();
+    let options = env.options(&ast.uri).await;
+    extract_method_proposal_sync(ctx, options, problems_at_location, return_as_command, infer_selection, params)
+}
+
+fn extract_method_proposal_sync(
+    ctx: &Context,
+    options: BTreeMap<String, String>,
+    problems_at_location: bool,
+    return_as_command: bool,
+    infer_selection: bool,
+    params: Option<&tower_lsp::lsp_types::CodeActionParams>,
+) -> Option<Proposal> {
+    let ast = ctx.ast.clone();
+    let covering = ctx.covering_node()?;
+    if !(covering.kind().is_expression() || covering.kind().is_statement()) {
+        return None;
+    }
+    if covering.is(NodeKind::Block) {
+        let statements = covering.list("statements");
+        let start = statement_index(ctx.selection_offset, &statements);
+        if start == -1 {
+            return None;
+        }
+        let end = statement_index(ctx.selection_offset + ctx.selection_length, &statements);
+        if end == -1 || end <= start {
+            return None;
+        }
+    }
+    let suggested = propose_method_name_heuristic(ctx, covering);
+    let method_name = unique_method_name(covering, &suggested);
+    let label = messages::ls_correction("QuickAssistProcessor_extractmethod_description");
+    let relevance = if problems_at_location { relevance::EXTRACT_METHOD_ERROR } else { relevance::EXTRACT_METHOD };
+    let command = || {
+        Proposal::command(
+            label,
+            kind::REFACTOR_EXTRACT_FUNCTION,
+            relevance,
+            "java.action.applyRefactoringCommand",
+            vec![serde_json::json!("extractMethod"), serde_json::to_value(params).expect("serializable code action parameters")],
+        )
+    };
+    if ctx.selection_length == 0 {
+        if !infer_selection {
+            return None;
+        }
+        let mut parent = Some(covering);
+        while let Some(p) = parent.filter(|p| p.kind().is_expression()) {
+            if !p.is(NodeKind::ParenthesizedExpression) {
+                let mut r = ExtractMethod::new(ast.clone(), options.clone(), p.start(), p.length());
+                if r.check_initial_conditions().is_ok() {
+                    return Some(command());
+                }
+            }
+            parent = p.parent();
+        }
+        return None;
+    }
+    let mut r = ExtractMethod::new(ast.clone(), options, ctx.selection_offset, ctx.selection_length);
+    r.set_method_name(&method_name);
+    if !r.check_initial_conditions().is_ok() {
+        return None;
+    }
+    if return_as_command {
+        return Some(command());
+    }
+    let change = ExtractMethodChange { ast: ast.clone(), offset: ctx.selection_offset, length: ctx.selection_length, method_name };
+    Some(Proposal::new(label, kind::REFACTOR_EXTRACT_FUNCTION, relevance, Change::Lazy(Box::new(change))))
+}
+
+/// `QuickAssistProcessor.getExtractMethodFromLambdaProposal`.
+async fn extract_method_from_lambda_proposal(env: &Env<'_>, ctx: &Context, problems_at_location: bool) -> Option<Proposal> {
+    let options = env.options(&ctx.ast.uri).await;
+    let covering = ctx.covering_node()?;
+    if covering.is(NodeKind::Block) && covering.location_is("body") && covering.parent().is_some_and(|p| p.is(NodeKind::LambdaExpression)) {
+        return None;
+    }
+    let lambda = covering.ancestors().find(|a| a.is(NodeKind::LambdaExpression) || a.kind().is_body_declaration()).filter(|a| a.is(NodeKind::LambdaExpression))?;
+    let body = lambda.child("body")?;
+    let method_name = unique_method_name(covering, "extracted");
+    let mut r = ExtractMethod::new(ctx.ast.clone(), options, body.start(), body.length());
+    r.set_method_name(&method_name);
+    if !r.check_initial_conditions().is_ok() {
+        return None;
+    }
+    let label = messages::ls_correction("QuickAssistProcessor_extractmethod_from_lambda_description");
+    let relevance = if problems_at_location { relevance::EXTRACT_METHOD_ERROR } else { relevance::EXTRACT_LAMBDA_BODY_TO_METHOD };
+    let change = ExtractMethodChange { ast: ctx.ast.clone(), offset: body.start(), length: body.length(), method_name };
+    Some(Proposal::new(label, kind::QUICK_ASSIST, relevance, Change::Lazy(Box::new(change))))
+}
+
+/// The refactoring of `getExtractMethodProposal(..., returnAsCommand=false)`
+/// (`GetRefactorEditHandler`), when the proposal exists.
+pub fn extract_method_change(ctx: &Context, options: BTreeMap<String, String>, problems_at_location: bool) -> Option<ExtractMethodChange> {
+    extract_method_proposal_sync(ctx, options, problems_at_location, false, false, None)?;
+    let covering = ctx.covering_node()?;
+    let method_name = unique_method_name(covering, &propose_method_name_heuristic(ctx, covering));
+    Some(ExtractMethodChange { ast: ctx.ast.clone(), offset: ctx.selection_offset, length: ctx.selection_length, method_name })
 }

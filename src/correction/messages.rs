@@ -105,6 +105,8 @@ bundle!(LS_CORRECTION, ls_correction, "ls_correction.properties");
 bundle!(LS_ACTION, ls_action, "ls_action.properties");
 // jdt.ls `org.eclipse.jdt.ls.core.internal.corext.refactoring.RefactoringCoreMessages`.
 bundle!(LS_REFACTORING, ls_refactoring, "ls_refactoring.properties");
+// `org.eclipse.jdt.internal.core.manipulation.JavaManipulationMessages`.
+bundle!(MANIPULATION, manipulation, "manipulation.properties");
 // jdt.core.manipulation `org.eclipse.jdt.internal.ui.text.correction.CorrectionMessages`.
 bundle!(CORRECTION, correction, "correction.properties");
 // `org.eclipse.jdt.internal.corext.fix.FixMessages`.

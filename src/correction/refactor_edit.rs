@@ -69,6 +69,15 @@ pub async fn get_refactor_edit(env: &Env<'_>, params: Value) -> Option<Value> {
             let (cus, positions) = change.create(options);
             refactor_workspace_edit(env, &ast, cus, first_by_sequence_rank(&positions)).await
         }
+        "extractMethod" => {
+            if let Some((offset, length)) = to_selection_info(arguments.first()) {
+                ctx = Context::new(ast.clone(), offset, length);
+            }
+            let options = env.options(&ast.uri).await;
+            let change = super::quick_assist::extract_method_change(&ctx, options.clone(), problems_at_location)?;
+            let (cus, positions) = change.create(options);
+            refactor_workspace_edit(env, &ast, cus, first_by_sequence_rank(&positions)).await
+        }
         _ => None,
     }
 }
