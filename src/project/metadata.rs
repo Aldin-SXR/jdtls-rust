@@ -1,231 +1,340 @@
-//! Project metadata files (`.project`, `.classpath`, `.settings/*.prefs`) as
-//! jdt.ls' file system writes them: next to the project, or in the
-//! workspace's metadata area (`java.import.generatesMetadataFilesAtProjectRoot`).
+//! `JLSFsUtils` and the project metadata files (`.project`, `.classpath`,
+//! `.factorypath`, `.settings/*.prefs`) jdt.ls keeps for the projects it
+//! creates: at the project root, or in the workspace's metadata area when
+//! `java.import.generatesMetadataFilesAtProjectRoot` is false.
 
-use super::{ClasspathEntry, EntryKind, Project};
+use super::resource_filters::{ResourceFilters, CREATED_BY_JAVA_LANGUAGE_SERVER};
+use super::{classpath, prefs, EntryKind, Project, ProjectKind};
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetadataSettings {
-    /// `JLSFsUtils.generatesMetadataFilesAtProjectRoot()`.
-    pub at_project_root: bool,
-    /// `<workspace>/.metadata/.plugins/org.eclipse.core.resources/.projects`.
-    pub area: Option<PathBuf>,
+pub const GENERATES_METADATA_FILES_AT_PROJECT_ROOT: &str =
+    "java.import.generatesMetadataFilesAtProjectRoot";
+
+pub const JDT_CORE_PREFS_FILE: &str = "org.eclipse.jdt.core.prefs";
+
+const SETTINGS: &str = ".settings";
+const JDT_CORE_PREFS: &str = ".settings/org.eclipse.jdt.core.prefs";
+const M2E_CORE_PREFS: &str = ".settings/org.eclipse.m2e.core.prefs";
+const APT_CORE_PREFS: &str = ".settings/org.eclipse.jdt.apt.core.prefs";
+const RESOURCES_PREFS: &str = ".settings/org.eclipse.core.resources.prefs";
+const PROCESSOR_SERVICE: &str = "META-INF/services/javax.annotation.processing.Processor";
+
+static PROPERTY: Mutex<Option<String>> = Mutex::new(None);
+static AREA: Mutex<Option<PathBuf>> = Mutex::new(None);
+static RESOURCE_PATTERNS: Mutex<Option<ResourceFilters>> = Mutex::new(None);
+
+/// `System.setProperty` / `clearProperty` of `GENERATES_METADATA_FILES_AT_PROJECT_ROOT`.
+pub fn set_property(value: Option<String>) {
+    *PROPERTY.lock().unwrap_or_else(|e| e.into_inner()) = value;
 }
 
-impl Default for MetadataSettings {
-    fn default() -> Self {
-        Self {
-            at_project_root: true,
-            area: None,
-        }
+/// `JLSFsUtils.generatesMetadataFilesAtProjectRoot`.
+pub fn generates_metadata_files_at_project_root() -> bool {
+    match &*PROPERTY.lock().unwrap_or_else(|e| e.into_inner()) {
+        None => true,
+        Some(value) => value.eq_ignore_ascii_case("true"),
     }
 }
 
-pub const PROJECT_FILE: &str = ".project";
-pub const CLASSPATH_FILE: &str = ".classpath";
-pub const SETTINGS_DIR: &str = ".settings";
-pub const JDT_CORE_PREFS: &str = "org.eclipse.jdt.core.prefs";
-
-/// The metadata area of a jdt.ls workspace (`-data`) directory.
-pub fn metadata_area(data_dir: &Path) -> PathBuf {
-    data_dir.join(".metadata/.plugins/org.eclipse.core.resources/.projects")
+/// The folder holding the redirected files, one folder per project
+/// (`JLSFsUtils.METADATA_FOLDER_PATH`).
+pub fn set_metadata_area(workspace: &Path) {
+    *AREA.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+        workspace
+            .join(".metadata/.plugins/org.eclipse.core.resources/.projects"),
+    );
 }
 
-impl MetadataSettings {
-    /// Where the metadata file `relative` (`.project`, `.settings/x.prefs`) of
-    /// `project` lives (`JLSFsUtils.shouldStoreInMetadataArea`).
-    pub fn location(&self, project: &Project, relative: &str) -> PathBuf {
-        let at_root = project.location.join(relative);
-        let Some(area) = self.area.as_ref().filter(|_| !self.at_project_root) else {
-            return at_root;
-        };
-        if at_root.exists() {
-            return at_root;
-        }
-        if relative.ends_with(".prefs") && project.location.join(SETTINGS_DIR).exists() {
-            return at_root;
-        }
-        area.join(&project.name).join(relative)
+/// `JDTLSFilesystemActivator.setResourcePatterns`.
+pub fn set_resource_patterns(filters: Option<ResourceFilters>) {
+    *RESOURCE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner()) = filters;
+}
+
+/// `JLSFsUtils.isExcluded`.
+pub fn is_excluded(path: &Path) -> bool {
+    match &*RESOURCE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner()) {
+        Some(filters) => filters.is_filtered(Path::new("/"), path),
+        None => true,
     }
 }
 
-fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
-    if std::fs::read_to_string(path).ok().as_deref() == Some(content) {
+/// Where the metadata file `rel` (`.classpath`, `.settings/x.prefs`) of the
+/// project at `location` lives: at the root when it (or, for preferences,
+/// the `.settings` folder) already exists there, else in the metadata area
+/// unless files are generated at the root.
+pub fn resolve(location: &Path, name: &str, rel: &str) -> PathBuf {
+    let at_root = location.join(rel);
+    if generates_metadata_files_at_project_root() || at_root.exists() {
+        return at_root;
+    }
+    if rel.starts_with(".settings/") && location.join(SETTINGS).exists() {
+        return at_root;
+    }
+    match &*AREA.lock().unwrap_or_else(|e| e.into_inner()) {
+        Some(area) => area.join(name).join(rel),
+        None => at_root,
+    }
+}
+
+pub(crate) fn write_if_changed(path: &Path, content: &str) -> io::Result<()> {
+    if std::fs::read_to_string(path).is_ok_and(|existing| existing == content) {
         return Ok(());
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    let parent = path.parent().expect("metadata file has a parent");
+    std::fs::create_dir_all(parent)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(content.as_bytes())?;
+    file.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
+pub(crate) fn write_prefs(project: &Project, rel: &str, updates: BTreeMap<String, String>) -> io::Result<()> {
+    let path = resolve(&project.location, &project.name, rel);
+    let mut values = prefs::read_properties(&path).unwrap_or_default();
+    values.extend(updates);
+    values.insert("eclipse.preferences.version".into(), "1".into());
+    let mut text = String::new();
+    for (key, value) in &values {
+        text.push_str(&format!("{key}={value}\n"));
     }
-    std::fs::write(path, content)
+    write_if_changed(&path, &text)
 }
 
-fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+fn xml(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// `.project` of a Buildship-managed project.
-pub fn project_description(project: &Project, comment: &str, builders: &[&str], filter: &str) -> String {
-    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n");
-    s.push_str(&format!("\t<name>{}</name>\n", escape_xml(&project.name)));
-    s.push_str(&format!("\t<comment>{}</comment>\n", escape_xml(comment)));
-    s.push_str("\t<projects>\n\t</projects>\n\t<buildSpec>\n");
-    for b in builders {
-        s.push_str(&format!(
-            "\t\t<buildCommand>\n\t\t\t<name>{b}</name>\n\t\t\t<arguments>\n\t\t\t</arguments>\n\t\t</buildCommand>\n"
+fn project_description(project: &Project, filters: &ResourceFilters) -> String {
+    let mut builders = vec!["org.eclipse.jdt.core.javabuilder"];
+    if project.has_nature(super::MAVEN_NATURE) {
+        builders.push("org.eclipse.m2e.core.maven2Builder");
+    }
+    description(project, "", &builders, filters)
+}
+
+pub(crate) fn description(
+    project: &Project,
+    comment: &str,
+    builders: &[&str],
+    filters: &ResourceFilters,
+) -> String {
+    let mut text = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n");
+    text.push_str(&format!("\t<name>{}</name>\n\t<comment>{}</comment>\n\t<projects>\n\t</projects>\n", xml(&project.name), xml(comment)));
+    text.push_str("\t<buildSpec>\n");
+    for builder in builders {
+        text.push_str(&format!(
+            "\t\t<buildCommand>\n\t\t\t<name>{builder}</name>\n\t\t\t<arguments>\n\t\t\t</arguments>\n\t\t</buildCommand>\n"
         ));
     }
-    s.push_str("\t</buildSpec>\n\t<natures>\n");
-    for n in &project.natures {
-        s.push_str(&format!("\t\t<nature>{n}</nature>\n"));
+    text.push_str("\t</buildSpec>\n\t<natures>\n");
+    for nature in &project.natures {
+        text.push_str(&format!("\t\t<nature>{}</nature>\n", xml(nature)));
     }
-    s.push_str("\t</natures>\n");
-    if !filter.is_empty() {
+    text.push_str("\t</natures>\n");
+    if !filters.patterns().is_empty() {
         let id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
-        s.push_str(&format!(
+            .map(|d| d.as_millis())
+            .unwrap_or_default();
+        let arguments = format!("{}|{CREATED_BY_JAVA_LANGUAGE_SERVER}", filters.patterns().join("|"));
+        text.push_str(&format!(
             "\t<filteredResources>\n\t\t<filter>\n\t\t\t<id>{id}</id>\n\t\t\t<name></name>\n\t\t\t<type>30</type>\n\t\t\t<matcher>\n\t\t\t\t<id>org.eclipse.core.resources.regexFilterMatcher</id>\n\t\t\t\t<arguments>{}</arguments>\n\t\t\t</matcher>\n\t\t</filter>\n\t</filteredResources>\n",
-            escape_xml(filter)
+            xml(&arguments)
         ));
     }
-    s.push_str("</projectDescription>\n");
-    s
+    text.push_str("</projectDescription>\n");
+    text
 }
 
-fn relative(project: &Project, location: &Path) -> String {
-    location
-        .strip_prefix(&project.location)
-        .map(|r| r.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| location.to_string_lossy().into_owned())
+fn is_annotation_processor_jar(jar: &Path) -> bool {
+    super::jar::entry_names(jar).is_some_and(|names| names.iter().any(|n| n == PROCESSOR_SERVICE))
 }
 
-fn classpath_entry(project: &Project, e: &ClasspathEntry, out: &mut String) {
-    let mut attrs: Vec<(&str, String)> = Vec::new();
-    let kind = match e.kind {
-        EntryKind::Source => "src",
-        EntryKind::Library => "lib",
-        EntryKind::Project => "src",
-        EntryKind::Variable => "var",
-        EntryKind::Container => "con",
-    };
-    attrs.push(("kind", kind.to_owned()));
-    if !e.exclusions.is_empty() {
-        attrs.push(("excluding", e.exclusions.join("|")));
-    }
-    if e.exported {
-        attrs.push(("exported", "true".to_owned()));
-    }
-    if !e.inclusions.is_empty() {
-        attrs.push(("including", e.inclusions.join("|")));
-    }
-    if let Some(o) = &e.output {
-        attrs.push(("output", relative(project, o)));
-    }
-    let path = match (e.kind, &e.location) {
-        (EntryKind::Source, Some(l)) => relative(project, l),
-        _ => e.path.clone(),
-    };
-    attrs.push(("path", path));
-    attrs.sort_by(|a, b| a.0.cmp(b.0));
-    out.push_str("\t<classpathentry");
-    for (k, v) in &attrs {
-        out.push_str(&format!(" {k}=\"{}\"", escape_xml(v)));
-    }
-    if e.attributes.is_empty() {
-        out.push_str("/>\n");
-        return;
-    }
-    out.push_str(">\n\t\t<attributes>\n");
-    for (k, v) in &e.attributes {
-        out.push_str(&format!(
-            "\t\t\t<attribute name=\"{}\" value=\"{}\"/>\n",
-            escape_xml(k),
-            escape_xml(v)
+/// The jars m2e-apt puts on the factory path: the dependencies of the
+/// classpath container that are not test-scoped.
+fn factory_path_jars(project: &Project) -> Vec<PathBuf> {
+    project
+        .classpath
+        .iter()
+        .filter(|e| e.kind == EntryKind::Container && e.path == super::MAVEN_CONTAINER)
+        .flat_map(|c| &c.children)
+        .filter(|e| e.kind == EntryKind::Library && !e.is_test())
+        .filter_map(|e| e.location.clone())
+        .collect()
+}
+
+fn factory_path(jars: &[PathBuf]) -> String {
+    let repository = super::maven::local_repository();
+    let mut text = String::from("<factorypath>\n");
+    for jar in jars {
+        let id = match jar.strip_prefix(&repository) {
+            Ok(relative) => format!("M2_REPO/{}", relative.to_string_lossy().replace('\\', "/")),
+            Err(_) => jar.to_string_lossy().into_owned(),
+        };
+        let kind = if jar.starts_with(&repository) { "VARJAR" } else { "EXTJAR" };
+        text.push_str(&format!(
+            "    <factorypathentry kind=\"{kind}\" id=\"{}\" enabled=\"true\" runInBatchMode=\"false\"/>\n",
+            xml(&id)
         ));
     }
-    out.push_str("\t\t</attributes>\n\t</classpathentry>\n");
+    text.push_str("</factorypath>\n");
+    text
 }
 
-/// `.classpath` of a Java project: the raw classpath and the default output folder.
-pub fn classpath_file(project: &Project) -> String {
-    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<classpath>\n");
-    for e in &project.classpath {
-        let mut e = e.clone();
-        e.children.clear();
-        classpath_entry(project, &e, &mut s);
+fn persist_maven(project: &Project, filters: &ResourceFilters) -> io::Result<()> {
+    let name = &project.name;
+    let location = &project.location;
+    let description = resolve(location, name, ".project");
+    if !description.exists() {
+        write_if_changed(&description, &project_description(project, filters))?;
     }
-    if let Some(output) = &project.output {
-        s.push_str(&format!(
-            "\t<classpathentry kind=\"output\" path=\"{}\"/>\n",
-            escape_xml(&relative(project, output))
-        ));
+    let source = project.classpath.iter().any(|e| e.kind == EntryKind::Source);
+    if source {
+        write_if_changed(
+            &resolve(location, name, ".classpath"),
+            &classpath::formatted_classpath(project),
+        )?;
     }
-    s.push_str("</classpath>\n");
-    s
-}
 
-fn escape_property(s: &str, key: bool) -> String {
-    let mut out = String::with_capacity(s.len());
-    for (i, c) in s.chars().enumerate() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            ' ' if key || i == 0 => out.push_str("\\ "),
-            '=' | ':' | '#' | '!' => {
-                out.push('\\');
-                out.push(c);
-            }
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            c => out.push(c),
+    let mut compiler = BTreeMap::new();
+    for key in [
+        super::SOURCE,
+        super::COMPLIANCE,
+        super::TARGET,
+        super::RELEASE,
+        super::ENABLE_PREVIEW,
+        super::REPORT_PREVIEW,
+        "org.eclipse.jdt.core.compiler.problem.forbiddenReference",
+        "org.eclipse.jdt.core.compiler.codegen.methodParameters",
+        "org.eclipse.jdt.core.compiler.problem.missingSerialVersion",
+    ] {
+        if let Some(value) = project.options.get(key) {
+            compiler.insert(key.to_owned(), value.clone());
         }
     }
-    out
-}
+    let processors = factory_path_jars(project).iter().any(|jar| is_annotation_processor_jar(jar));
+    compiler.insert(
+        "org.eclipse.jdt.core.compiler.processAnnotations".into(),
+        if processors { "enabled" } else { "disabled" }.into(),
+    );
+    write_prefs(project, JDT_CORE_PREFS, compiler)?;
 
-/// An Eclipse preferences file (`EclipsePreferences.save`): sorted keys and `eclipse.preferences.version`.
-pub fn preferences_file(values: &BTreeMap<String, String>) -> String {
-    let mut all = values.clone();
-    all.insert("eclipse.preferences.version".to_owned(), "1".to_owned());
-    let mut s = String::new();
-    for (k, v) in &all {
-        s.push_str(&format!("{}={}\n", escape_property(k, true), escape_property(v, false)));
+    let mut m2e = BTreeMap::new();
+    m2e.insert("activeProfiles".to_owned(), project.selected_profiles.clone());
+    m2e.insert("resolveWorkspaceProjects".to_owned(), "true".to_owned());
+    m2e.insert("version".to_owned(), "1".to_owned());
+    write_prefs(project, M2E_CORE_PREFS, m2e)?;
+
+    let mut apt = BTreeMap::new();
+    apt.insert("org.eclipse.jdt.apt.aptEnabled".to_owned(), processors.to_string());
+    if processors {
+        apt.insert(
+            "org.eclipse.jdt.apt.genSrcDir".to_owned(),
+            "target/generated-sources/annotations".to_owned(),
+        );
+        apt.insert(
+            "org.eclipse.jdt.apt.genTestSrcDir".to_owned(),
+            "target/generated-test-sources/test-annotations".to_owned(),
+        );
+        write_if_changed(
+            &resolve(location, name, ".factorypath"),
+            &factory_path(&factory_path_jars(project)),
+        )?;
     }
-    s
+    write_prefs(project, APT_CORE_PREFS, apt)?;
+
+    if let Some(encoding) = &project.encoding {
+        let mut resources = BTreeMap::new();
+        resources.insert("encoding/<project>".to_owned(), encoding.clone());
+        if let Some(source) = project.source_folders.iter().find(|f| !f.is_test) {
+            if let Ok(relative) = source.path.strip_prefix(location) {
+                resources.insert(
+                    format!("encoding//{}", relative.to_string_lossy().replace('\\', "/")),
+                    encoding.clone(),
+                );
+            }
+        }
+        write_prefs(project, RESOURCES_PREFS, resources)?;
+    }
+    Ok(())
 }
 
-pub fn write_project_file(settings: &MetadataSettings, project: &Project, content: &str) -> std::io::Result<()> {
-    write_if_changed(&settings.location(project, PROJECT_FILE), content)
+fn persist_invisible(project: &Project) -> io::Result<()> {
+    let name = &project.name;
+    let location = &project.location;
+    std::fs::create_dir_all(location)?;
+    let mut compiler = BTreeMap::new();
+    compiler.insert(
+        super::ENABLE_PREVIEW.to_owned(),
+        project
+            .options
+            .get(super::ENABLE_PREVIEW)
+            .cloned()
+            .unwrap_or_else(|| "disabled".to_owned()),
+    );
+    write_prefs(project, JDT_CORE_PREFS, compiler)?;
+    let mut resources = BTreeMap::new();
+    resources.insert("encoding/<project>".to_owned(), "UTF-8".to_owned());
+    write_prefs(project, RESOURCES_PREFS, resources)?;
+    classpath::persist_invisible_files(project, &resolve(location, name, ".project"), &resolve(location, name, ".classpath"))
 }
 
-pub fn write_classpath_file(settings: &MetadataSettings, project: &Project) -> std::io::Result<()> {
-    write_if_changed(&settings.location(project, CLASSPATH_FILE), &classpath_file(project))
+/// Writes the metadata files of a project the importers created.
+pub fn persist(project: &Project, filters: &ResourceFilters) {
+    let result = match project.kind {
+        ProjectKind::Maven if project.is_java() => persist_maven(project, filters),
+        ProjectKind::Invisible => persist_invisible(project),
+        _ => Ok(()),
+    };
+    if let Err(error) = result {
+        tracing::warn!("Unable to write the metadata files of {}: {error}", project.name);
+    }
 }
 
-pub fn write_preferences(
-    settings: &MetadataSettings,
-    project: &Project,
-    file_name: &str,
-    values: &BTreeMap<String, String>,
-) -> std::io::Result<()> {
-    let relative = format!("{SETTINGS_DIR}/{file_name}");
-    write_if_changed(&settings.location(project, &relative), &preferences_file(values))
-}
+#[cfg(test)]
+mod jls_fs_utils_test {
+    use super::*;
 
-/// The preferences stored in the project's `.settings/<file_name>`.
-pub fn read_preferences(
-    settings: &MetadataSettings,
-    project: &Project,
-    file_name: &str,
-) -> BTreeMap<String, String> {
-    let relative = format!("{SETTINGS_DIR}/{file_name}");
-    let mut values = super::prefs::read_properties(&settings.location(project, &relative))
-        .unwrap_or_default();
-    values.remove("eclipse.preferences.version");
-    values
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    struct ClearProperty;
+    impl Drop for ClearProperty {
+        fn drop(&mut self) {
+            set_property(None);
+        }
+    }
+
+    fn guard() -> (std::sync::MutexGuard<'static, ()>, ClearProperty) {
+        (SERIAL.lock().unwrap_or_else(|e| e.into_inner()), ClearProperty)
+    }
+
+    #[test]
+    fn test_generates_metadata_files_at_project_root() {
+        let _guard = guard();
+        set_property(Some("true".into()));
+        assert!(generates_metadata_files_at_project_root());
+    }
+
+    #[test]
+    fn test_not_generates_metadata_files_at_project_root() {
+        let _guard = guard();
+        set_property(Some("false".into()));
+        assert!(!generates_metadata_files_at_project_root());
+    }
+
+    #[test]
+    fn test_generates_metadata_files_at_project_root_when_not_set() {
+        let _guard = guard();
+        assert!(generates_metadata_files_at_project_root());
+    }
+
+    #[test]
+    fn test_excluded() {
+        let _guard = guard();
+        let path = Path::new("/project/node_modules");
+        assert!(is_excluded(path));
+    }
 }

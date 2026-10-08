@@ -53,6 +53,9 @@ pub async fn refactor_proposals(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposa
     let Some(covering) = req.context.covering_node() else {
         return proposals;
     };
+    super::invert_boolean::inverse_condition_proposals(&req.context, covering, &mut proposals);
+    let advanced = crate::features::preferences::extended_capability("advancedExtractRefactoringSupport");
+    proposals.extend(super::invert_boolean::invert_variable_proposal(&req.context, covering, Some(req.params), advanced));
     if no_errors_at_location(req, covering) {
         let problems_at_location = !req.locations.is_empty();
         extract_variable_proposals(env, req, problems_at_location, &mut proposals).await;
@@ -66,6 +69,12 @@ pub async fn refactor_proposals(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposa
         }
     }
     proposals.extend(super::local_corrections::assignment_refactors(env, req).await);
+    if no_errors_at_location(req, covering) {
+        super::convert_proposals::convert_anonymous_to_lambda_proposal(env, &req.context, covering, &mut proposals).await;
+        super::convert_proposals::convert_lambda_to_anonymous_proposal(env, &req.context, covering, &mut proposals).await;
+        super::convert_proposals::convert_for_loop_proposal(env, &req.context, covering, &mut proposals).await;
+        super::inline::inline_proposals(env, &req.context, covering, &mut proposals).await;
+    }
     proposals
 }
 
@@ -257,6 +266,25 @@ async fn extract_variable_proposals(env: &Env<'_>, req: &Request<'_>, problems_a
             out.push(Proposal::new(label, what.kind(), relevance, Change::Lazy(Box::new(change))));
         }
     }
+}
+
+/// The change of `RefactorProposalUtility.getExtractVariableProposal` /
+/// `getExtractVariableAllOccurrenceProposal` / `getExtractConstantProposal`
+/// for a `java/getRefactorEdit` command (`None` without a proposal).
+pub fn extract_variable_change(command: &str, ctx: &Context, options: BTreeMap<String, String>) -> Option<Vec<CuChange>> {
+    let what = match command {
+        "extractVariableAllOccurrence" => Extract::AllOccurrences,
+        "extractVariable" => Extract::Variable,
+        "extractConstant" => Extract::Constant,
+        _ => return None,
+    };
+    if !supports_extract_variable(ctx) {
+        return None;
+    }
+    let decls_to_final = crate::features::preferences::add_final_for_new_declaration();
+    let set_final = (decls_to_final == "all" || decls_to_final == "variables") && what != Extract::Constant;
+    let (refactoring, ok) = ExtractRefactoring::create(what, &ctx.ast, options, ctx.selection_offset, ctx.selection_length, set_final);
+    ok.then(|| refactoring.create_change())
 }
 
 /// `RefactorProposalUtility.supportsExtractVariable`.

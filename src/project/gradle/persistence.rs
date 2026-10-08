@@ -1,7 +1,7 @@
 //! Buildship's persisted project models: a build whose scripts did not change
 //! since the models were saved need not be synchronized again.
 
-use crate::project::metadata::{self, MetadataSettings};
+use crate::project::metadata;
 use crate::project::{Project, Workspace, GRADLE_NATURE};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -28,24 +28,19 @@ pub fn save_models(ws: &Workspace, state: &Path) {
 }
 
 /// `GradleProjectImporter.shouldSynchronize(location)`.
-pub fn should_synchronize(
-    ws: &Workspace,
-    location: &Path,
-    state: &Path,
-    metadata: &MetadataSettings,
-) -> bool {
+pub fn should_synchronize(ws: &Workspace, location: &Path, state: &Path) -> bool {
     for p in ws.projects.iter().filter(|p| p.has_nature(GRADLE_NATURE)) {
         if p.location != location {
             continue;
         }
-        return check_persistence(p, state, metadata);
+        return check_persistence(p, state);
     }
     tracing::info!("No previous Gradle project at {}, it must be synchronized", location.display());
     true
 }
 
-fn check_persistence(project: &Project, state: &Path, metadata: &MetadataSettings) -> bool {
-    if project.is_java() && !metadata.location(project, metadata::CLASSPATH_FILE).exists() {
+fn check_persistence(project: &Project, state: &Path) -> bool {
+    if project.is_java() && !metadata::resolve(&project.location, &project.name, ".classpath").exists() {
         return true;
     }
     let Ok(persisted) = std::fs::metadata(model_file(state, project)).and_then(|m| m.modified())

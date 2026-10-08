@@ -176,11 +176,13 @@ pub fn try_load_invisible_project(
 /// folder, with the preview options reset to the JDT defaults
 /// (`ProjectUtils.createInvisibleProjectIfNotExist`).
 fn invisible_options(root: &Path) -> std::collections::BTreeMap<String, String> {
-    let mut options = super::project_prefs(root);
+    let mut options = std::collections::BTreeMap::new();
     if root.join(".settings").exists() {
         options.insert(super::ENABLE_PREVIEW.to_owned(), "disabled".to_owned());
         options.insert(super::REPORT_PREVIEW.to_owned(), "warning".to_owned());
     }
+    // The linked `.settings` folder supplies the project's preferences.
+    options.extend(super::project_prefs(root));
     options
 }
 

@@ -52,6 +52,7 @@ pub mod types {
     pub const TEXT: &str = "org.eclipse.core.resources.textmarker";
     /// `IJavaModelMarker.JAVA_MODEL_PROBLEM_MARKER`.
     pub const JAVA_MODEL_PROBLEM: &str = "org.eclipse.jdt.core.problem";
+    pub const NO_EXPLICIT_ENCODING: &str = "org.eclipse.core.resources.noExplicitEncoding";
     /// `IJavaModelMarker.TASK_MARKER`.
     pub const JAVA_TASK: &str = "org.eclipse.jdt.core.task";
     /// `IJavaModelMarker.BUILDPATH_PROBLEM_MARKER`.
@@ -67,6 +68,7 @@ pub mod types {
     pub fn supertypes(marker_type: &str) -> &'static [&'static str] {
         match marker_type {
             PROBLEM | TASK | TEXT => &[MARKER],
+            NO_EXPLICIT_ENCODING => &[PROBLEM],
             JAVA_MODEL_PROBLEM => &[PROBLEM, TEXT],
             JAVA_TASK => &[TASK, TEXT],
             BUILDPATH_PROBLEM => &[PROBLEM],
@@ -194,6 +196,37 @@ pub fn to_diagnostics_array(document: &dyn Document, markers: &[Option<&Marker>]
         .filter(|m| m.map_or(true, is_interesting))
         .filter_map(|m| to_diagnostic(document, (*m)?, tag_support))
         .collect()
+}
+
+fn is_ignored(marker: &Marker, ignore_project_encoding: bool) -> bool {
+    !marker.exists || (ignore_project_encoding && marker.marker_type == types::NO_EXPLICIT_ENCODING)
+}
+
+pub fn to_diagnostic_array(range: Range, markers: &[&Marker], tag_support: bool, ignore_project_encoding: bool) -> Vec<Diagnostic> {
+    markers
+        .iter()
+        .filter(|m| is_interesting(m))
+        .filter(|m| !is_ignored(m, ignore_project_encoding))
+        .map(|m| {
+            let mut d = to_diagnostic(&FixedRange(range), m, tag_support).expect("existing marker");
+            d.range = range;
+            d
+        })
+        .collect()
+}
+
+struct FixedRange(Range);
+
+impl Document for FixedRange {
+    fn get_line_offset(&self, _line: i64) -> Option<i64> {
+        Some(0)
+    }
+    fn get_char(&self, _offset: i64) -> Option<u16> {
+        None
+    }
+    fn to_line(&self, _offset: i64) -> Option<(u32, u32)> {
+        None
+    }
 }
 
 fn to_diagnostic(document: &dyn Document, marker: &Marker, tag_support: bool) -> Option<Diagnostic> {
@@ -438,5 +471,22 @@ mod workspace_diagnostics_handler_test {
         assert_eq!(95, r.start.character);
         assert_eq!(1, r.end.line);
         assert_eq!(100, r.end.character);
+    }
+
+    #[test]
+    fn test_encoding() {
+        let range = Range::default();
+        let marker = Marker::new(types::NO_EXPLICIT_ENCODING)
+            .with(attr::MESSAGE, "Project 'hello' has no explicit encoding set")
+            .with(attr::SEVERITY, severity::WARNING);
+        let mut preferences = crate::features::preferences::model::Preferences::default();
+
+        preferences.set_project_encoding(crate::features::preferences::model::ProjectEncodingMode::Ignore);
+        let ignore = preferences.get_project_encoding() == crate::features::preferences::model::ProjectEncodingMode::Ignore;
+        assert_eq!(0, to_diagnostic_array(range, &[&marker], false, ignore).len());
+
+        preferences.set_project_encoding(crate::features::preferences::model::ProjectEncodingMode::Warning);
+        let ignore = preferences.get_project_encoding() == crate::features::preferences::model::ProjectEncodingMode::Ignore;
+        assert_eq!(1, to_diagnostic_array(range, &[&marker], false, ignore).len());
     }
 }

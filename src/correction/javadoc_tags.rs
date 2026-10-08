@@ -522,7 +522,7 @@ fn type_qualified_name(binding: BindingRef<'_>) -> String {
 }
 
 /// `Bindings.findOverriddenMethod(overriding, testVisibility)`.
-fn find_overridden_method(overriding: BindingRef<'_>, test_visibility: bool) -> Option<BindingRef<'_>> {
+pub(crate) fn find_overridden_method(overriding: BindingRef<'_>, test_visibility: bool) -> Option<BindingRef<'_>> {
     fn in_hierarchy<'a>(t: BindingRef<'a>, method: BindingRef<'a>, seen: &mut HashSet<crate::semantic_ast::BindingId>) -> Option<BindingRef<'a>> {
         if !seen.insert(t.id) {
             return None;

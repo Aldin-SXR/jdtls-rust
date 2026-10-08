@@ -222,7 +222,7 @@ fn test_gradle_persistence() {
     assert!(!gradle_projects.is_empty());
     for p in &gradle_projects {
         assert!(
-            project::gradle::persistence::should_synchronize(&workspace, &p.location, &state, &settings.metadata),
+            project::gradle::persistence::should_synchronize(&workspace, &p.location, &state),
             "{} should synchronize",
             p.name
         );
@@ -230,7 +230,7 @@ fn test_gradle_persistence() {
     project::gradle::persistence::save_models(&workspace, &state);
     for p in &gradle_projects {
         assert!(
-            !project::gradle::persistence::should_synchronize(&workspace, &p.location, &state, &settings.metadata),
+            !project::gradle::persistence::should_synchronize(&workspace, &p.location, &state),
             "{} should not synchronize",
             p.name
         );
@@ -246,8 +246,7 @@ fn test_gradle_persistence() {
     assert!(project::gradle::persistence::should_synchronize(
         &workspace,
         &gradle1.location,
-        &state,
-        &settings.metadata
+        &state
     ));
 }
 

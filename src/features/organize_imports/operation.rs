@@ -709,6 +709,13 @@ pub(crate) fn type_import_references<'a>(root: Node<'a>) -> Vec<Node<'a>> {
     refs.types
 }
 
+/// `ImportReferencesCollector.collect(root, project, null, typeImports, staticImports)`.
+pub(crate) fn import_references<'a>(root: Node<'a>) -> (Vec<Node<'a>>, Vec<Node<'a>>) {
+    let mut refs = References::default();
+    refs.visit(root);
+    (refs.types, refs.statics)
+}
+
 /// Port of ImportReferencesCollector's ASTVisitor (whole compilation unit,
 /// including method bodies and Javadoc; no range restriction).
 #[derive(Default)]

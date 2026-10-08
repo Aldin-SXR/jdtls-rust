@@ -153,6 +153,7 @@ impl EcjProcess {
             | BridgeRequest::SemanticAst { id, .. }
             | BridgeRequest::FormatBatch { id, .. }
             | BridgeRequest::CompiledClasses { id, .. }
+            | BridgeRequest::ReferencedModules { id, .. }
             | BridgeRequest::Shutdown { id } => *id,
         };
 

@@ -89,14 +89,15 @@ pub fn java_project_from_uri(ws: &Workspace, uri: &str) -> Result<Project, Strin
         }
     }
     containers.sort_by_key(|(d, _)| *d);
-    // `JavaCore.create(project)` handles a non-Java project too: the loop
-    // ends with the last container's handle when none exists as a Java project.
-    let containers: Vec<&Project> = containers.into_iter().map(|(_, p)| p).collect();
+    // JavaCore.create(project) of the last container is returned even when it
+    // doesn't exist.
+    let fallback = containers.last().map(|(_, p)| *p);
     containers
         .iter()
+        .map(|(_, p)| *p)
         .find(|p| p.is_java())
-        .or(containers.last())
-        .map(|p| (*p).clone())
+        .or(fallback)
+        .cloned()
         .ok_or_else(|| "Given URI does not belong to any Java project.".to_owned())
 }
 
@@ -728,6 +729,7 @@ pub fn update_source_attachment(ws: &mut Workspace, class_file_uri: &str, attrib
         (None, Some(a)) => entry.attributes.push(a),
         (None, None) => {}
     }
+    project.derive_views();
     if let Err(e) = crate::project::classpath::persist_raw_classpath(project) {
         return error(format!("Update the ClasspathEntry to the project failure. Reason: \"{e}\""));
     }
@@ -1238,7 +1240,7 @@ pub fn update_project_settings(
             if project.selected_profiles == selected {
                 continue;
             }
-            crate::project::maven::write_resolver_configuration(&project.location, &selected)
+            crate::project::maven::write_resolver_configuration(&project.location, &project.name, &selected)
                 .map_err(|e| e.to_string())?;
             project.selected_profiles = selected;
             update.update_project = Some(project.name.clone());
@@ -1252,10 +1254,11 @@ pub fn update_project_settings(
         }
     }
     if !new_options.is_empty() {
-        let prefs = project
-            .location
-            .join(".settings")
-            .join("org.eclipse.jdt.core.prefs");
+        let prefs = crate::project::metadata::resolve(
+            &project.location,
+            &project.name,
+            ".settings/org.eclipse.jdt.core.prefs",
+        );
         let mut specific = crate::project::prefs::read_properties(&prefs).unwrap_or_default();
         specific.extend(new_options.clone());
         specific.insert("eclipse.preferences.version".into(), "1".into());
@@ -1269,4 +1272,39 @@ pub fn update_project_settings(
 /// `VmCommand.getAllVmInstalls()`.
 pub fn get_all_vm_installs(registry: &RuntimeRegistry) -> Value {
     Value::Array(registry.all_vm_installs())
+}
+
+#[cfg(test)]
+mod project_command_test {
+    use super::*;
+    use crate::project::{ImportSettings, Workspace};
+
+    fn copy_dir(from: &Path, to: &Path) {
+        for entry in walkdir::WalkDir::new(from).into_iter().flatten() {
+            let target = to.join(entry.path().strip_prefix(from).unwrap());
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(&target).unwrap();
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_update_source_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("salut2");
+        copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/projects/maven/salut2"), &root);
+        let mut ws = Workspace::import(&[root], &ImportSettings::jdtls_defaults());
+        let project = ws.projects.iter_mut().find(|p| p.name == "salut2").unwrap();
+
+        let source_and_output = [
+            ("src/main/java".to_owned(), Some("bin".to_owned())),
+            ("src/main/java/aaa".to_owned(), Some("bin".to_owned())),
+        ];
+        update_source_paths(project, &source_and_output).unwrap();
+
+        let new_source_paths = project.classpath.iter().filter(|e| e.kind == EntryKind::Source).count();
+        assert_eq!(2, new_source_paths);
+    }
 }

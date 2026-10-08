@@ -21,11 +21,20 @@ use super::{msg, status_code, Status};
 pub struct CuRewrite {
     pub rewrite: ASTRewrite,
     pub imports: ImportRewrite,
+    pub remover: super::import_remover::ImportRemover,
 }
 
 impl CuRewrite {
     pub fn new(ast: &Arc<Ast>, options: &BTreeMap<String, String>) -> Self {
-        CuRewrite { rewrite: ASTRewrite::new(ast.clone()), imports: ImportRewrite::create_for_corrections(ast.clone(), options) }
+        CuRewrite { rewrite: ASTRewrite::new(ast.clone()), imports: ImportRewrite::create_for_corrections(ast.clone(), options), remover: Default::default() }
+    }
+
+    /// `CompilationUnitRewrite.createChange`: removes the imports of removed nodes.
+    pub fn into_change(mut self) -> crate::correction::CuChange {
+        if self.remover.has_removed_nodes() {
+            self.remover.apply_removes(&self.rewrite.ast, &mut self.imports);
+        }
+        crate::correction::CuChange::rewrite(self.rewrite).with_imports(self.imports)
     }
 }
 

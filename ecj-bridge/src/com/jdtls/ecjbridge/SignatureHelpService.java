@@ -104,6 +104,11 @@ final class SignatureHelpService {
      */
     @SuppressWarnings("unchecked")
     static void injectSources(ASTParser parser, InMemorySourceClasspath sources) {
+        injectSources(parser, sources, true);
+    }
+
+    @SuppressWarnings("unchecked")
+    static void injectSources(ASTParser parser, InMemorySourceClasspath sources, boolean first) {
         try {
             Field f = ASTParser.class.getDeclaredField("unitResolver");
             f.setAccessible(true);
@@ -112,8 +117,13 @@ final class SignatureHelpService {
                 if (method.getName().equals("toCompilationUnit") && args != null && args.length > 3
                         && args[3] instanceof List<?> list) {
                     List<Object> cp = new ArrayList<>();
-                    cp.add(sources);
+                    if (first) {
+                        cp.add(sources);
+                    }
                     cp.addAll((List<Object>) list);
+                    if (!first) {
+                        cp.add(sources);
+                    }
                     args[3] = cp;
                 }
                 try {

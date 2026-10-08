@@ -8,6 +8,62 @@ use crate::project::{invisible, ImportSettings, ProjectKind, Workspace};
 use std::path::{Path, PathBuf};
 
 impl JavaLanguageServer {
+    /// `MavenSourceDownloader.discoverSource` for the library of the class
+    /// file `uri`: download its sources (waiting up to `MAX_TIME_MILLIS`) and
+    /// attach them to the projects using the library.
+    pub(crate) async fn discover_source(&self, uri: &str) {
+        use crate::project::source_discovery as discovery;
+        let mut changed = false;
+        let mut ws = self.workspace_snapshot();
+        for (jar, sources, javadoc) in discovery::take_completed() {
+            changed |= attach_downloaded(&mut ws, &jar, sources, javadoc);
+        }
+        if let Some((desc, class_file)) = crate::features::navigation::class_file_target(&ws, uri) {
+            let jar = PathBuf::from(&desc.root);
+            let discovers = match ws.project(&class_file.project).map(|p| p.kind) {
+                Some(ProjectKind::Gradle) => false,
+                Some(ProjectKind::Eclipse) => {
+                    crate::features::preferences::get_bool("java.eclipse.downloadSources").unwrap_or(false)
+                }
+                _ => true,
+            };
+            let attached = ws.projects.iter().any(|p| {
+                p.libraries.iter().any(|l| {
+                    l.path == jar && l.source.as_ref().is_some_and(|s| s.exists())
+                })
+            });
+            if discovers && desc.module.is_none() && !attached && jar.is_file() && discovery::first_request(&jar) {
+                let settings = self.current_import_settings().await;
+                let job = tokio::task::spawn_blocking(move || {
+                    let resolver = crate::project::maven::Resolver::with_settings(&settings.maven);
+                    let key = discovery::identify_in_local_repository(&jar, &resolver.local_repo)?;
+                    let download = |classifier: &str| {
+                        resolver.download_artifact(&key.group, &key.artifact, &key.version, Some(classifier), "jar")
+                    };
+                    let sources = download("sources");
+                    let javadoc = download("javadoc");
+                    discovery::complete(jar, sources, javadoc);
+                    Some(())
+                });
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(3000), job).await;
+                for (jar, sources, javadoc) in discovery::take_completed() {
+                    changed |= attach_downloaded(&mut ws, &jar, sources, javadoc);
+                }
+            }
+        }
+        if changed {
+            let _guard = self.import_lock.lock().await;
+            let mut current = self.workspace_snapshot();
+            for p in current.projects.iter_mut() {
+                if let Some(updated) = ws.project(&p.name) {
+                    p.classpath = updated.classpath.clone();
+                }
+                p.derive_views();
+            }
+            self.install_workspace(current).await;
+        }
+    }
+
     pub(crate) async fn change_source_path(&self, uri: String, add: bool) -> LspResult<Value> {
         let _guard = self.import_lock.lock().await;
         let mut ws = self.workspace_snapshot();
@@ -50,6 +106,7 @@ impl JavaLanguageServer {
     /// Install `ws` as the workspace model: register its source files, the
     /// file watchers, and rebuild.
     pub(crate) async fn install_workspace(&self, mut ws: Workspace) {
+        let previous = self.workspace_snapshot();
         let settings = self.current_import_settings().await;
         ws.configure_filters(&settings.resource_filters);
         if let Some(registry) = &settings.runtime_registry {
@@ -71,6 +128,7 @@ impl JavaLanguageServer {
             .unwrap_or_else(|e| e.into_inner()) = ws;
         if self.service_ready.load(std::sync::atomic::Ordering::SeqCst) {
             self.register_watchers().await;
+            self.send_classpath_updates(&previous).await;
         }
         if self.legacy_diagnostics().await {
             self.request_compile();
@@ -82,6 +140,29 @@ impl JavaLanguageServer {
                 }
             }
         }
+    }
+
+    /// `ClasspathUpdateHandler.elementChanged`: the projects whose classpath
+    /// differs from `previous` are announced to the client.
+    pub(crate) async fn send_classpath_updates(&self, previous: &Workspace) {
+        let changed: Vec<PathBuf> = self
+            .workspace_snapshot()
+            .projects
+            .iter()
+            .filter(|p| previous.project(&p.name).is_some_and(|old| old.classpath != p.classpath))
+            .map(|p| p.root.clone())
+            .collect();
+        for root in changed {
+            let Ok(uri) = Url::from_directory_path(&root) else { continue };
+            let uri = uri.as_str().replacen("file:///", "file:/", 1);
+            self.send_event_notification(EventType::ClasspathUpdated, json!(uri)).await;
+        }
+    }
+
+    pub(crate) async fn send_event_notification(&self, event_type: EventType, data: Value) {
+        self.client
+            .send_notification::<EventNotification>(json!({ "eventType": event_type as i32, "data": data }))
+            .await;
     }
 
     /// The import settings with the trigger files opened since startup.
@@ -604,10 +685,120 @@ impl JavaLanguageServer {
         }
     }
 
+    /// `CreateModuleInfoHandler.createModuleInfo`: the URI of the created `module-info.java`.
+    pub(crate) async fn create_module_info(&self, project_uri: &str) -> Option<String> {
+        use crate::features::create_module_info as module_info;
+        let ws = self.workspace_snapshot();
+        let root = Url::parse(project_uri).ok().and_then(|u| crate::project::uri_to_path(&u));
+        let project = root
+            .and_then(|root| ws.all_projects().into_iter().find(|p| p.root == root || p.location == root))
+            .filter(|p| p.is_java());
+        let Some(project) = project else {
+            self.client.show_message(MessageType::ERROR, "The selected project is not a valid Java project.").await;
+            return None;
+        };
+        let project_dir = Url::from_directory_path(&project.root).ok()?;
+        let env = self.format_env().await;
+        let mut options = env.jdt_options(Some(&project_dir)).await;
+        drop(env);
+        // The workspace-wide `JavaCore` options carry the client's tab settings.
+        let mut tab_options = std::collections::BTreeMap::new();
+        crate::features::preferences::current().update_tab_size_insert_spaces(&mut tab_options);
+        for (key, value) in tab_options {
+            if !project.options.contains_key(&key) {
+                options.insert(key, value);
+            }
+        }
+        let compliance = options.get(crate::project::COMPLIANCE).cloned().unwrap_or_default();
+        if !module_info::is_9_or_higher(&compliance) {
+            let message = "The project source compliance must be 9 or higher to create module-info.java.";
+            self.client.show_message(MessageType::ERROR, message).await;
+            return None;
+        }
+        let roots: Vec<_> = project.source_folders.iter().map(|f| f.path.clone()).filter(|p| p.is_dir()).collect();
+        if roots.is_empty() {
+            self.client.show_message(MessageType::ERROR, "No source folder exists in the project.").await;
+            return None;
+        }
+        for root in &roots {
+            if root.join(module_info::MODULE_INFO_JAVA).is_file() {
+                let message = format!(
+                    "The module-info.java file already exists in the source folder \"{}\"",
+                    root.file_name().unwrap_or_default().to_string_lossy()
+                );
+                self.client.show_message(MessageType::ERROR, message).await;
+                return None;
+            }
+        }
+        let target = roots[0].join(module_info::MODULE_INFO_JAVA);
+
+        let packages: Vec<String> = roots.iter().flat_map(|r| module_info::packages_with_units(r)).collect();
+        let exported = module_info::java_hash_set_order(&packages);
+        let ctx = self.dispatcher.context_for_project_name(&project.name).await;
+        let required = match self
+            .dispatcher
+            .send_request(crate::analysis::semantic::BridgeRequest::ReferencedModules {
+                id: crate::analysis::semantic::ecj_process::next_id(),
+                files: ctx.files,
+                classpath: ctx.classpath,
+                source_level: ctx.source_level,
+                options: ctx.options,
+            })
+            .await
+        {
+            Ok(crate::analysis::semantic::BridgeResponse::ReferencedModules { modules, .. }) => modules,
+            _ => Vec::new(),
+        };
+        let delimiter = if cfg!(windows) { "\r\n" } else { "\n" };
+        let text = module_info::module_info_text(&module_info::module_name(&project.name), &exported, &required, delimiter);
+        let length = text.encode_utf16().count();
+        let formatted = match self
+            .dispatcher
+            .format_source(&text, crate::rewrite::formatter::K_MODULE_INFO, 0, length, delimiter, options)
+            .await
+        {
+            Ok(Some(edits)) => {
+                let mut units: Vec<u16> = text.encode_utf16().collect();
+                for edit in edits.iter().rev() {
+                    units.splice(edit.offset..edit.offset + edit.length, edit.text.encode_utf16());
+                }
+                String::from_utf16_lossy(&units)
+            }
+            _ => text,
+        };
+        std::fs::write(&target, formatted).ok()?;
+
+        let mut ws = self.workspace_snapshot();
+        if let Some(p) = ws.projects.iter_mut().find(|p| p.name == project.name) {
+            for entry in p.classpath.iter_mut().filter(|e| !matches!(e.kind, crate::project::EntryKind::Source)) {
+                match entry.attributes.iter_mut().find(|(name, _)| name == "module") {
+                    Some((_, value)) => *value = "true".to_owned(),
+                    None => entry.attributes.push(("module".to_owned(), "true".to_owned())),
+                }
+            }
+        }
+        self.install_workspace(ws).await;
+        Some(format!("file:{}", target.to_string_lossy()))
+    }
+
     /// `java/projectConfigurationsUpdate`.
     pub async fn project_configurations_update(&self, params: Value) {
         self.project_configuration_update(params).await;
     }
+}
+
+/// jdt.ls `language/eventNotification`.
+pub(crate) enum EventNotification {}
+
+impl tower_lsp::lsp_types::notification::Notification for EventNotification {
+    type Params = Value;
+    const METHOD: &'static str = "language/eventNotification";
+}
+
+/// jdt.ls `EventType`.
+#[derive(Clone, Copy)]
+pub(crate) enum EventType {
+    ClasspathUpdated = 100,
 }
 
 /// jdt.ls `language/actionableNotification`.
@@ -765,4 +956,33 @@ impl JavaLanguageServer {
             }
         }
     }
+}
+
+/// Attaches downloaded sources and Javadoc to every classpath entry of `jar`.
+fn attach_downloaded(ws: &mut Workspace, jar: &Path, sources: Option<PathBuf>, javadoc: Option<PathBuf>) -> bool {
+    fn visit(entries: &mut [crate::project::ClasspathEntry], jar: &Path, sources: &Option<PathBuf>, javadoc: &Option<PathBuf>) -> bool {
+        let mut changed = false;
+        for e in entries {
+            if e.location.as_deref() == Some(jar) {
+                if let Some(s) = sources.as_ref().filter(|_| e.source_attachment.is_none()) {
+                    e.source_attachment = Some(s.clone());
+                    changed = true;
+                }
+                if let Some(j) = javadoc.as_ref().filter(|_| e.attribute("javadoc_location").is_none()) {
+                    e.set_attribute("javadoc_location", &format!("jar:file:{}!/", j.to_string_lossy()));
+                    changed = true;
+                }
+            }
+            changed |= visit(&mut e.children, jar, sources, javadoc);
+        }
+        changed
+    }
+    let mut changed = false;
+    for p in ws.projects.iter_mut() {
+        if visit(&mut p.classpath, jar, &sources, &javadoc) {
+            p.derive_views();
+            changed = true;
+        }
+    }
+    changed
 }

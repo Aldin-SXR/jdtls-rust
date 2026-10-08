@@ -5,10 +5,6 @@ use std::path::PathBuf;
 /// The jdt.ls workspace directory (`-data <dir>` on the command line).
 pub static DATA_DIR: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
 
-/// `java.import.generatesMetadataFilesAtProjectRoot` (a `-D` launcher argument).
-pub static METADATA_AT_PROJECT_ROOT: once_cell::sync::OnceCell<bool> =
-    once_cell::sync::OnceCell::new();
-
 /// Parsed from LSP `initializationOptions`.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]

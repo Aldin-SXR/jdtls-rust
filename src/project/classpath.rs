@@ -23,6 +23,17 @@ fn relative(project: &Project, full: &str) -> String {
         .to_owned()
 }
 
+/// JDT's `sourcepath`: the workspace full path (`/project/lib/a-src.jar`)
+/// of a file inside the project, the absolute path of any other file.
+fn source_attachment_path(project: &Project, path: &Path) -> String {
+    match path.strip_prefix(&project.location) {
+        Ok(relative) if project.kind != ProjectKind::Invisible => {
+            format!("/{}/{}", project.name, relative.to_string_lossy().replace('\\', "/"))
+        }
+        _ => location(project, path),
+    }
+}
+
 fn location(project: &Project, path: &Path) -> String {
     if project.kind == ProjectKind::Invisible {
         if let Ok(relative) = path.strip_prefix(&project.root) {
@@ -64,7 +75,7 @@ fn entry_xml(project: &Project, entry: &ClasspathEntry) -> String {
     if let Some(source) = &entry.source_attachment {
         text.push_str(&format!(
             " sourcepath=\"{}\"",
-            xml(&source_attachment_path(project, source))
+            xml(&location(project, source))
         ));
     }
     if entry.exported {
@@ -84,17 +95,6 @@ fn entry_xml(project: &Project, entry: &ClasspathEntry) -> String {
         text.push_str("</attributes></classpathentry>");
     }
     text
-}
-
-/// JDT's `sourcepath`: the workspace full path (`/project/lib/a-src.jar`)
-/// of a file inside the project, the absolute path of any other file.
-fn source_attachment_path(project: &Project, path: &Path) -> String {
-    match path.strip_prefix(&project.location) {
-        Ok(relative) if project.kind != ProjectKind::Invisible => {
-            format!("/{}/{}", project.name, relative.to_string_lossy().replace('\\', "/"))
-        }
-        _ => location(project, path),
-    }
 }
 
 fn initial_classpath(project: &Project) -> String {
@@ -230,36 +230,113 @@ pub fn persist_raw_classpath(project: &Project) -> io::Result<()> {
     if project.kind == ProjectKind::Default {
         return Ok(());
     }
-    std::fs::create_dir_all(&project.location)?;
-    write_atomic(&project.location.join(".classpath"), &initial_classpath(project))
+    let path = super::metadata::resolve(&project.location, &project.name, ".classpath");
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    write_atomic(&path, &initial_classpath(project))
+}
+
+/// The `.classpath` JDT writes: tab-indented, attributes in alphabetical order.
+pub(crate) fn formatted_classpath(project: &Project) -> String {
+    let mut text = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<classpath>\n".to_owned();
+    for entry in &project.classpath {
+        let kind = match entry.kind {
+            EntryKind::Source | EntryKind::Project => "src",
+            EntryKind::Library => "lib",
+            EntryKind::Variable => "var",
+            EntryKind::Container => "con",
+        };
+        let path = match entry.kind {
+            EntryKind::Source | EntryKind::Library => relative(project, &entry.path),
+            _ => entry.path.clone(),
+        };
+        let mut attributes: Vec<(&str, String)> = vec![("kind", kind.to_owned()), ("path", path)];
+        if !entry.inclusions.is_empty() {
+            attributes.push(("including", entry.inclusions.join("|")));
+        }
+        if !entry.exclusions.is_empty() {
+            attributes.push(("excluding", entry.exclusions.join("|")));
+        }
+        if let Some(output) = &entry.output {
+            attributes.push(("output", location(project, output)));
+        }
+        if let Some(source) = &entry.source_attachment {
+            attributes.push(("sourcepath", source_attachment_path(project, source)));
+        }
+        if entry.exported {
+            attributes.push(("exported", "true".to_owned()));
+        }
+        attributes.sort_by(|a, b| a.0.cmp(b.0));
+        let rendered: Vec<String> = attributes
+            .iter()
+            .map(|(name, value)| format!("{name}=\"{}\"", xml(value)))
+            .collect();
+        text.push_str(&format!("\t<classpathentry {}", rendered.join(" ")));
+        if entry.attributes.is_empty() {
+            text.push_str("/>\n");
+        } else {
+            text.push_str(">\n\t\t<attributes>\n");
+            for (name, value) in &entry.attributes {
+                text.push_str(&format!(
+                    "\t\t\t<attribute name=\"{}\" value=\"{}\"/>\n",
+                    xml(name),
+                    xml(value)
+                ));
+            }
+            text.push_str("\t\t</attributes>\n\t</classpathentry>\n");
+        }
+    }
+    if let Some(output) = &project.output {
+        text.push_str(&format!(
+            "\t<classpathentry kind=\"output\" path=\"{}\"/>\n",
+            xml(&location(project, output))
+        ));
+    }
+    text.push_str("</classpath>\n");
+    text
+}
+
+/// Creates the `.project` and `.classpath` of an invisible project unless
+/// they exist.
+pub(super) fn persist_invisible_files(project: &Project, description: &Path, classpath: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(project.location.join("bin"))?;
+    if !description.exists() {
+        std::fs::create_dir_all(description.parent().unwrap())?;
+        write_atomic(description, &invisible_description(project)?)?;
+    }
+    if !classpath.exists() {
+        std::fs::create_dir_all(classpath.parent().unwrap())?;
+        write_atomic(classpath, &initial_classpath(project))?;
+    }
+    Ok(())
+}
+
+fn invisible_description(project: &Project) -> io::Result<String> {
+    let uri = tower_lsp::lsp_types::Url::from_directory_path(&project.root)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid workspace folder"))?;
+    let natures: String = project
+        .natures
+        .iter()
+        .map(|n| format!("<nature>{}</nature>", xml(n)))
+        .collect();
+    Ok(format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription><name>{}</name><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name><arguments/></buildCommand></buildSpec><natures>{natures}</natures><linkedResources><link><name>{WORKSPACE_LINK}</name><type>2</type><locationURI>{}</locationURI></link></linkedResources></projectDescription>\n", xml(&project.name), xml(uri.as_str())))
 }
 
 /// Write the project metadata JDT would create, then commit its raw classpath.
 /// No source file or source folder is created as part of this operation.
 pub fn persist_sources(project: &Project) -> io::Result<()> {
     if project.kind == ProjectKind::Invisible {
-        std::fs::create_dir_all(&project.location)?;
-        std::fs::create_dir_all(project.location.join("bin"))?;
-        let path = project.location.join(".project");
-        if !path.exists() {
-            let uri =
-                tower_lsp::lsp_types::Url::from_directory_path(&project.root).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "Invalid workspace folder")
-                })?;
-            let natures: String = project
-                .natures
-                .iter()
-                .map(|n| format!("<nature>{}</nature>", xml(n)))
-                .collect();
-            let description = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription><name>{}</name><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name><arguments/></buildCommand></buildSpec><natures>{natures}</natures><linkedResources><link><name>{WORKSPACE_LINK}</name><type>2</type><locationURI>{}</locationURI></link></linkedResources></projectDescription>\n", xml(&project.name), xml(uri.as_str()));
-            write_atomic(&path, &description)?;
-        }
+        persist_invisible_files(
+            project,
+            &super::metadata::resolve(&project.location, &project.name, ".project"),
+            &super::metadata::resolve(&project.location, &project.name, ".classpath"),
+        )?;
     }
-    let path = project.location.join(".classpath");
+    let path = super::metadata::resolve(&project.location, &project.name, ".classpath");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => updated_classpath(&text, project)?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => initial_classpath(project),
         Err(e) => return Err(e),
     };
+    std::fs::create_dir_all(path.parent().unwrap())?;
     write_atomic(&path, &text)
 }

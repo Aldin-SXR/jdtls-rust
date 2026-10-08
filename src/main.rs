@@ -36,12 +36,14 @@ async fn main() {
         }
     }
 
-    if let Some(value) = args
-        .iter()
-        .find_map(|a| a.strip_prefix("-Djava.import.generatesMetadataFilesAtProjectRoot="))
-    {
-        let _ = config::METADATA_AT_PROJECT_ROOT.set(value.eq_ignore_ascii_case("true"));
+    for arg in &args {
+        if let Some((key, value)) = arg.strip_prefix("-D").and_then(|a| a.split_once('=')) {
+            if key == project::metadata::GENERATES_METADATA_FILES_AT_PROJECT_ROOT {
+                project::metadata::set_property(Some(value.to_owned()));
+            }
+        }
     }
+    project::metadata::set_metadata_area(&server::data_dir());
 
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
@@ -102,6 +104,7 @@ async fn main() {
             "java/addOverridableMethods",
             JavaLanguageServer::add_overridable_methods,
         )
+        .custom_method("java/findLinks", JavaLanguageServer::find_links)
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
         .custom_method("java/buildWorkspace", JavaLanguageServer::build_workspace)
         .custom_method("java/buildProjects", JavaLanguageServer::build_projects)

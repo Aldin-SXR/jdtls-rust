@@ -291,7 +291,8 @@ pub struct Workspace {
     pub settings: Value,
     pub init_options: Value,
     pub capabilities: Value,
-    /// JVM properties set directly by the upstream test (oracle only).
+    /// JVM properties set directly by the upstream test; the server under
+    /// test receives the `-D` ones as arguments.
     pub oracle_java_options: Vec<String>,
     /// Isolated oracle product with test-only extensions, when needed.
     pub oracle_home: Option<PathBuf>,
@@ -436,6 +437,46 @@ impl Workspace {
         }
     }
 
+    /// `IJavaProject.setOption`.
+    pub fn set_project_option(&mut self, root: &Path, key: &str, value: &str) {
+        let prefs = root.join(".settings").join("org.eclipse.jdt.core.prefs");
+        let mut options = BTreeMap::new();
+        for line in std::fs::read_to_string(&prefs).unwrap_or_default().lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                if k != "eclipse.preferences.version" {
+                    options.insert(k.to_owned(), v.replace("\\n", "\n").replace("\\\\", "\\"));
+                }
+            }
+        }
+        options.insert(key.to_owned(), value.to_owned());
+        self.set_project_options(root, &options);
+    }
+
+    /// `JavaProjectHelper.addToClasspath(project, JavaCore.newProjectEntry(..))`.
+    pub fn add_project_dependency(&mut self, root: &Path, project: &str, module: bool) {
+        assert!(self.client.is_none(), "add dependencies before the server starts");
+        let path = root.join(".classpath");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        let end = text.rfind("</classpath>").unwrap();
+        let attributes = if module { "<attributes><attribute name=\"module\" value=\"true\"/></attributes>" } else { "" };
+        text.insert_str(end, &format!("\t<classpathentry combineaccessrules=\"false\" kind=\"src\" path=\"/{project}\">{attributes}</classpathentry>\n"));
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// `JavaProjectHelper.addLibrary`: a library jar copied into the project.
+    pub fn add_library(&mut self, root: &Path, jar: &Path) {
+        assert!(self.client.is_none(), "add libraries before the server starts");
+        let lib = root.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let name = jar.file_name().unwrap().to_string_lossy().into_owned();
+        std::fs::copy(jar, lib.join(&name)).unwrap();
+        let path = root.join(".classpath");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        let end = text.rfind("</classpath>").unwrap();
+        text.insert_str(end, &format!("\t<classpathentry kind=\"lib\" path=\"lib/{name}\"/>\n"));
+        std::fs::write(path, text).unwrap();
+    }
+
     /// `IPackageFragment.createCompilationUnit`: write a source file into
     /// `<project>/<source folder>/<package path>/<name>` and tell the server.
     pub fn create_cu(
@@ -478,6 +519,13 @@ impl Workspace {
             "workspace/executeCommand",
             json!({ "command": "java.project.getAll", "arguments": [] }),
         );
+    }
+
+    /// Start the server and wait until the initial project build and the
+    /// settings it triggers (null analysis options, ...) have been applied.
+    pub fn wait_projects_built(&mut self) {
+        self.wait_idle();
+        self.client().settle(Duration::from_secs(4), Duration::from_secs(60));
     }
 
     /// Start the server (if needed) and return the client.
@@ -930,15 +978,14 @@ fn project_name_of(dir: &Path) -> Option<String> {
         }
     }
     if let Ok(s) = std::fs::read_to_string(dir.join("pom.xml")) {
-        // artifactId directly under <project> (skip the <parent> block).
-        let without_parent = match (s.find("<parent>"), s.find("</parent>")) {
-            (Some(a), Some(b)) if a < b => format!("{}{}", &s[..a], &s[b..]),
-            _ => s.clone(),
-        };
-        if let Some(start) = without_parent.find("<artifactId>") {
-            let rest = &without_parent[start + 12..];
-            if let Some(end) = rest.find("</artifactId>") {
-                return Some(rest[..end].trim().to_owned());
+        if let Ok(doc) = roxmltree::Document::parse(&s) {
+            let artifact = doc
+                .root_element()
+                .children()
+                .find(|n| n.has_tag_name("artifactId"))
+                .and_then(|n| n.text());
+            if let Some(artifact) = artifact {
+                return Some(artifact.trim().to_owned());
             }
         }
     }

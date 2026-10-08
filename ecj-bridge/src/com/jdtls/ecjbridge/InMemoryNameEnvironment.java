@@ -56,6 +56,14 @@ public class InMemoryNameEnvironment implements INameEnvironment {
     /** Binary class name (e.g. "com/example/Foo") → bytecode, built as we compile */
     private final Map<String, byte[]> compiledClasses = new ConcurrentHashMap<>();
 
+    /** Receives the module of every classpath type that is looked up (see {@link #recordModules}). */
+    private Set<String> moduleSink;
+
+    /** Record the modules of the classpath types the compiler asks for. */
+    public void recordModules(Set<String> sink) {
+        this.moduleSink = sink;
+    }
+
     /** Classpath entries sourced from the shared cache — never closed by this instance. */
     private final List<ClasspathEntry> classpathEntries;
 
@@ -198,12 +206,18 @@ public class InMemoryNameEnvironment implements INameEnvironment {
         }
 
         // 3. Classpath entries (JDK + user JARs)
+        NameEnvironmentAnswer first = null;
         for (ClasspathEntry entry : classpathEntries) {
             NameEnvironmentAnswer answer = entry.findClass(binaryName);
-            if (answer != null) return answer;
+            if (answer == null) continue;
+            if (moduleSink == null) return answer;
+            if (first == null) first = answer;
+            // java.* packages cannot be defined by modules outside the platform.
+            String module = binaryName.startsWith("java/") && !(entry instanceof JrtClasspathEntry) ? null : entry.moduleName(binaryName);
+            if (module != null) moduleSink.add(module);
         }
 
-        return null;
+        return first;
     }
 
     private ICompilationUnit findSourceUnit(String binaryName) {
@@ -236,6 +250,8 @@ public class InMemoryNameEnvironment implements INameEnvironment {
         NameEnvironmentAnswer findClass(String binaryName);
         boolean isPackage(String packagePath);
         void close();
+        /** The module that defines {@code binaryName}: explicit, automatic or of the runtime image. */
+        default String moduleName(String binaryName) { return null; }
     }
 
     static class JarClasspathEntry implements ClasspathEntry {
@@ -263,6 +279,21 @@ public class InMemoryNameEnvironment implements INameEnvironment {
             } catch (IOException | ClassFormatException e) {
                 return null;
             }
+        }
+
+        private volatile String module;
+
+        @Override
+        public String moduleName(String binaryName) {
+            if (module == null) {
+                try {
+                    module = java.lang.module.ModuleFinder.of(jarFile.toPath()).findAll().stream()
+                        .findFirst().map(ref -> ref.descriptor().name()).orElse("");
+                } catch (RuntimeException e) {
+                    module = "";
+                }
+            }
+            return module.isEmpty() ? null : module;
         }
 
         @Override
@@ -341,6 +372,15 @@ public class InMemoryNameEnvironment implements INameEnvironment {
                         return null;
                     }
                 }
+            }
+            return null;
+        }
+
+        @Override
+        public String moduleName(String binaryName) {
+            String classFile = binaryName + ".class";
+            for (java.nio.file.Path module : moduleList) {
+                if (Files.exists(module.resolve(classFile))) return module.getFileName().toString();
             }
             return null;
         }

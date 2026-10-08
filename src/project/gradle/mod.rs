@@ -13,7 +13,7 @@ pub(crate) mod sha256;
 pub mod util;
 
 use super::detect::FileDetector;
-use super::metadata::{self, MetadataSettings};
+use super::metadata;
 use super::{
     compliance_options, normalize_java_version, ClasspathEntry, EntryKind, ImportSettings,
     Project, ProjectKind, Workspace,
@@ -199,7 +199,6 @@ fn existing_build_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn project_from_model(p: &model::ModelProject, settings: &ImportSettings) -> Project {
-    let metadata = &settings.metadata;
     let dir = super::canonicalize_lenient(&p.dir);
     let mut project = Project::new(&p.name, &dir, ProjectKind::Gradle);
     project.natures = p.natures.clone();
@@ -214,7 +213,13 @@ fn project_from_model(p: &model::ModelProject, settings: &ImportSettings) -> Pro
     }
     project.build_files = existing_build_files(&dir);
     if project.is_java() {
-        let mut options = metadata::read_preferences(metadata, &project, metadata::JDT_CORE_PREFS);
+        let mut options = super::prefs::read_properties(&metadata::resolve(
+            &dir,
+            &project.name,
+            &format!(".settings/{}", metadata::JDT_CORE_PREFS_FILE),
+        ))
+        .unwrap_or_default();
+        options.remove("eclipse.preferences.version");
         if let Some(java) = &p.java {
             if let Some(source) = java.source.as_deref().and_then(normalize_java_version) {
                 let target = java
@@ -350,16 +355,6 @@ fn write_metadata(
     settings: &ImportSettings,
 ) {
     let root = projects.first().map(|p| p.location.clone());
-    let filter = format!(
-        "{}|{}",
-        settings.resource_filters.patterns().join("|"),
-        super::resource_filters::CREATED_BY_JAVA_LANGUAGE_SERVER
-    );
-    let filter = if settings.resource_filters.patterns().is_empty() {
-        String::new()
-    } else {
-        filter
-    };
     for (p, project) in m.project.flatten().into_iter().zip(projects) {
         let mut builders: Vec<&str> = p
             .build_commands
@@ -370,13 +365,15 @@ fn write_metadata(
         builders.push("org.eclipse.buildship.core.gradleprojectbuilder");
         let comment = format!("Project {} created by Buildship.", project.name);
         let result = (|| -> std::io::Result<()> {
-            metadata::write_project_file(
-                &settings.metadata,
-                project,
-                &metadata::project_description(project, &comment, &builders, &filter),
+            metadata::write_if_changed(
+                &metadata::resolve(&project.location, &project.name, ".project"),
+                &metadata::description(project, &comment, &builders, &settings.resource_filters),
             )?;
             if project.is_java() {
-                metadata::write_classpath_file(&settings.metadata, project)?;
+                metadata::write_if_changed(
+                    &metadata::resolve(&project.location, &project.name, ".classpath"),
+                    &super::classpath::formatted_classpath(project),
+                )?;
                 write_compliance(project, settings)?;
             }
             let mut prefs: BTreeMap<String, String> = BTreeMap::new();
@@ -419,12 +416,7 @@ fn write_metadata(
                     relative_path(&project.location, root),
                 );
             }
-            metadata::write_preferences(
-                &settings.metadata,
-                project,
-                "org.eclipse.buildship.core.prefs",
-                &prefs,
-            )
+            metadata::write_prefs(project, ".settings/org.eclipse.buildship.core.prefs", prefs)
         })();
         if let Err(e) = result {
             tracing::warn!("Cannot write the metadata of {}: {e}", project.name);
@@ -434,19 +426,19 @@ fn write_metadata(
 
 /// The compliance settings that differ from the workspace default.
 fn write_compliance(project: &Project, settings: &ImportSettings) -> std::io::Result<()> {
-    let mut prefs = metadata::read_preferences(&settings.metadata, project, metadata::JDT_CORE_PREFS);
-    let default = settings.vm_version.clone().or_else(|| settings.default_compliance().into());
-    let mut changed = false;
-    for key in [super::COMPLIANCE, super::SOURCE, super::TARGET] {
-        if let Some(v) = project.options.get(key) {
-            if Some(v) != default.as_ref() && prefs.get(key) != Some(v) {
-                prefs.insert(key.to_owned(), v.clone());
-                changed = true;
-            }
-        }
+    let default = settings.vm_version.clone().unwrap_or_else(|| settings.default_compliance());
+    let updates: BTreeMap<String, String> = [super::COMPLIANCE, super::SOURCE, super::TARGET]
+        .into_iter()
+        .filter_map(|key| project.options.get(key).map(|v| (key, v)))
+        .filter(|(_, v)| **v != default)
+        .map(|(k, v)| (k.to_owned(), v.clone()))
+        .collect();
+    if updates.is_empty() {
+        return Ok(());
     }
-    if changed {
-        metadata::write_preferences(&settings.metadata, project, metadata::JDT_CORE_PREFS, &prefs)?;
-    }
-    Ok(())
+    metadata::write_prefs(
+        project,
+        &format!(".settings/{}", metadata::JDT_CORE_PREFS_FILE),
+        updates,
+    )
 }

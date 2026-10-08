@@ -304,6 +304,47 @@ pub fn can_remove_parentheses(expression: Node<'_>) -> bool {
         && !needs_parentheses(crate::semantic_ast::resolve::unparenthesed_expression(expression), parent, loc)
 }
 
+/// `needsParentheses(copy, parent, location)` for the placeholder
+/// `ASTRewrite.createCopyTarget` returns for an expression of `kind`: a new
+/// node with default operators and no bindings.
+pub fn needs_parentheses_placeholder<'a>(kind: NodeKind, parent: Node<'a>, location: &str) -> bool {
+    if !expression_type_needs_parentheses(kind) || !location_needs_parentheses(parent, location) {
+        return false;
+    }
+    if !parent.kind().is_expression() {
+        return true;
+    }
+    if kind == NodeKind::SwitchExpression {
+        return needs_parentheses_for_switch_expression(parent.kind());
+    }
+    if matches!(kind, NodeKind::PrefixExpression | NodeKind::PostfixExpression) && parent.is(NodeKind::MethodInvocation) && location == "expression" {
+        return true;
+    }
+    if kind == NodeKind::PrefixExpression {
+        return needs_parentheses_for_prefix(parent, "++");
+    }
+    if kind == NodeKind::ArrayCreation {
+        return parent.is(NodeKind::ArrayAccess);
+    }
+    let ep = expression_precedence_of(kind, Some("+"));
+    let pp = expression_precedence(parent);
+    if ep != pp {
+        return ep < pp;
+    }
+    if parent.is(NodeKind::InfixExpression) {
+        if location == "leftOperand" {
+            return false;
+        }
+        let op = parent.simple("operator").unwrap_or("");
+        let left = parent.child("leftOperand").and_then(|n| n.type_binding());
+        let right = parent.child("rightOperand").and_then(|n| n.type_binding());
+        let parent_type = parent.type_binding();
+        let same = all_operands_same_type(parent, left, right);
+        return !is_associative(op, parent_type, same) || (kind == NodeKind::InfixExpression && is_string_type(parent_type));
+    }
+    parent.is(NodeKind::ConditionalExpression) && location == "expression"
+}
+
 /// NecessaryParenthesesChecker for a newly constructed CastExpression.
 pub fn needs_parentheses_for_cast(expression: Node<'_>, primitive: bool) -> bool {
     if !expression_type_needs_parentheses(expression.kind()) {return false;}

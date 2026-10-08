@@ -23,6 +23,7 @@ pub mod null_analysis;
 pub mod prefs;
 pub mod resource_filters;
 pub mod runtime;
+pub mod source_discovery;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -203,6 +204,8 @@ pub struct Project {
     pub libraries: Vec<Library>,
     /// Derived from `classpath`: names of workspace projects this project depends on.
     pub project_deps: Vec<String>,
+    /// Derived from `classpath`: the project dependencies only test code sees.
+    pub test_project_deps: Vec<String>,
     /// JDT core options specific to this project (compliance, prefs file).
     pub options: BTreeMap<String, String>,
     /// Maven: the selected profiles (`org.eclipse.m2e.core.selectedProfiles`).
@@ -230,6 +233,7 @@ impl Project {
             source_folders: Vec::new(),
             libraries: Vec::new(),
             project_deps: Vec::new(),
+            test_project_deps: Vec::new(),
             options: BTreeMap::new(),
             selected_profiles: String::new(),
             resource_filters: resource_filters::ResourceFilters::default(),
@@ -245,7 +249,11 @@ impl Project {
         if let Some(e) = &self.encoding {
             return Some(e.clone());
         }
-        let prefs = prefs::read_properties(&self.location.join(".settings").join("org.eclipse.core.resources.prefs"))?;
+        let prefs = prefs::read_properties(&metadata::resolve(
+            &self.location,
+            &self.name,
+            ".settings/org.eclipse.core.resources.prefs",
+        ))?;
         prefs.get("encoding/<project>").filter(|e| !e.is_empty()).cloned()
     }
 
@@ -311,11 +319,13 @@ impl Project {
         let mut sources = Vec::new();
         let mut libs = Vec::new();
         let mut deps = Vec::new();
+        let mut main_deps = Vec::new();
         fn walk(
             entries: &[ClasspathEntry],
             sources: &mut Vec<SourceFolder>,
             libs: &mut Vec<Library>,
             deps: &mut Vec<String>,
+            main_deps: &mut Vec<String>,
         ) {
             for e in entries {
                 match e.kind {
@@ -342,18 +352,35 @@ impl Project {
                     }
                     EntryKind::Project => {
                         let name = e.path.trim_start_matches('/').to_owned();
+                        if !e.is_test() && !main_deps.contains(&name) {
+                            main_deps.push(name.clone());
+                        }
                         if !deps.contains(&name) {
                             deps.push(name);
                         }
                     }
-                    EntryKind::Container => walk(&e.children, sources, libs, deps),
+                    EntryKind::Container => walk(&e.children, sources, libs, deps, main_deps),
                 }
             }
         }
-        walk(&self.classpath, &mut sources, &mut libs, &mut deps);
+        walk(&self.classpath, &mut sources, &mut libs, &mut deps, &mut main_deps);
         self.source_folders = sources;
         self.libraries = libs;
+        self.test_project_deps = deps.iter().filter(|d| !main_deps.contains(d)).cloned().collect();
         self.project_deps = deps;
+    }
+
+    /// Whether the project separates test from main code (test-attributed
+    /// source folders, libraries or project dependencies).
+    pub fn has_test_scope(&self) -> bool {
+        self.source_folders.iter().any(|f| f.is_test)
+            || self.libraries.iter().any(|l| l.is_test)
+            || !self.test_project_deps.is_empty()
+    }
+
+    /// Whether `path` is in a source folder that is not a test source folder.
+    pub fn is_main_source(&self, path: &Path) -> bool {
+        self.source_folder_for(path).is_some_and(|f| !f.is_test)
     }
 
     pub fn source_folder_for(&self, path: &Path) -> Option<&SourceFolder> {
@@ -462,7 +489,6 @@ pub struct ImportSettings {
     pub null_analysis: null_analysis::NullAnalysisSettings,
     pub resource_filters: resource_filters::ResourceFilters,
     pub gradle: gradle::config::GradleSettings,
-    pub metadata: metadata::MetadataSettings,
 }
 
 impl ImportSettings {
@@ -490,7 +516,6 @@ impl ImportSettings {
             },
             resource_filters: resource_filters::ResourceFilters::jdtls_default(),
             gradle: gradle::config::GradleSettings::default(),
-            metadata: metadata::MetadataSettings::default(),
         }
     }
 
@@ -561,6 +586,7 @@ impl Workspace {
     }
 
     pub fn configure_filters(&mut self, filters: &resource_filters::ResourceFilters) {
+        metadata::set_resource_patterns(Some(filters.clone()));
         for project in &mut self.projects {
             if project.kind != ProjectKind::Default {
                 project.resource_filters = filters.clone();
@@ -616,6 +642,21 @@ impl Workspace {
             }
             for p in eclipse::import(root, settings, &ws, configs.as_deref()) {
                 ws.add(p);
+            }
+            // The workspace keeps an Eclipse project whose `.classpath` was
+            // deleted, without its Java nature (`ProjectUtils.removeJavaNatureAndBuilder`).
+            for p in previous.iter().flat_map(|w| &w.projects) {
+                if p.kind == ProjectKind::Eclipse
+                    && p.root.starts_with(root)
+                    && !ws.projects.iter().any(|q| q.location == p.location)
+                    && p.root.join(eclipse::DESCRIPTION_FILE).is_file()
+                    && !p.root.join(eclipse::CLASSPATH_FILE).exists()
+                {
+                    let mut kept = Project::new(&p.name, &p.root, ProjectKind::Eclipse);
+                    kept.natures = p.natures.iter().filter(|n| *n != JAVA_NATURE).cloned().collect();
+                    kept.build_files = vec![p.root.join(eclipse::DESCRIPTION_FILE)];
+                    ws.add(kept);
+                }
             }
             if let Some(prev) = previous.and_then(|w| {
                 w.projects
@@ -767,6 +808,30 @@ impl Workspace {
     pub fn project_for_uri(&self, uri: &Url) -> Option<&Project> {
         let path = uri_to_path(uri)?;
         self.project_for_path(&path)
+    }
+
+    /// `project` plus the transitive closure of its project dependencies as
+    /// `scope` sees them: dependencies of other projects never export their
+    /// test-only dependencies, and main code doesn't see `project`'s own.
+    pub fn project_closure_for_scope<'a>(&'a self, project: &'a Project, main_only: bool) -> Vec<&'a Project> {
+        let mut out = vec![project];
+        let mut seen: HashSet<&str> = HashSet::from([project.name.as_str()]);
+        let mut i = 0;
+        while i < out.len() {
+            let hide_tests = i > 0 || main_only;
+            for dep in &out[i].project_deps {
+                if hide_tests && out[i].test_project_deps.contains(dep) {
+                    continue;
+                }
+                if let Some(p) = self.project(dep) {
+                    if seen.insert(p.name.as_str()) {
+                        out.push(p);
+                    }
+                }
+            }
+            i += 1;
+        }
+        out
     }
 
     /// `project` plus the transitive closure of its project dependencies.
@@ -980,7 +1045,12 @@ pub fn jdtls_default_options() -> BTreeMap<String, String> {
 
 /// Read `<root>/.settings/org.eclipse.jdt.core.prefs` if present.
 pub(crate) fn project_prefs(root: &Path) -> BTreeMap<String, String> {
-    prefs::read_properties(&root.join(".settings").join("org.eclipse.jdt.core.prefs"))
+    project_prefs_of(root, "")
+}
+
+/// [`project_prefs`] of a project whose metadata files may be redirected.
+pub(crate) fn project_prefs_of(root: &Path, name: &str) -> BTreeMap<String, String> {
+    prefs::read_properties(&metadata::resolve(root, name, ".settings/org.eclipse.jdt.core.prefs"))
         .map(|mut m| {
             m.remove("eclipse.preferences.version");
             m
