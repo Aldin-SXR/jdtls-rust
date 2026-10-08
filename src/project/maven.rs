@@ -6,7 +6,7 @@
 use super::detect::FileDetector;
 use super::{
     compliance_options, normalize_java_version, project_prefs, source_attachment, ClasspathEntry,
-    EntryKind, ImportSettings, Project, ProjectKind, Workspace,
+    EntryKind, ImportSettings, Marker, Project, ProjectKind, Workspace,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -99,26 +99,30 @@ fn parse_dep(node: roxmltree::Node) -> Dep {
     }
 }
 
+/// Maven's pull parser accepts attributes that aren't separated by
+/// whitespace (`a="1"b="2"`), which XML forbids: the repaired text of a
+/// document that doesn't parse as it is.
+fn repaired_xml(text: &str) -> Option<String> {
+    static MISSING_SPACE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r#"(="[^"<>]*")([A-Za-z_][\w:.-]*=)"#).unwrap()
+    });
+    let mut fixed = text.to_owned();
+    loop {
+        let next = MISSING_SPACE.replace_all(&fixed, "$1 $2").into_owned();
+        if next == fixed {
+            break;
+        }
+        fixed = next;
+    }
+    (fixed != text).then_some(fixed)
+}
+
 pub fn parse_pom(text: &str) -> Option<RawPom> {
-    // Maven's pull parser accepts attributes that aren't separated by
-    // whitespace (`a="1"b="2"`), which XML forbids.
     let repaired;
     let doc = match roxmltree::Document::parse(text) {
         Ok(doc) => doc,
         Err(_) => {
-            static MISSING_SPACE: once_cell::sync::Lazy<regex::Regex> =
-                once_cell::sync::Lazy::new(|| {
-                    regex::Regex::new(r#"(="[^"<>]*")([A-Za-z_][\w:.-]*=)"#).unwrap()
-                });
-            let mut fixed = text.to_owned();
-            loop {
-                let next = MISSING_SPACE.replace_all(&fixed, "$1 $2").into_owned();
-                if next == fixed {
-                    break;
-                }
-                fixed = next;
-            }
-            repaired = fixed;
+            repaired = repaired_xml(text)?;
             roxmltree::Document::parse(&repaired).ok()?
         }
     };
@@ -1098,6 +1102,120 @@ pub fn write_resolver_configuration(dir: &Path, name: &str, selected_profiles: &
     super::prefs::write_properties(&path, &prefs)
 }
 
+const MISSING_VERSION_MOJO: &str = include_str!("m2e_missing_version.txt");
+
+/// The `<dependency>` of `group:artifact` in the pom `text`: the 0-based line
+/// and 1-based column of its start tag.
+fn dependency_position(text: &str, group: &str, artifact: &str) -> Option<(u32, u32)> {
+    let repaired;
+    let doc = match roxmltree::Document::parse(text) {
+        Ok(doc) => doc,
+        Err(_) => {
+            repaired = repaired_xml(text)?;
+            roxmltree::Document::parse(&repaired).ok()?
+        }
+    };
+    let node = doc
+        .root_element()
+        .children()
+        .filter(|n| n.has_tag_name("dependencies"))
+        .flat_map(|n| n.children().filter(|c| c.has_tag_name("dependency")))
+        .find(|n| {
+            child_text(*n, "groupId").as_deref() == Some(group)
+                && child_text(*n, "artifactId").as_deref() == Some(artifact)
+        })?;
+    let pos = doc.text_pos_at(node.range().start);
+    Some((pos.row - 1, pos.col))
+}
+
+/// The line holding the end of the `<project>` start tag and its length.
+fn root_tag_end_line(text: &str) -> (u32, u32) {
+    let repaired;
+    let text = match roxmltree::Document::parse(text) {
+        Ok(_) => text,
+        Err(_) => {
+            repaired = repaired_xml(text).unwrap_or_else(|| text.to_owned());
+            repaired.as_str()
+        }
+    };
+    let start = text.find("<project").unwrap_or(0);
+    let end = text[start..].find('>').map_or(start, |i| start + i);
+    let line = text[..end].matches('\n').count();
+    let line_text = text.lines().nth(line).unwrap_or("");
+    (line as u32, line_text.chars().count() as u32)
+}
+
+/// The markers m2e puts on the `pom.xml` of a project whose dependencies
+/// have no version or cannot be resolved.
+fn pom_markers(pom: &Path, model: &Model, missing_artifacts: &[Dep]) -> Vec<Marker> {
+    let Ok(text) = std::fs::read_to_string(pom) else {
+        return Vec::new();
+    };
+    let marker = |message: String, range: (u32, u32, u32)| Marker {
+        resource: Some(pom.to_path_buf()),
+        message,
+        severity: 1,
+        code: "0".to_owned(),
+        range: Some(range),
+        derived: false,
+    };
+    let mut out = Vec::new();
+    let missing_version: Vec<&Dep> = model
+        .deps
+        .iter()
+        .filter(|d| d.version.is_none() && d.scope.as_deref() != Some("import"))
+        .collect();
+    for dep in &missing_version {
+        let Some((line, column)) = dependency_position(&text, &dep.group, &dep.artifact) else {
+            continue;
+        };
+        out.push(marker(
+            format!(
+                "Project build error: 'dependencies.dependency.version' for {}:{}:{} is missing.",
+                dep.group,
+                dep.artifact,
+                dep.typ.as_deref().unwrap_or("jar")
+            ),
+            (line, 1, column + 11),
+        ));
+        let (root_line, root_length) = root_tag_end_line(&text);
+        for (goal, execution, phase) in [
+            ("resources", "default-resources", "process-resources"),
+            ("testResources", "default-testResources", "process-test-resources"),
+        ] {
+            out.push(marker(
+                MISSING_VERSION_MOJO
+                    .replace("{GOAL}", goal)
+                    .replace("{EXECUTION}", execution)
+                    .replace("{PHASE}", phase)
+                    .replace("{GROUP}", &dep.group)
+                    .replace("{ARTIFACT}", &dep.artifact),
+                (root_line, root_length.saturating_sub(8), root_length),
+            ));
+        }
+    }
+    for dep in missing_artifacts {
+        let Some((line, column)) = dependency_position(&text, &dep.group, &dep.artifact) else {
+            continue;
+        };
+        let classifier = match (dep.classifier.as_deref(), dep.typ.as_deref()) {
+            (Some(c), _) => format!(":{c}"),
+            (None, Some("test-jar")) => ":tests".to_owned(),
+            _ => String::new(),
+        };
+        out.push(marker(
+            format!(
+                "Missing artifact {}:{}:jar{classifier}:{}",
+                dep.group,
+                dep.artifact,
+                dep.version.as_deref().unwrap_or_default()
+            ),
+            (line, column, column + 11),
+        ));
+    }
+    out
+}
+
 fn to_project(
     dir: &Path,
     name: &str,
@@ -1214,6 +1332,7 @@ fn to_project(
     container
         .attributes
         .push(("maven.pomderived".into(), "true".into()));
+    let mut missing_artifacts: Vec<Dep> = Vec::new();
     for (dep, scope) in resolver.resolve(model) {
         if let Some(pname) = workspace.get(&(dep.group.clone(), dep.artifact.clone())) {
             let path = format!("/{pname}");
@@ -1251,7 +1370,33 @@ fn to_project(
             Some(j) => Some(j),
             None => resolver.download_artifact(&dep.group, &dep.artifact, v, classifier, "jar"),
         };
-        let Some(jar) = jar else { continue };
+        let jar = match jar {
+            Some(jar) => jar,
+            None => {
+                let expected = resolver
+                    .local_repo
+                    .join(super::download::artifact_path(&dep.group, &dep.artifact, v, classifier, "jar"));
+                if let Some(direct) = model
+                    .deps
+                    .iter()
+                    .find(|d| d.group == dep.group && d.artifact == dep.artifact)
+                {
+                    missing_artifacts.push(direct.clone());
+                }
+                let mut e = ClasspathEntry::new(EntryKind::Library, expected.to_string_lossy().into_owned());
+                e.attributes.push(("maven.groupId".into(), dep.group.clone()));
+                e.attributes.push(("maven.artifactId".into(), dep.artifact.clone()));
+                e.attributes.push(("maven.version".into(), v.to_owned()));
+                e.attributes.push(("maven.scope".into(), scope.clone()));
+                if scope == "test" {
+                    e.attributes.push(("test".into(), "true".into()));
+                }
+                e.attributes.push(("maven.pomderived".into(), "true".into()));
+                e.location = Some(expected);
+                container.children.push(e);
+                continue;
+            }
+        };
         let mut source = source_attachment(&jar);
         if source.is_none() && settings.maven.download_sources {
             source =
@@ -1284,6 +1429,9 @@ fn to_project(
         container.children.push(e);
     }
     project.classpath.push(container);
+    project
+        .markers
+        .extend(pom_markers(&dir.join(POM_FILE), model, &missing_artifacts));
 
     let options = compiler_options(model, dir, name, settings.vm_version.as_deref());
     project.options = options;
