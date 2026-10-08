@@ -460,6 +460,7 @@ pub struct ImportSettings {
     /// `java.compile.nullAnalysis.*`.
     pub null_analysis: null_analysis::NullAnalysisSettings,
     pub resource_filters: resource_filters::ResourceFilters,
+    pub gradle: gradle::config::GradleSettings,
 }
 
 impl ImportSettings {
@@ -486,6 +487,7 @@ impl ImportSettings {
                 ..Default::default()
             },
             resource_filters: resource_filters::ResourceFilters::jdtls_default(),
+            gradle: gradle::config::GradleSettings::default(),
         }
     }
 
@@ -1186,6 +1188,7 @@ impl ImportSettings {
     pub fn from_settings(settings: Option<&serde_json::Value>) -> Self {
         let mut s = Self::jdtls_defaults();
         let Some(c) = settings else { return s };
+        s.gradle = gradle::config::GradleSettings::from_settings(c);
         if let Some(ex) = pref_list(c, "java.import.exclusions") {
             s.exclusions = ex;
         }

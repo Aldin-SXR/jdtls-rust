@@ -369,6 +369,7 @@ impl JavaLanguageServer {
         let roots = self.roots.read().await.clone();
         let settings = self.current_import_settings().await;
         let previous = self.workspace_snapshot();
+        let gradle_progress = self.begin_gradle_import_progress(&roots, &settings).await;
         let import_progress = self.begin_maven_import_progress(&roots, &settings).await;
         let ws = tokio::task::spawn_blocking(move || {
             let mut ws = crate::project::Workspace::import_with_previous(
@@ -382,6 +383,7 @@ impl JavaLanguageServer {
         })
         .await
         .unwrap_or_default();
+        self.complete_gradle_import_progress(gradle_progress).await;
         self.complete_maven_import_progress(&ws, import_progress)
             .await;
         for p in &ws.projects {
@@ -2850,6 +2852,9 @@ fn import_settings(cfg: &Config) -> crate::project::ImportSettings {
     s.vm_home = vm_home(cfg);
     s.vm_version = s.vm_home.as_deref().and_then(crate::project::vm_version);
     s.runtime_registry = cfg.runtime_registry.clone();
+    s.gradle.default_vm = s.vm_home.clone();
+    s.gradle.launcher_java = s.vm_home.clone();
+    s.gradle.scripts_dir = Some(data_dir().join(".metadata/jdtls-rust/gradle"));
     s
 }
 

@@ -670,6 +670,48 @@ impl JavaLanguageServer {
         Some(id)
     }
 
+    pub(super) async fn begin_gradle_import_progress(
+        &self,
+        roots: &[PathBuf],
+        settings: &ImportSettings,
+    ) -> Option<String> {
+        if !settings.gradle_enabled
+            || !self
+                .config
+                .read()
+                .await
+                .extended_capability("progressReportProvider")
+        {
+            return None;
+        }
+        let has_build = roots.iter().any(|root| {
+            !crate::project::detect::FileDetector::new(root, crate::project::gradle::BUILD_FILES)
+                .include_nested(false)
+                .add_exclusions(["**/build", "**/bin"])
+                .add_exclusions(&settings.exclusions)
+                .scan()
+                .is_empty()
+        });
+        if !has_build {
+            return None;
+        }
+        let id = format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT_PROGRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.project_progress(&id, "Importing Gradle project(s)", false)
+            .await;
+        Some(id)
+    }
+
+    pub(super) async fn complete_gradle_import_progress(&self, import_id: Option<String>) {
+        if let Some(id) = import_id {
+            self.project_progress(&id, "Importing Gradle project(s)", true)
+                .await;
+        }
+    }
+
     pub(super) async fn complete_maven_import_progress(
         &self,
         ws: &Workspace,

@@ -66,6 +66,8 @@ pub struct GradleSettings {
     pub default_vm: Option<PathBuf>,
     /// Where init scripts are materialized.
     pub scripts_dir: Option<PathBuf>,
+    /// The JDK that runs the Gradle model helper.
+    pub launcher_java: Option<PathBuf>,
 }
 
 impl Default for GradleSettings {
@@ -92,6 +94,7 @@ impl Default for GradleSettings {
             runtimes: Vec::new(),
             default_vm: None,
             scripts_dir: None,
+            launcher_java: None,
         }
     }
 }

@@ -57,6 +57,8 @@ public class GradleModelDump {
                 }
             }
         }
+        // the jdt.ls init scripts only act inside an Eclipse application
+        System.setProperty("eclipse.application", "org.eclipse.jdt.ls.core.id1");
         StringBuilder sb = new StringBuilder();
         try {
             GradleConnector connector = GradleConnector.newConnector().forProjectDirectory(new File(dir));

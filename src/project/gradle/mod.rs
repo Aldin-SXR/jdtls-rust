@@ -1,23 +1,23 @@
-//! Gradle project import.  Instead of running the Gradle tooling API (as
-//! Buildship does for jdt.ls), the build scripts are read statically: the
-//! conventional layout, `sourceSets` overrides, Java version and declared
-//! dependencies (resolved from the Gradle and Maven local caches).
+//! Gradle project import (`GradleProjectImporter` and Buildship's
+//! synchronization). The build is run through the Tooling API ([`model`]) and
+//! its `EclipseProject` model becomes the Java project model. Where Gradle
+//! cannot be run, the build scripts are read statically ([`fallback`]).
 
 pub mod checksums;
 pub mod config;
+mod fallback;
+pub mod model;
 mod sha256;
 pub mod util;
 
 use super::detect::FileDetector;
-use super::maven::{Dep, Model, Resolver};
 use super::{
-    compliance_options, normalize_java_version, project_prefs, source_attachment, ClasspathEntry,
-    EntryKind, ImportSettings, Library, Project, ProjectKind, SourceFolder, Workspace,
+    compliance_options, normalize_java_version, project_prefs, ClasspathEntry, EntryKind,
+    ImportSettings, Project, ProjectKind, Workspace,
 };
-use regex::Regex;
 use std::path::{Path, PathBuf};
 
-const BUILD_FILES: &[&str] = &[
+pub(crate) const BUILD_FILES: &[&str] = &[
     "build.gradle",
     "settings.gradle",
     "build.gradle.kts",
@@ -31,14 +31,24 @@ pub fn import(
     configs: Option<&[PathBuf]>,
 ) -> Vec<Project> {
     let dirs: Vec<PathBuf> = match configs {
-        Some(files) => files
-            .iter()
-            .filter(|f| {
-                f.file_name()
-                    .is_some_and(|n| BUILD_FILES.contains(&n.to_string_lossy().as_ref()))
-            })
-            .filter_map(|f| f.parent().map(Path::to_path_buf))
-            .collect(),
+        Some(files) => {
+            let non_gradle: Vec<&PathBuf> = ws
+                .projects
+                .iter()
+                .filter(|p| !p.has_nature(super::GRADLE_NATURE))
+                .map(|p| &p.location)
+                .collect();
+            let dirs: Vec<PathBuf> = files
+                .iter()
+                .filter(|f| {
+                    f.file_name()
+                        .is_some_and(|n| BUILD_FILES.contains(&n.to_string_lossy().as_ref()))
+                })
+                .filter_map(|f| f.parent().map(Path::to_path_buf))
+                .filter(|d| !non_gradle.iter().any(|p| *p == d))
+                .collect();
+            eliminate_nested_paths(dirs)
+        }
         None => {
             let mut detector = FileDetector::new(root, BUILD_FILES)
                 .include_nested(false)
@@ -58,317 +68,169 @@ pub fn import(
     let mut out = Vec::new();
     for dir in dirs {
         let dir = super::canonicalize_lenient(&dir);
-        out.extend(import_build(&dir));
+        out.extend(import_dir(&dir, settings));
     }
     out
 }
 
-fn read_script(dir: &Path, base: &str) -> Option<String> {
-    std::fs::read_to_string(dir.join(base))
-        .or_else(|_| std::fs::read_to_string(dir.join(format!("{base}.kts"))))
-        .ok()
-}
-
-fn strip_comments(s: &str) -> String {
-    let block = Regex::new(r"(?s)/\*.*?\*/").unwrap();
-    let line = Regex::new(r"(?m)^\s*//.*$").unwrap();
-    line.replace_all(&block.replace_all(s, ""), "").into_owned()
-}
-
-/// Import the root build at `dir` plus subprojects listed in `settings.gradle`.
-fn import_build(dir: &Path) -> Vec<Project> {
-    let settings = read_script(dir, "settings.gradle")
-        .map(|s| strip_comments(&s))
-        .unwrap_or_default();
-    let root_name = Regex::new(r#"rootProject\.name\s*=\s*['"]([^'"]+)['"]"#)
-        .unwrap()
-        .captures(&settings)
-        .map(|c| c[1].to_owned())
-        .unwrap_or_else(|| {
-            dir.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
-        });
-
-    let mut subprojects: Vec<(String, PathBuf)> = Vec::new();
-    let include_re = Regex::new(r#"(?m)^\s*include\s*\(?([^\n)]*)\)?"#).unwrap();
-    let item_re = Regex::new(r#"['"]([^'"]+)['"]"#).unwrap();
-    for cap in include_re.captures_iter(&settings) {
-        for item in item_re.captures_iter(&cap[1]) {
-            let path = item[1].trim_start_matches(':').to_owned();
-            let rel: PathBuf = path.split(':').collect();
-            let name = path.rsplit(':').next().unwrap_or(&path).to_owned();
-            subprojects.push((name, dir.join(rel)));
+/// `AbstractProjectImporter.eliminateNestedPaths`.
+fn eliminate_nested_paths(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    dirs.sort_by_key(|d| d.components().count());
+    let mut out: Vec<PathBuf> = Vec::new();
+    for d in dirs {
+        if !out.iter().any(|o| d.starts_with(o)) {
+            out.push(d);
         }
     }
-
-    let root_script = read_script(dir, "build.gradle")
-        .map(|s| strip_comments(&s))
-        .unwrap_or_default();
-    let mut projects = vec![load(dir, &root_name, &root_script, None)];
-    for (name, sub) in subprojects {
-        if !sub.is_dir() {
-            continue;
-        }
-        let script = read_script(&sub, "build.gradle")
-            .map(|s| strip_comments(&s))
-            .unwrap_or_default();
-        projects.push(load(&sub, &name, &script, Some(&root_script)));
-    }
-    projects
+    out
 }
 
-fn load(dir: &Path, name: &str, script: &str, root_script: Option<&str>) -> Project {
-    let mut source_folders = Vec::new();
-    let mut add = |p: PathBuf, is_test: bool| {
-        if p.is_dir() && !source_folders.iter().any(|s: &SourceFolder| s.path == p) {
-            source_folders.push(SourceFolder { path: p, is_test });
-        }
+/// `GradleProjectImporter.inferGradleJavaHome`: a Gradle that cannot run on
+/// the default JDK is launched with the newest JDK it supports.
+fn infer_gradle_java_home(config: &mut config::BuildConfiguration, settings: &ImportSettings) {
+    let gs = &settings.gradle;
+    if gs.java_home.as_deref().is_some_and(|h| !h.trim().is_empty()) {
+        return;
+    }
+    let java_version = match config::get_java_home(gs) {
+        Some(home) => super::vm_version(&home),
+        None => settings.vm_version.clone(),
     };
-    let custom_main = source_set_dirs(script, "main");
-    let custom_test = source_set_dirs(script, "test");
-    if custom_main.is_empty() {
-        add(dir.join("src/main/java"), false);
+    let Some(gradle_version) = model::requested_version(config) else {
+        return;
+    };
+    if util::is_incompatible(Some(&gradle_version), java_version.as_deref()) {
+        let highest = util::get_highest_supported_java(&gradle_version);
+        let installs = util::get_all_vm_installs(settings.runtime_registry.as_ref(), &gs.runtimes);
+        if let Some(home) = util::get_jdk_to_launch_daemon(&installs, highest) {
+            config.java_home = Some(home);
+        }
     }
-    for d in custom_main {
-        add(dir.join(d), false);
-    }
-    if custom_test.is_empty() {
-        add(dir.join("src/test/java"), true);
-    }
-    for d in custom_test {
-        add(dir.join(d), true);
-    }
+}
 
-    let version = java_version(script).or_else(|| root_script.and_then(java_version));
-    let mut options = project_prefs(dir);
-    if let Some(v) = version {
-        options.extend(compliance_options(&v));
+fn import_dir(dir: &Path, settings: &ImportSettings) -> Vec<Project> {
+    let mut config = config::get_build_configuration(dir, &settings.gradle);
+    infer_gradle_java_home(&mut config, settings);
+    match model::fetch(&config, &settings.gradle) {
+        Ok(m) => m.project.flatten().into_iter().map(project_from_model).collect(),
+        Err(model::FetchError::Unavailable(reason)) => {
+            tracing::warn!(
+                "Gradle is not available, reading {} statically: {reason}",
+                dir.display()
+            );
+            fallback::import_build(dir)
+        }
+        Err(model::FetchError::Failed { message, .. }) => {
+            tracing::error!("Gradle synchronization of {} failed: {message}", dir.display());
+            failed_import(dir, &message)
+        }
     }
+}
 
-    let (libraries, project_deps) = dependencies(script);
+/// A build that could not be synchronized keeps its Gradle project, with the
+/// failure reported on it.
+fn failed_import(dir: &Path, message: &str) -> Vec<Project> {
+    let name = dir
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     let mut p = Project::new(name, dir, ProjectKind::Gradle);
-    p.natures = vec![
-        super::JAVA_NATURE.to_owned(),
-        super::GRADLE_NATURE.to_owned(),
-    ];
-    p.options = options;
-    p.output = Some(dir.join("bin/default"));
-    p.build_files = BUILD_FILES
+    p.natures = vec![super::GRADLE_NATURE.to_owned()];
+    p.build_files = existing_build_files(dir);
+    p.markers.push(super::Marker::project(message, 1, "0"));
+    vec![p]
+}
+
+fn existing_build_files(dir: &Path) -> Vec<PathBuf> {
+    BUILD_FILES
         .iter()
         .map(|f| dir.join(f))
         .filter(|f| f.is_file())
-        .collect();
-    for sf in source_folders {
-        let mut e = ClasspathEntry::new(EntryKind::Source, p.full_path(&sf.path));
-        if sf.is_test {
-            e.attributes.push(("gradle_scope".into(), "test".into()));
-            e.attributes
-                .push(("gradle_used_by_scope".into(), "test".into()));
-            e.attributes.push(("test".into(), "true".into()));
-            e.output = Some(dir.join("bin/test"));
-        } else {
-            e.attributes.push(("gradle_scope".into(), "main".into()));
-            e.attributes
-                .push(("gradle_used_by_scope".into(), "main,test".into()));
-            e.output = Some(dir.join("bin/main"));
-        }
-        e.location = Some(sf.path);
-        p.classpath.push(e);
-    }
-    p.classpath.push(ClasspathEntry::new(
-        EntryKind::Container,
-        super::JRE_CONTAINER,
-    ));
-    let mut container = ClasspathEntry::new(EntryKind::Container, super::GRADLE_CONTAINER);
-    for lib in libraries {
-        let mut e =
-            ClasspathEntry::new(EntryKind::Library, lib.path.to_string_lossy().into_owned());
-        if lib.is_test {
-            e.attributes
-                .push(("gradle_used_by_scope".into(), "test".into()));
-            e.attributes.push(("test".into(), "true".into()));
-        } else {
-            e.attributes
-                .push(("gradle_used_by_scope".into(), "main,test".into()));
-        }
-        e.location = Some(lib.path);
-        e.source_attachment = lib.source;
-        container.children.push(e);
-    }
-    for dep in project_deps {
-        let mut e = ClasspathEntry::new(EntryKind::Project, format!("/{dep}"));
-        e.attributes
-            .push(("gradle_used_by_scope".into(), "main,test".into()));
-        container.children.push(e);
-    }
-    p.classpath.push(container);
-    p
-}
-
-fn source_set_dirs(script: &str, set: &str) -> Vec<String> {
-    let re = Regex::new(&format!(r#"(?s)\b{set}\s*\{{\s*java\s*\{{([^}}]*)\}}"#)).unwrap();
-    let item = Regex::new(r#"['"]([^'"]+)['"]"#).unwrap();
-    re.captures_iter(script)
-        .flat_map(|c| {
-            item.captures_iter(&c[1])
-                .map(|i| i[1].to_owned())
-                .collect::<Vec<_>>()
-        })
         .collect()
 }
 
-fn java_version(script: &str) -> Option<String> {
-    let patterns = [
-        r#"languageVersion(?:\.set\()?\s*=?\s*JavaLanguageVersion\.of\(\s*(\d+)\s*\)"#,
-        r#"options\.release(?:\.set\()?\s*=?\s*(\d+)"#,
-        r#"sourceCompatibility\s*=\s*([^\s\n]+)"#,
-    ];
-    patterns.iter().find_map(|p| {
-        Regex::new(p)
-            .unwrap()
-            .captures(script)
-            .and_then(|c| normalize_java_version(&c[1]))
-    })
-}
-
-const CONFIGS: &str = "implementation|api|compile|compileOnly|runtimeOnly|runtime|testImplementation|testCompile|testCompileOnly|testRuntimeOnly|annotationProcessor";
-
-fn dependencies(script: &str) -> (Vec<Library>, Vec<String>) {
-    let mut libs = Vec::new();
-    let mut projects = Vec::new();
-    let notation = Regex::new(&format!(
-        r#"(?m)^\s*({CONFIGS})\s*\(?\s*['"]([^'":]+):([^'":]+):([^'":@]+)(?::([^'"@]+))?['"]"#
-    ))
-    .unwrap();
-    let map = Regex::new(&format!(r#"(?m)^\s*({CONFIGS})\s*\(?\s*group\s*:\s*['"]([^'"]+)['"]\s*,\s*name\s*:\s*['"]([^'"]+)['"]\s*,\s*version\s*:\s*['"]([^'"]+)['"]"#)).unwrap();
-    let project = Regex::new(&format!(
-        r#"(?m)^\s*({CONFIGS})\s*\(?\s*project\s*\(\s*(?:path\s*:\s*)?['"]:?([^'"]+)['"]"#
-    ))
-    .unwrap();
-    let files = Regex::new(&format!(
-        r#"(?m)^\s*({CONFIGS})\s*\(?\s*files\s*\(([^)]*)\)"#
-    ))
-    .unwrap();
-
-    let mut declared: Vec<(Dep, bool)> = Vec::new();
-    for c in notation.captures_iter(script) {
-        declared.push((
-            Dep {
-                group: c[2].to_owned(),
-                artifact: c[3].to_owned(),
-                version: Some(c[4].to_owned()),
-                classifier: c.get(5).map(|m| m.as_str().to_owned()),
-                ..Default::default()
-            },
-            c[1].starts_with("test"),
-        ));
+fn project_from_model(p: &model::ModelProject) -> Project {
+    let dir = super::canonicalize_lenient(&p.dir);
+    let mut project = Project::new(&p.name, &dir, ProjectKind::Gradle);
+    project.natures = p.natures.clone();
+    if !project.has_nature(super::GRADLE_NATURE) {
+        project.natures.push(super::GRADLE_NATURE.to_owned());
     }
-    for c in map.captures_iter(script) {
-        declared.push((
-            Dep {
-                group: c[2].to_owned(),
-                artifact: c[3].to_owned(),
-                version: Some(c[4].to_owned()),
-                ..Default::default()
-            },
-            c[1].starts_with("test"),
-        ));
-    }
-    for c in project.captures_iter(script) {
-        let name = c[2].rsplit(':').next().unwrap_or(&c[2]).to_owned();
-        if !projects.contains(&name) {
-            projects.push(name);
-        }
-    }
-    let _ = files;
-
-    let mut resolver = Resolver::new();
-    for (dep, is_test) in declared {
-        let model = Model {
-            deps: vec![dep],
-            ..Default::default()
-        };
-        for (d, _) in resolver.resolve(&model) {
-            let Some(v) = d.version.as_deref() else {
-                continue;
-            };
-            let jar =
-                gradle_cache_jar(&d.group, &d.artifact, v, d.classifier.as_deref())
-                    .or_else(|| resolver.artifact_jar(&d.group, &d.artifact, v, d.classifier.as_deref()))
-                    // Buildship lets Gradle resolve (download) the declared
-                    // dependencies; fetch the ones no local cache holds.
-                    .or_else(|| {
-                        resolver.download_artifact(&d.group, &d.artifact, v, d.classifier.as_deref(), "jar")
-                    });
-            if let Some(jar) = jar {
-                if !libs.iter().any(|l: &Library| l.path == jar) {
-                    let source = source_attachment(&jar)
-                        .or_else(|| gradle_cache_sources(&d.group, &d.artifact, v));
-                    libs.push(Library {
-                        path: jar,
-                        source,
-                        is_test,
-                    });
-                }
+    project.build_files = existing_build_files(&dir);
+    if project.is_java() {
+        let mut options = project_prefs(&dir);
+        if let Some(java) = &p.java {
+            if let Some(source) = java.source.as_deref().and_then(normalize_java_version) {
+                let target = java
+                    .target
+                    .as_deref()
+                    .and_then(normalize_java_version)
+                    .unwrap_or_else(|| source.clone());
+                options.extend(compliance_options(&source));
+                options.insert(super::TARGET.to_owned(), target);
             }
         }
+        project.options = options;
+        project.classpath = classpath_from_model(&project, p, &dir);
+        project.output = Some(dir.join(default_output(p)));
     }
-    (libs, projects)
+    project
 }
 
-fn gradle_cache_dir(g: &str, a: &str, v: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("GRADLE_USER_HOME")
-        .map(PathBuf::from)
-        .or_else(|| super::eclipse::dirs_home().map(|h| h.join(".gradle")))?;
-    let dir = home
-        .join("caches/modules-2/files-2.1")
-        .join(g)
-        .join(a)
-        .join(v);
-    dir.is_dir().then_some(dir)
-}
-
-fn gradle_cache_find(g: &str, a: &str, v: &str, file: &str) -> Option<PathBuf> {
-    let dir = gradle_cache_dir(g, a, v)?;
-    std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path().join(file))
-        .find(|p| p.is_file())
-}
-
-fn gradle_cache_jar(g: &str, a: &str, v: &str, classifier: Option<&str>) -> Option<PathBuf> {
-    let file = match classifier {
-        Some(c) => format!("{a}-{v}-{c}.jar"),
-        None => format!("{a}-{v}.jar"),
-    };
-    gradle_cache_find(g, a, v, &file)
-}
-
-fn gradle_cache_sources(g: &str, a: &str, v: &str) -> Option<PathBuf> {
-    gradle_cache_find(g, a, v, &format!("{a}-{v}-sources.jar"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_java_version() {
-        assert_eq!(
-            java_version("sourceCompatibility = 1.8").as_deref(),
-            Some("1.8")
-        );
-        assert_eq!(
-            java_version("java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }")
-                .as_deref(),
-            Some("17")
-        );
-        assert_eq!(
-            java_version("sourceCompatibility = JavaVersion.VERSION_11").as_deref(),
-            Some("11")
-        );
+/// Buildship keeps the default output folder apart from the source output folders.
+fn default_output(p: &model::ModelProject) -> String {
+    let output = p.output.clone().unwrap_or_else(|| "bin/default".to_owned());
+    let nested = p.sources.iter().any(|s| {
+        s.output
+            .as_deref()
+            .is_some_and(|o| o == output || o.starts_with(&format!("{output}/")))
+    });
+    if nested {
+        format!("{output}-default")
+    } else {
+        output
     }
+}
+
+fn classpath_from_model(project: &Project, p: &model::ModelProject, dir: &Path) -> Vec<ClasspathEntry> {
+    let mut classpath = Vec::new();
+    for s in &p.sources {
+        let location = if s.dir.as_os_str().is_empty() {
+            dir.join(&s.path)
+        } else {
+            super::canonicalize_lenient(&s.dir)
+        };
+        let mut e = ClasspathEntry::new(EntryKind::Source, project.full_path(&location));
+        e.output = s.output.as_deref().map(|o| dir.join(o));
+        e.attributes = s.attributes.clone();
+        e.inclusions = s.includes.clone();
+        e.exclusions = s.excludes.clone();
+        e.location = Some(location);
+        classpath.push(e);
+    }
+    let jre = p
+        .containers
+        .iter()
+        .find(|c| c.starts_with(super::JRE_CONTAINER))
+        .map(|c| c.trim_end_matches('/').to_owned())
+        .unwrap_or_else(|| super::JRE_CONTAINER.to_owned());
+    classpath.push(ClasspathEntry::new(EntryKind::Container, jre));
+    let mut container = ClasspathEntry::new(EntryKind::Container, super::GRADLE_CONTAINER);
+    for d in &p.classpath {
+        let mut e = ClasspathEntry::new(EntryKind::Library, d.file.to_string_lossy().into_owned());
+        e.attributes = d.attributes.clone();
+        e.exported = d.exported;
+        e.source_attachment = d.source.clone();
+        e.location = Some(d.file.clone());
+        container.children.push(e);
+    }
+    for d in &p.project_dependencies {
+        let mut e = ClasspathEntry::new(EntryKind::Project, format!("/{}", d.path.trim_start_matches('/')));
+        e.attributes = d.attributes.clone();
+        e.exported = d.exported;
+        container.children.push(e);
+    }
+    classpath.push(container);
+    classpath
 }

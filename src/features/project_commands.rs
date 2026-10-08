@@ -89,11 +89,14 @@ pub fn java_project_from_uri(ws: &Workspace, uri: &str) -> Result<Project, Strin
         }
     }
     containers.sort_by_key(|(d, _)| *d);
+    // `JavaCore.create(project)` handles a non-Java project too: the loop
+    // ends with the last container's handle when none exists as a Java project.
+    let containers: Vec<&Project> = containers.into_iter().map(|(_, p)| p).collect();
     containers
-        .into_iter()
-        .map(|(_, p)| p)
+        .iter()
         .find(|p| p.is_java())
-        .cloned()
+        .or(containers.last())
+        .map(|p| (*p).clone())
         .ok_or_else(|| "Given URI does not belong to any Java project.".to_owned())
 }
 
