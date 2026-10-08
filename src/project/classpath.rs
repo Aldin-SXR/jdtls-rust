@@ -23,6 +23,17 @@ fn relative(project: &Project, full: &str) -> String {
         .to_owned()
 }
 
+/// JDT's `sourcepath`: the workspace full path (`/project/lib/a-src.jar`)
+/// of a file inside the project, the absolute path of any other file.
+fn source_attachment_path(project: &Project, path: &Path) -> String {
+    match path.strip_prefix(&project.location) {
+        Ok(relative) if project.kind != ProjectKind::Invisible => {
+            format!("/{}/{}", project.name, relative.to_string_lossy().replace('\\', "/"))
+        }
+        _ => location(project, path),
+    }
+}
+
 fn location(project: &Project, path: &Path) -> String {
     if project.kind == ProjectKind::Invisible {
         if let Ok(relative) = path.strip_prefix(&project.root) {
@@ -234,7 +245,7 @@ pub fn persist_raw_classpath(project: &Project) -> io::Result<()> {
 }
 
 /// The `.classpath` JDT writes: tab-indented, attributes in alphabetical order.
-pub(super) fn formatted_classpath(project: &Project) -> String {
+pub(crate) fn formatted_classpath(project: &Project) -> String {
     let mut text = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<classpath>\n".to_owned();
     for entry in &project.classpath {
         let kind = match entry.kind {

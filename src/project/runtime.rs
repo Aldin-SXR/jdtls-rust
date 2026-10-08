@@ -24,7 +24,7 @@ pub fn notice(message: &str, actionable: bool) -> serde_json::Value {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RuntimeEnvironment {
     pub name: Option<String>,

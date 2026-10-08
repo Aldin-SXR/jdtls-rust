@@ -13,6 +13,8 @@ use std::sync::Mutex;
 pub const GENERATES_METADATA_FILES_AT_PROJECT_ROOT: &str =
     "java.import.generatesMetadataFilesAtProjectRoot";
 
+pub const JDT_CORE_PREFS_FILE: &str = "org.eclipse.jdt.core.prefs";
+
 const SETTINGS: &str = ".settings";
 const JDT_CORE_PREFS: &str = ".settings/org.eclipse.jdt.core.prefs";
 const M2E_CORE_PREFS: &str = ".settings/org.eclipse.m2e.core.prefs";
@@ -77,7 +79,7 @@ pub fn resolve(location: &Path, name: &str, rel: &str) -> PathBuf {
     }
 }
 
-fn write_if_changed(path: &Path, content: &str) -> io::Result<()> {
+pub(crate) fn write_if_changed(path: &Path, content: &str) -> io::Result<()> {
     if std::fs::read_to_string(path).is_ok_and(|existing| existing == content) {
         return Ok(());
     }
@@ -89,7 +91,7 @@ fn write_if_changed(path: &Path, content: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn write_prefs(project: &Project, rel: &str, updates: BTreeMap<String, String>) -> io::Result<()> {
+pub(crate) fn write_prefs(project: &Project, rel: &str, updates: BTreeMap<String, String>) -> io::Result<()> {
     let path = resolve(&project.location, &project.name, rel);
     let mut values = prefs::read_properties(&path).unwrap_or_default();
     values.extend(updates);
@@ -106,13 +108,22 @@ fn xml(text: &str) -> String {
 }
 
 fn project_description(project: &Project, filters: &ResourceFilters) -> String {
-    let mut text = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n");
-    text.push_str(&format!("\t<name>{}</name>\n\t<comment></comment>\n\t<projects>\n\t</projects>\n", xml(&project.name)));
-    text.push_str("\t<buildSpec>\n");
     let mut builders = vec!["org.eclipse.jdt.core.javabuilder"];
     if project.has_nature(super::MAVEN_NATURE) {
         builders.push("org.eclipse.m2e.core.maven2Builder");
     }
+    description(project, "", &builders, filters)
+}
+
+pub(crate) fn description(
+    project: &Project,
+    comment: &str,
+    builders: &[&str],
+    filters: &ResourceFilters,
+) -> String {
+    let mut text = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n");
+    text.push_str(&format!("\t<name>{}</name>\n\t<comment>{}</comment>\n\t<projects>\n\t</projects>\n", xml(&project.name), xml(comment)));
+    text.push_str("\t<buildSpec>\n");
     for builder in builders {
         text.push_str(&format!(
             "\t\t<buildCommand>\n\t\t\t<name>{builder}</name>\n\t\t\t<arguments>\n\t\t\t</arguments>\n\t\t</buildCommand>\n"

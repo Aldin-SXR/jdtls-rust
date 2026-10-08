@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod jdtls;
+pub mod gradle;
 pub mod maven;
 pub mod metadata;
 pub mod projects;

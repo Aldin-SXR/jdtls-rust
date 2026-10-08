@@ -1,62 +1,15 @@
-//! Gradle project import.  Instead of running the Gradle tooling API (as
-//! Buildship does for jdt.ls), the build scripts are read statically: the
-//! conventional layout, `sourceSets` overrides, Java version and declared
+//! Static reading of Gradle build scripts, for where Gradle cannot be run:
+//! the conventional layout, `sourceSets` overrides, Java version and declared
 //! dependencies (resolved from the Gradle and Maven local caches).
 
-use super::detect::FileDetector;
-use super::maven::{Dep, Model, Resolver};
-use super::{
+use super::BUILD_FILES;
+use crate::project::maven::{Dep, Model, Resolver};
+use crate::project::{
     compliance_options, normalize_java_version, project_prefs, source_attachment, ClasspathEntry,
-    EntryKind, ImportSettings, Library, Project, ProjectKind, SourceFolder, Workspace,
+    EntryKind, Library, Project, ProjectKind, SourceFolder,
 };
 use regex::Regex;
 use std::path::{Path, PathBuf};
-
-const BUILD_FILES: &[&str] = &[
-    "build.gradle",
-    "settings.gradle",
-    "build.gradle.kts",
-    "settings.gradle.kts",
-];
-
-pub fn import(
-    root: &Path,
-    settings: &ImportSettings,
-    ws: &Workspace,
-    configs: Option<&[PathBuf]>,
-) -> Vec<Project> {
-    let dirs: Vec<PathBuf> = match configs {
-        Some(files) => files
-            .iter()
-            .filter(|f| {
-                f.file_name()
-                    .is_some_and(|n| BUILD_FILES.contains(&n.to_string_lossy().as_ref()))
-            })
-            .filter_map(|f| f.parent().map(Path::to_path_buf))
-            .collect(),
-        None => {
-            let mut detector = FileDetector::new(root, BUILD_FILES)
-                .include_nested(false)
-                .add_exclusions(["**/build", "**/bin"])
-                .add_exclusions(&settings.exclusions);
-            for p in ws
-                .projects
-                .iter()
-                .filter(|p| p.kind != ProjectKind::Invisible)
-            {
-                detector =
-                    detector.add_exclusions([p.location.to_string_lossy().replace('\\', "\\\\")]);
-            }
-            detector.scan()
-        }
-    };
-    let mut out = Vec::new();
-    for dir in dirs {
-        let dir = super::canonicalize_lenient(&dir);
-        out.extend(import_build(&dir));
-    }
-    out
-}
 
 fn read_script(dir: &Path, base: &str) -> Option<String> {
     std::fs::read_to_string(dir.join(base))
@@ -71,7 +24,7 @@ fn strip_comments(s: &str) -> String {
 }
 
 /// Import the root build at `dir` plus subprojects listed in `settings.gradle`.
-fn import_build(dir: &Path) -> Vec<Project> {
+pub(super) fn import_build(dir: &Path) -> Vec<Project> {
     let settings = read_script(dir, "settings.gradle")
         .map(|s| strip_comments(&s))
         .unwrap_or_default();
@@ -145,8 +98,8 @@ fn load(dir: &Path, name: &str, script: &str, root_script: Option<&str>) -> Proj
     let (libraries, project_deps) = dependencies(script);
     let mut p = Project::new(name, dir, ProjectKind::Gradle);
     p.natures = vec![
-        super::JAVA_NATURE.to_owned(),
-        super::GRADLE_NATURE.to_owned(),
+        crate::project::JAVA_NATURE.to_owned(),
+        crate::project::GRADLE_NATURE.to_owned(),
     ];
     p.options = options;
     p.output = Some(dir.join("bin/default"));
@@ -174,9 +127,9 @@ fn load(dir: &Path, name: &str, script: &str, root_script: Option<&str>) -> Proj
     }
     p.classpath.push(ClasspathEntry::new(
         EntryKind::Container,
-        super::JRE_CONTAINER,
+        crate::project::JRE_CONTAINER,
     ));
-    let mut container = ClasspathEntry::new(EntryKind::Container, super::GRADLE_CONTAINER);
+    let mut container = ClasspathEntry::new(EntryKind::Container, crate::project::GRADLE_CONTAINER);
     for lib in libraries {
         let mut e =
             ClasspathEntry::new(EntryKind::Library, lib.path.to_string_lossy().into_owned());
@@ -316,7 +269,7 @@ fn dependencies(script: &str) -> (Vec<Library>, Vec<String>) {
 fn gradle_cache_dir(g: &str, a: &str, v: &str) -> Option<PathBuf> {
     let home = std::env::var_os("GRADLE_USER_HOME")
         .map(PathBuf::from)
-        .or_else(|| super::eclipse::dirs_home().map(|h| h.join(".gradle")))?;
+        .or_else(|| crate::project::eclipse::dirs_home().map(|h| h.join(".gradle")))?;
     let dir = home
         .join("caches/modules-2/files-2.1")
         .join(g)
