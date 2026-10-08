@@ -393,7 +393,7 @@ impl super::LazyChange for IgnoreProblems {
 pub fn is_superseded_legacy_action(title: &str) -> bool {
     const SUPERSEDED: &[&str] = &["Organize Imports", "Extract method", "Add serialVersionUID field", "Remove unnecessary cast", "Remove redundant superinterface", "Add Javadoc comment", "Add all missing Javadoc tags", "Remove invalid Javadoc tag", "Add return statement", "Inline local variable", "Invert condition", "Invert boolean expression", "Convert to lambda expression", "Convert to anonymous class", "Change type to 'var'", "Sort Members"];
     // Unresolved variables: `UnresolvedElementsSubProcessor.getVariableProposals`.
-    const SUPERSEDED_PREFIXES: &[&str] = &["Change 'var' to '", "Add Javadoc @", "Extract to local variable", "Extract to constant '", "Create local variable '", "Create parameter '", "Create field '", "Create constant '", "Extract '"];
+    const SUPERSEDED_PREFIXES: &[&str] = &["Change 'var' to '", "Add Javadoc @", "Extract to local variable", "Extract to constant '", "Create local variable '", "Create parameter '", "Create field '", "Create constant '"];
     // Unresolved types: `UnresolvedElementsSubProcessor.getTypeProposals`
     // (import-only proposals, NewCUProposal) and `addAddAllMissingImportsProposal`.
     const SUPERSEDED_TYPE_PREFIXES: &[&str] = &["Create class '", "Create interface '"];

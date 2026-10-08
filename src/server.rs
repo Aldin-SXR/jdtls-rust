@@ -1956,9 +1956,18 @@ impl LanguageServer for JavaLanguageServer {
                         CodeActionOrCommand::Command(c) => c.title.clone(),
                     })
                     .collect();
+                let rust_extract_kinds: std::collections::HashSet<String> = lsp_actions
+                    .iter()
+                    .filter_map(|a| match a {
+                        CodeActionOrCommand::CodeAction(c) => c.kind.as_ref().map(|k| k.as_str().to_owned()),
+                        CodeActionOrCommand::Command(_) => None,
+                    })
+                    .filter(|k| k.starts_with("refactor.extract"))
+                    .collect();
                 lsp_actions.extend(
                     ca_conv::to_lsp(&actions)
                         .into_iter()
+                        .filter(|a| !a.kind.as_ref().is_some_and(|k| rust_extract_kinds.contains(k.as_str())))
                         .filter(|a| {
                             a.kind.as_ref().is_some_and(|kind| {
                                 (kind.as_str() != CodeActionKind::QUICKFIX.as_str()
