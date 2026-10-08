@@ -7,6 +7,7 @@ use std::sync::Arc;
 use super::edit::Env;
 use super::handler::Request;
 use super::{kind, messages, relevance, Change, Context, CuChange, LazyChange, Proposal};
+use crate::refactoring::convert_to_record::ConvertToRecord;
 use crate::refactoring::extract_constant::ExtractConstant;
 use crate::refactoring::extract_temp::ExtractTemp;
 use crate::semantic_ast::{Ast, NodeKind};
@@ -25,6 +26,9 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
         )
     }) {
         super::local_corrections::resource_assist(env, &req.context, &mut proposals).await;
+    }
+    if let Some(covering) = req.context.covering_node() {
+        convert_to_record_proposals(env, &req.context, covering, &mut proposals).await;
     }
     if !req.locations.iter().any(|p| p.problem_id == crate::semantic_ast::problem::JavadocMissing) {
         if let Some(covering) = req.context.covering_node() {
@@ -256,4 +260,25 @@ fn supports_extract_variable(ctx: &Context) -> bool {
     }
     // `JDTUtils.isUnnamedClass` on the unit's types.
     !ctx.root().children().iter().any(|t| t.is(NodeKind::ImplicitTypeDeclaration))
+}
+
+/// `QuickAssistProcessor.getConvertToRecordProposals` /
+/// `ConvertRecordSubProcessor.getConvertToRecordProposals`.
+async fn convert_to_record_proposals(env: &Env<'_>, ctx: &Context, node: crate::semantic_ast::Node<'_>, out: &mut Vec<Proposal>) {
+    let options = env.options(&ctx.ast.uri).await;
+    // `JavaModelUtil.is16OrHigher(project)`.
+    let compliance = options.get("org.eclipse.jdt.core.compiler.compliance").map(String::as_str).unwrap_or("1.8");
+    if crate::project::compare_java_versions(compliance, "16") == std::cmp::Ordering::Less {
+        return;
+    }
+    let Ok(refactoring) = ConvertToRecord::check_all_conditions(env, &ctx.ast, node.start(), node.length()).await else { return };
+    let label = messages::refactoring("ConvertToRecordRefactoring_name");
+    out.push(Proposal::new(label, kind::QUICK_FIX, relevance::CONVERT_TO_RECORD, Change::Lazy(Box::new(refactoring))));
+}
+
+#[tower_lsp::async_trait]
+impl LazyChange for ConvertToRecord {
+    async fn compute(&self, env: &Env<'_>) -> anyhow::Result<Vec<CuChange>> {
+        Ok(self.create_change(env).await)
+    }
 }

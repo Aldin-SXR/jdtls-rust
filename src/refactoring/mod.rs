@@ -19,6 +19,7 @@
 
 pub mod checkers;
 pub mod checks;
+pub mod convert_to_record;
 pub mod extract_constant;
 pub mod extract_temp;
 pub mod fragments;
