@@ -1,3 +1,4 @@
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -12,6 +13,8 @@ import org.gradle.tooling.GradleConnector;
 import org.gradle.tooling.ModelBuilder;
 import org.gradle.tooling.ProjectConnection;
 import org.gradle.tooling.model.GradleModuleVersion;
+import org.gradle.tooling.model.GradleProject;
+import org.gradle.tooling.model.GradleTask;
 import org.gradle.tooling.model.eclipse.ClasspathAttribute;
 import org.gradle.tooling.model.eclipse.EclipseBuildCommand;
 import org.gradle.tooling.model.eclipse.EclipseClasspathContainer;
@@ -34,6 +37,7 @@ public class GradleModelDump {
         List<String> lines = Files.readAllLines(new File(args[0]).toPath(), StandardCharsets.UTF_8);
         String dir = null, out = null, dist = "default", distValue = "", javaHome = "", userHome = "";
         boolean offline = false;
+        String mode = "model";
         List<String> jvmArgs = new ArrayList<>();
         List<String> buildArgs = new ArrayList<>();
         List<String> aptScripts = new ArrayList<>();
@@ -51,6 +55,7 @@ public class GradleModelDump {
                 case "javahome" -> javaHome = v;
                 case "userhome" -> userHome = v;
                 case "offline" -> offline = v.equals("1");
+                case "mode" -> mode = v;
                 case "jvmarg" -> jvmArgs.add(v);
                 case "arg" -> buildArgs.add(v);
                 default -> {
@@ -72,6 +77,11 @@ public class GradleModelDump {
                 connector.useGradleUserHomeDir(new File(userHome));
             }
             try (ProjectConnection connection = connector.connect()) {
+                if (mode.equals("compile")) {
+                    compile(sb, connection, javaHome);
+                    Files.writeString(new File(out).toPath(), sb.toString(), StandardCharsets.UTF_8);
+                    System.exit(0);
+                }
                 BuildEnvironment env = configure(connection.model(BuildEnvironment.class), javaHome, jvmArgs, buildArgs, offline).get();
                 EclipseProject root = configure(connection.model(EclipseProject.class), javaHome, jvmArgs, buildArgs, offline).get();
                 sb.append("{\"gradleVersion\":");
@@ -105,6 +115,51 @@ public class GradleModelDump {
         }
         Files.writeString(new File(out).toPath(), sb.toString(), StandardCharsets.UTF_8);
         System.exit(0);
+    }
+
+    private static final List<String> COMPILE_TASKS = List.of("compileKotlin", "compileTestKotlin", "compileGroovy", "compileTestGroovy", "compileAspectj", "compileTestAspectj", "compileScala", "compileTestScala");
+
+    private static boolean hasTask(GradleProject project, String name) {
+        for (GradleTask task : project.getTasks()) {
+            if (task.getName().equals(name)) {
+                return true;
+            }
+        }
+        for (GradleProject child : project.getChildren()) {
+            if (hasTask(child, name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Runs the compile tasks of the non-Java languages, like GradleBuildSupport.compile. */
+    private static void compile(StringBuilder sb, ProjectConnection connection, String javaHome) {
+        GradleProject root = connection.model(GradleProject.class).get();
+        List<String> tasks = new ArrayList<>();
+        for (String name : COMPILE_TASKS) {
+            if (hasTask(root, name)) {
+                tasks.add(name);
+            }
+        }
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        if (!tasks.isEmpty()) {
+            try {
+                org.gradle.tooling.BuildLauncher launcher = connection.newBuild().setStandardError(err).setStandardOutput(stdout).forTasks(tasks.toArray(new String[0])).withArguments("-q", "-Dorg.gradle.configureondemand=true", "-Dorg.gradle.caching=true", "--continue", "--console=plain");
+                if (!javaHome.isEmpty()) {
+                    launcher.setJavaHome(new File(javaHome));
+                }
+                launcher.run();
+            } catch (Exception e) {
+                // the failures are reported through the standard error
+            }
+        }
+        sb.append("{\"tasks\":");
+        list(sb, tasks);
+        sb.append(",\"stderr\":");
+        str(sb, err.toString(StandardCharsets.UTF_8));
+        sb.append('}');
     }
 
     private static <T> ModelBuilder<T> configure(ModelBuilder<T> builder, String javaHome, List<String> jvmArgs, List<String> buildArgs, boolean offline) {

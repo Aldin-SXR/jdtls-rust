@@ -317,6 +317,12 @@ const INIT_SCRIPTS: [(&str, &str); 8] = [
     ("/gradle/apt/init.gradle", include_str!("apt/init.gradle")),
 ];
 
+/// Buildship's init script applying the `eclipse` plugin to every project.
+pub const ECLIPSE_PLUGIN_SCRIPT: (&str, &str) = (
+    "/gradle/buildship/eclipsePlugin.gradle",
+    include_str!("eclipsePlugin.gradle"),
+);
+
 pub const SCALA_JAVALS_SCRIPT: (&str, &str) =
     ("/gradle/scala/javals.gradle", include_str!("scala/javals.gradle"));
 
@@ -331,7 +337,7 @@ fn scripts_dir(settings: &GradleSettings) -> PathBuf {
 pub fn gradle_init_script(settings: &GradleSettings, script_path: &str) -> Option<PathBuf> {
     let content = INIT_SCRIPTS
         .iter()
-        .chain(std::iter::once(&SCALA_JAVALS_SCRIPT))
+        .chain([&SCALA_JAVALS_SCRIPT, &ECLIPSE_PLUGIN_SCRIPT])
         .find(|(p, _)| *p == script_path)
         .map(|(_, c)| *c)?;
     util::get_gradle_init_script(&scripts_dir(settings), script_path, content)

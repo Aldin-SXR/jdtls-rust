@@ -5,6 +5,7 @@
 
 pub mod checksums;
 pub mod config;
+pub mod diagnostics;
 mod fallback;
 pub mod model;
 pub mod persistence;
@@ -120,8 +121,10 @@ fn import_dir(dir: &Path, settings: &ImportSettings) -> Vec<Project> {
                 .project
                 .flatten()
                 .into_iter()
-                .map(|p| project_from_model(p, &settings.metadata))
+                .map(|p| project_from_model(p, settings))
                 .collect();
+            let mut projects = projects;
+            compile_other_languages(&config, settings, dir, &mut projects);
             write_metadata(&m, &projects, &config, settings);
             projects
         }
@@ -135,6 +138,39 @@ fn import_dir(dir: &Path, settings: &ImportSettings) -> Vec<Project> {
         Err(model::FetchError::Failed { message, .. }) => {
             tracing::error!("Gradle synchronization of {} failed: {message}", dir.display());
             failed_import(dir, &message)
+        }
+    }
+}
+
+/// `GradleBuildSupport.compile`: build the Kotlin, Groovy, AspectJ and Scala
+/// sources with Gradle and report the compilers' diagnostics.
+fn compile_other_languages(
+    config: &config::BuildConfiguration,
+    settings: &ImportSettings,
+    dir: &Path,
+    projects: &mut [Project],
+) {
+    let gs = &settings.gradle;
+    if !(gs.kotlin_support || gs.groovy_support || gs.aspectj_support || gs.scala_support) {
+        return;
+    }
+    let output = match model::compile(config, gs) {
+        Ok(o) if !o.tasks.is_empty() => o,
+        Ok(_) => return,
+        Err(e) => {
+            tracing::warn!("Gradle compile of {} failed: {e}", dir.display());
+            return;
+        }
+    };
+    let options = diagnostics::ParseOptions::for_tasks(&output.tasks);
+    for marker in diagnostics::parse(&output.stderr, options, dir) {
+        let file = marker.resource.clone().unwrap_or_default();
+        if let Some(p) = projects
+            .iter_mut()
+            .filter(|p| file.starts_with(&p.location))
+            .max_by_key(|p| p.location.components().count())
+        {
+            p.markers.push(marker);
         }
     }
 }
@@ -162,10 +198,17 @@ fn existing_build_files(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn project_from_model(p: &model::ModelProject, metadata: &MetadataSettings) -> Project {
+fn project_from_model(p: &model::ModelProject, settings: &ImportSettings) -> Project {
+    let metadata = &settings.metadata;
     let dir = super::canonicalize_lenient(&p.dir);
     let mut project = Project::new(&p.name, &dir, ProjectKind::Gradle);
     project.natures = p.natures.clone();
+    if settings.gradle.scala_support {
+        // `ScalaGradleSupport.cleanScalaProjects`: natures Eclipse does not know.
+        project
+            .natures
+            .retain(|n| n == super::JAVA_NATURE || n == super::GRADLE_NATURE);
+    }
     if !project.has_nature(super::GRADLE_NATURE) {
         project.natures.push(super::GRADLE_NATURE.to_owned());
     }
@@ -185,6 +228,13 @@ fn project_from_model(p: &model::ModelProject, metadata: &MetadataSettings) -> P
         }
         project.options = options;
         project.classpath = classpath_from_model(&project, p, &dir);
+        if settings.gradle.scala_support {
+            project.classpath.retain(|e| {
+                e.kind != EntryKind::Container
+                    || e.is_jre_container()
+                    || e.path == super::GRADLE_CONTAINER
+            });
+        }
         project.output = Some(dir.join(default_output(p)));
     }
     project
@@ -311,7 +361,12 @@ fn write_metadata(
         filter
     };
     for (p, project) in m.project.flatten().into_iter().zip(projects) {
-        let mut builders: Vec<&str> = p.build_commands.iter().map(String::as_str).collect();
+        let mut builders: Vec<&str> = p
+            .build_commands
+            .iter()
+            .map(String::as_str)
+            .filter(|b| !settings.gradle.scala_support || *b == "org.eclipse.jdt.core.javabuilder")
+            .collect();
         builders.push("org.eclipse.buildship.core.gradleprojectbuilder");
         let comment = format!("Project {} created by Buildship.", project.name);
         let result = (|| -> std::io::Result<()> {

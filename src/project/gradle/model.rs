@@ -219,8 +219,8 @@ fn launcher(settings: &GradleSettings) -> PathBuf {
     PathBuf::from("java")
 }
 
-/// Fetch the `EclipseProject` model of the build in `config.root_project_directory`.
-pub fn fetch(config: &BuildConfiguration, settings: &GradleSettings) -> Result<GradleModel, FetchError> {
+/// Run the helper in `mode` and return its JSON output.
+fn run_helper(config: &BuildConfiguration, settings: &GradleSettings, mode: &str) -> Result<String, FetchError> {
     let lib = tooling_libs(config).ok_or_else(|| {
         FetchError::Unavailable("no Gradle distribution with the Tooling API is installed".into())
     })?;
@@ -233,7 +233,7 @@ pub fn fetch(config: &BuildConfiguration, settings: &GradleSettings) -> Result<G
         GradleDistribution::Local(p) => ("local", p.to_string_lossy().into_owned()),
     };
     let mut request = format!(
-        "dir={}\nout={}\ndist={dist}\ndistvalue={dist_value}\njavahome={}\nuserhome={}\noffline={}\n",
+        "mode={mode}\ndir={}\nout={}\ndist={dist}\ndistvalue={dist_value}\njavahome={}\nuserhome={}\noffline={}\n",
         config.root_project_directory.display(),
         out.display(),
         config.java_home.as_deref().map(|h| h.display().to_string()).unwrap_or_default(),
@@ -242,6 +242,11 @@ pub fn fetch(config: &BuildConfiguration, settings: &GradleSettings) -> Result<G
     );
     for a in &config.jvm_arguments {
         request.push_str(&format!("jvmarg={a}\n"));
+    }
+    if let Some(script) =
+        super::config::gradle_init_script(settings, super::config::ECLIPSE_PLUGIN_SCRIPT.0)
+    {
+        request.push_str(&format!("arg=--init-script\narg={}\n", script.display()));
     }
     for a in &config.arguments {
         request.push_str(&format!("arg={a}\n"));
@@ -259,13 +264,39 @@ pub fn fetch(config: &BuildConfiguration, settings: &GradleSettings) -> Result<G
         .stderr(Stdio::piped())
         .output()
         .map_err(|e| FetchError::Unavailable(e.to_string()))?;
-    let Ok(text) = std::fs::read_to_string(&out) else {
-        return Err(FetchError::Unavailable(format!(
+    std::fs::read_to_string(&out).map_err(|_| {
+        FetchError::Unavailable(format!(
             "the Gradle model helper failed: {}",
             String::from_utf8_lossy(&output.stderr)
-        )));
-    };
-    parse(&text)
+        ))
+    })
+}
+
+/// Fetch the `EclipseProject` model of the build in `config.root_project_directory`.
+pub fn fetch(config: &BuildConfiguration, settings: &GradleSettings) -> Result<GradleModel, FetchError> {
+    parse(&run_helper(config, settings, "model")?)
+}
+
+/// The result of running the compile tasks of the non-Java languages.
+#[derive(Debug, Clone, Default)]
+pub struct CompileOutput {
+    pub tasks: Vec<String>,
+    pub stderr: String,
+}
+
+/// `GradleBuildSupport.compile`: run the Kotlin, Groovy, AspectJ and Scala
+/// compile tasks of the build.
+pub fn compile(config: &BuildConfiguration, settings: &GradleSettings) -> Result<CompileOutput, FetchError> {
+    let text = run_helper(config, settings, "compile")?;
+    let json: Value = serde_json::from_str(&text)
+        .map_err(|e| FetchError::Unavailable(format!("invalid Gradle output: {e}")))?;
+    if let Some(error) = json["error"].as_str() {
+        return Err(FetchError::Failed { message: error.to_owned(), causes: Vec::new() });
+    }
+    Ok(CompileOutput {
+        tasks: strings(&json["tasks"]),
+        stderr: json["stderr"].as_str().unwrap_or("").to_owned(),
+    })
 }
 
 fn parse(text: &str) -> Result<GradleModel, FetchError> {
