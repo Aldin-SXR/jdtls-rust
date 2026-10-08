@@ -13,6 +13,7 @@ pub mod document_symbol;
 pub mod dom;
 pub mod client_connection;
 pub mod configuration;
+pub mod create_module_info;
 pub mod execute_command;
 pub mod file_events;
 pub mod folding_range;

@@ -2433,6 +2433,10 @@ impl LanguageServer for JavaLanguageServer {
                 let uri = navigation::type_uri(&self.dispatcher, &arg(0), &arg(1)).await;
                 Ok(Some(uri.map(Value::String).unwrap_or(Value::Null)))
             }
+            "java.project.createModuleInfo" => {
+                let uri = params.arguments.first().and_then(Value::as_str).unwrap_or_default();
+                Ok(self.create_module_info(uri).await.map(Value::String))
+            }
             "java.project.resolveStackTraceLocation" => {
                 let line = params.arguments.first().and_then(Value::as_str);
                 let project_names: Option<Vec<String>> = params

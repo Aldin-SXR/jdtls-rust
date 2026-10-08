@@ -386,6 +386,15 @@ pub enum BridgeRequest {
         options: BTreeMap<String, String>,
         names: Vec<String>,
     },
+    /// `ModuleUtil.getReferencedModules`: the modules of the library types the sources use.
+    ReferencedModules {
+        id: u64,
+        files: HashMap<String, String>,
+        classpath: Vec<String>,
+        source_level: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        options: BTreeMap<String, String>,
+    },
     Shutdown {
         id: u64,
     },
@@ -557,6 +566,10 @@ pub enum BridgeResponse {
         id: u64,
         classes: HashMap<String, String>,
     },
+    ReferencedModules {
+        id: u64,
+        modules: Vec<String>,
+    },
     CodeAssist {
         id: u64,
         #[serde(default)]
@@ -608,6 +621,7 @@ impl BridgeResponse {
             | BridgeResponse::SemanticAst { id, .. }
             | BridgeResponse::FormatBatch { id, .. }
             | BridgeResponse::CompiledClasses { id, .. }
+            | BridgeResponse::ReferencedModules { id, .. }
             | BridgeResponse::Ok { id }
             | BridgeResponse::Error { id, .. } => *id,
         }

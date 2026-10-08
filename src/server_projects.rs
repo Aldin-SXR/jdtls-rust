@@ -629,6 +629,102 @@ impl JavaLanguageServer {
         }
     }
 
+    /// `CreateModuleInfoHandler.createModuleInfo`: the URI of the created `module-info.java`.
+    pub(crate) async fn create_module_info(&self, project_uri: &str) -> Option<String> {
+        use crate::features::create_module_info as module_info;
+        let ws = self.workspace_snapshot();
+        let root = Url::parse(project_uri).ok().and_then(|u| crate::project::uri_to_path(&u));
+        let project = root
+            .and_then(|root| ws.all_projects().into_iter().find(|p| p.root == root || p.location == root))
+            .filter(|p| p.is_java());
+        let Some(project) = project else {
+            self.client.show_message(MessageType::ERROR, "The selected project is not a valid Java project.").await;
+            return None;
+        };
+        let project_dir = Url::from_directory_path(&project.root).ok()?;
+        let env = self.format_env().await;
+        let mut options = env.jdt_options(Some(&project_dir)).await;
+        drop(env);
+        // The workspace-wide `JavaCore` options carry the client's tab settings.
+        let mut tab_options = std::collections::BTreeMap::new();
+        crate::features::preferences::current().update_tab_size_insert_spaces(&mut tab_options);
+        for (key, value) in tab_options {
+            if !project.options.contains_key(&key) {
+                options.insert(key, value);
+            }
+        }
+        let compliance = options.get(crate::project::COMPLIANCE).cloned().unwrap_or_default();
+        if !module_info::is_9_or_higher(&compliance) {
+            let message = "The project source compliance must be 9 or higher to create module-info.java.";
+            self.client.show_message(MessageType::ERROR, message).await;
+            return None;
+        }
+        let roots: Vec<_> = project.source_folders.iter().map(|f| f.path.clone()).filter(|p| p.is_dir()).collect();
+        if roots.is_empty() {
+            self.client.show_message(MessageType::ERROR, "No source folder exists in the project.").await;
+            return None;
+        }
+        for root in &roots {
+            if root.join(module_info::MODULE_INFO_JAVA).is_file() {
+                let message = format!(
+                    "The module-info.java file already exists in the source folder \"{}\"",
+                    root.file_name().unwrap_or_default().to_string_lossy()
+                );
+                self.client.show_message(MessageType::ERROR, message).await;
+                return None;
+            }
+        }
+        let target = roots[0].join(module_info::MODULE_INFO_JAVA);
+
+        let packages: Vec<String> = roots.iter().flat_map(|r| module_info::packages_with_units(r)).collect();
+        let exported = module_info::java_hash_set_order(&packages);
+        let ctx = self.dispatcher.context_for_project_name(&project.name).await;
+        let required = match self
+            .dispatcher
+            .send_request(crate::analysis::semantic::BridgeRequest::ReferencedModules {
+                id: crate::analysis::semantic::ecj_process::next_id(),
+                files: ctx.files,
+                classpath: ctx.classpath,
+                source_level: ctx.source_level,
+                options: ctx.options,
+            })
+            .await
+        {
+            Ok(crate::analysis::semantic::BridgeResponse::ReferencedModules { modules, .. }) => modules,
+            _ => Vec::new(),
+        };
+        let delimiter = if cfg!(windows) { "\r\n" } else { "\n" };
+        let text = module_info::module_info_text(&module_info::module_name(&project.name), &exported, &required, delimiter);
+        let length = text.encode_utf16().count();
+        let formatted = match self
+            .dispatcher
+            .format_source(&text, crate::rewrite::formatter::K_MODULE_INFO, 0, length, delimiter, options)
+            .await
+        {
+            Ok(Some(edits)) => {
+                let mut units: Vec<u16> = text.encode_utf16().collect();
+                for edit in edits.iter().rev() {
+                    units.splice(edit.offset..edit.offset + edit.length, edit.text.encode_utf16());
+                }
+                String::from_utf16_lossy(&units)
+            }
+            _ => text,
+        };
+        std::fs::write(&target, formatted).ok()?;
+
+        let mut ws = self.workspace_snapshot();
+        if let Some(p) = ws.projects.iter_mut().find(|p| p.name == project.name) {
+            for entry in p.classpath.iter_mut().filter(|e| !matches!(e.kind, crate::project::EntryKind::Source)) {
+                match entry.attributes.iter_mut().find(|(name, _)| name == "module") {
+                    Some((_, value)) => *value = "true".to_owned(),
+                    None => entry.attributes.push(("module".to_owned(), "true".to_owned())),
+                }
+            }
+        }
+        self.install_workspace(ws).await;
+        Some(format!("file:{}", target.to_string_lossy()))
+    }
+
     /// `java/projectConfigurationsUpdate`.
     pub async fn project_configurations_update(&self, params: Value) {
         self.project_configuration_update(params).await;
