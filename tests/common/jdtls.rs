@@ -450,6 +450,17 @@ impl Workspace {
         self.set_project_options(root, &options);
     }
 
+    /// `JavaProjectHelper.addToClasspath(project, JavaCore.newProjectEntry(..))`.
+    pub fn add_project_dependency(&mut self, root: &Path, project: &str, module: bool) {
+        assert!(self.client.is_none(), "add dependencies before the server starts");
+        let path = root.join(".classpath");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        let end = text.rfind("</classpath>").unwrap();
+        let attributes = if module { "<attributes><attribute name=\"module\" value=\"true\"/></attributes>" } else { "" };
+        text.insert_str(end, &format!("\t<classpathentry combineaccessrules=\"false\" kind=\"src\" path=\"/{project}\">{attributes}</classpathentry>\n"));
+        std::fs::write(path, text).unwrap();
+    }
+
     /// `JavaProjectHelper.addLibrary`: a library jar copied into the project.
     pub fn add_library(&mut self, root: &Path, jar: &Path) {
         assert!(self.client.is_none(), "add libraries before the server starts");
