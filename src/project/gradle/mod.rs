@@ -125,6 +125,7 @@ fn import_dir(dir: &Path, settings: &ImportSettings) -> Vec<Project> {
                 .collect();
             let mut projects = projects;
             compile_other_languages(&config, settings, dir, &mut projects);
+            sync_annotation_processing(&config, settings, &projects);
             write_metadata(&m, &projects, &config, settings);
             projects
         }
@@ -171,6 +172,100 @@ fn compile_other_languages(
             .max_by_key(|p| p.location.components().count())
         {
             p.markers.push(marker);
+        }
+    }
+}
+
+const GENERATED_SOURCES_PATH: &str = "bin/generated-sources/annotations";
+const GENERATED_TEST_SOURCES_PATH: &str = "bin/generated-test-sources/annotations";
+const APT_CORE_PREFS: &str = ".settings/org.eclipse.jdt.apt.core.prefs";
+
+/// `-Akey=value` compiler arguments (`GradleUtils.parseProcessorOptions`).
+pub fn parse_processor_options(compiler_args: &[String]) -> BTreeMap<String, Option<String>> {
+    let mut options = BTreeMap::new();
+    for arg in compiler_args {
+        let Some(argument) = arg.strip_prefix("-A").filter(|a| !a.trim().is_empty()) else {
+            continue;
+        };
+        match argument.find('=') {
+            None => {
+                options.insert(argument.to_owned(), None);
+            }
+            Some(0) => {}
+            Some(i) => {
+                let key = &argument[..i];
+                if !key.chars().any(char::is_whitespace) {
+                    options.insert(key.to_owned(), Some(argument[i + 1..].to_owned()));
+                }
+            }
+        }
+    }
+    options
+}
+
+/// `GradleBuildSupport.syncAnnotationProcessingConfiguration`.
+fn sync_annotation_processing(
+    config: &config::BuildConfiguration,
+    settings: &ImportSettings,
+    projects: &[Project],
+) {
+    if !settings.gradle.annotation_processing || !projects.iter().any(Project::is_java) {
+        return;
+    }
+    let apt = match model::annotation_processing(config, &settings.gradle) {
+        Ok(apt) => apt,
+        Err(e) => {
+            tracing::warn!("Cannot read the annotation processing configuration: {e}");
+            return;
+        }
+    };
+    for project in projects.iter().filter(|p| p.is_java()) {
+        let Some(info) = apt.get(&project.location) else {
+            continue;
+        };
+        let apt_prefs = metadata::resolve(&project.location, &project.name, APT_CORE_PREFS);
+        if info.processors.is_empty() {
+            if super::prefs::read_properties(&apt_prefs)
+                .is_some_and(|p| p.get("org.eclipse.jdt.apt.aptEnabled").is_some_and(|v| v == "true"))
+            {
+                let _ = metadata::write_prefs(
+                    project,
+                    APT_CORE_PREFS,
+                    BTreeMap::from([("org.eclipse.jdt.apt.aptEnabled".to_owned(), "false".to_owned())]),
+                );
+            }
+            continue;
+        }
+        let mut updates: BTreeMap<String, String> = BTreeMap::from([
+            ("org.eclipse.jdt.apt.aptEnabled".to_owned(), "true".to_owned()),
+            ("org.eclipse.jdt.apt.genSrcDir".to_owned(), GENERATED_SOURCES_PATH.to_owned()),
+            (
+                "org.eclipse.jdt.apt.genTestSrcDir".to_owned(),
+                GENERATED_TEST_SOURCES_PATH.to_owned(),
+            ),
+        ]);
+        for (key, value) in parse_processor_options(&info.compiler_args) {
+            updates.insert(
+                format!("org.eclipse.jdt.apt.processorOptions/{key}"),
+                value.unwrap_or_default(),
+            );
+        }
+        let mut factory_path = String::from("<factorypath>\n");
+        for jar in &info.processors {
+            factory_path.push_str(&format!(
+                "    <factorypathentry kind=\"EXTJAR\" id=\"{}\" enabled=\"true\" runInBatchMode=\"false\"/>\n",
+                jar.display()
+            ));
+        }
+        factory_path.push_str("</factorypath>\n");
+        let result = metadata::write_prefs(project, APT_CORE_PREFS, updates).and_then(|_| {
+            metadata::write_if_changed(
+                &metadata::resolve(&project.location, &project.name, ".factorypath"),
+                &factory_path,
+            )
+        });
+        if let Err(e) = result {
+            tracing::warn!("Cannot write the annotation processing settings of {}: {e}", project.name);
         }
     }
 }
