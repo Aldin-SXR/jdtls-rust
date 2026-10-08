@@ -97,15 +97,6 @@ fn entry_xml(project: &Project, entry: &ClasspathEntry) -> String {
     text
 }
 
-fn source_attachment_path(project: &Project, path: &Path) -> String {
-    match path.strip_prefix(&project.location) {
-        Ok(relative) if project.kind != ProjectKind::Invisible => {
-            format!("/{}/{}", project.name, relative.to_string_lossy().replace('\\', "/"))
-        }
-        _ => location(project, path),
-    }
-}
-
 fn initial_classpath(project: &Project) -> String {
     let mut text = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<classpath>\n".to_owned();
     for entry in &project.classpath {
