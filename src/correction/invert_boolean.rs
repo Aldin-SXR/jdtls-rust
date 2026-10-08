@@ -248,11 +248,7 @@ pub fn inverse_condition_proposals(ctx: &Context, covering: Node<'_>, out: &mut 
 
 /// `getInvertVariableProposal(params, context, covering, returnAsCommand)`.
 pub fn invert_variable_proposal(ctx: &Context, covering: Node<'_>, params: Option<&CodeActionParams>, return_as_command: bool) -> Option<Proposal> {
-    if !covering.is(NodeKind::SimpleName) || !is_declaration(covering) {
-        return None;
-    }
-    let binding = covering.binding().filter(|b| b.is_variable())?;
-    if binding.is_field() || !binding.var_type().is_some_and(|t| matches!(t.qualified_name(), "boolean" | "java.lang.Boolean")) {
+    if !is_invertible_variable(covering) {
         return None;
     }
     let label = messages::ls_correction("AdvancedQuickAssistProcessor_inverseBooleanVariable");
@@ -265,6 +261,25 @@ pub fn invert_variable_proposal(ctx: &Context, covering: Node<'_>, params: Optio
             vec![json!(INVERT_VARIABLE_COMMAND), serde_json::to_value(params).expect("serializable code action parameters")],
         ));
     }
+    let (rw, _) = invert_variable_rewrite(ctx, covering)?;
+    Some(Proposal::rewrite(label, kind::REFACTOR, relevance::INVERSE_BOOLEAN_VARIABLE, rw))
+}
+
+fn is_invertible_variable(covering: Node<'_>) -> bool {
+    if !covering.is(NodeKind::SimpleName) || !is_declaration(covering) {
+        return false;
+    }
+    let Some(binding) = covering.binding().filter(|b| b.is_variable()) else { return false };
+    !binding.is_field() && binding.var_type().is_some_and(|t| matches!(t.qualified_name(), "boolean" | "java.lang.Boolean"))
+}
+
+/// The rewrite of the non-command `getInvertVariableProposal` and the new
+/// name of the covering declaration (its first linked position).
+pub fn invert_variable_rewrite(ctx: &Context, covering: Node<'_>) -> Option<(ASTRewrite, RNode)> {
+    if !is_invertible_variable(covering) {
+        return None;
+    }
+    let binding = covering.binding()?;
     let method = super::type_mismatch::bindings::find_parent_method_declaration(covering)?;
     let linked = find_by_binding(method, binding);
     let mut rw = ASTRewrite::new(ctx.ast.clone());
@@ -282,11 +297,15 @@ pub fn invert_variable_proposal(ctx: &Context, covering: Node<'_>, params: Optio
         messages::format(messages::ls_correction("AdvancedQuickAssistProcessor_negatedVariableName"), &[&(first.to_uppercase().collect::<String>() + chars.as_str())])
     };
     let mut renamer = Renamer { binding, identifier: new_identifier.clone(), renamed: HashSet::new() };
+    let mut tracked = None;
     for name in &linked {
         if renamer.renamed.contains(&name.id) {
             continue;
         }
         let new_name = rw.new_simple_name(&new_identifier);
+        if name.id == covering.id {
+            tracked = Some(new_name);
+        }
         let parent = name.parent()?;
         if name.location_is("name") && parent.is(NodeKind::SingleVariableDeclaration) {
             rw.replace(RNode::Orig(name.id), Some(new_name));
@@ -323,7 +342,7 @@ pub fn invert_variable_proposal(ctx: &Context, covering: Node<'_>, params: Optio
             rw.replace(RNode::Orig(name.id), Some(not));
         }
     }
-    Some(Proposal::rewrite(label, kind::REFACTOR, relevance::INVERSE_BOOLEAN_VARIABLE, rw))
+    Some((rw, tracked?))
 }
 
 /// `LinkedNodeFinder.findByBinding(root, binding)`.

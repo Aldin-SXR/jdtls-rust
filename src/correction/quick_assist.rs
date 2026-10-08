@@ -268,6 +268,25 @@ async fn extract_variable_proposals(env: &Env<'_>, req: &Request<'_>, problems_a
     }
 }
 
+/// The change of `RefactorProposalUtility.getExtractVariableProposal` /
+/// `getExtractVariableAllOccurrenceProposal` / `getExtractConstantProposal`
+/// for a `java/getRefactorEdit` command (`None` without a proposal).
+pub fn extract_variable_change(command: &str, ctx: &Context, options: BTreeMap<String, String>) -> Option<Vec<CuChange>> {
+    let what = match command {
+        "extractVariableAllOccurrence" => Extract::AllOccurrences,
+        "extractVariable" => Extract::Variable,
+        "extractConstant" => Extract::Constant,
+        _ => return None,
+    };
+    if !supports_extract_variable(ctx) {
+        return None;
+    }
+    let decls_to_final = crate::features::preferences::add_final_for_new_declaration();
+    let set_final = (decls_to_final == "all" || decls_to_final == "variables") && what != Extract::Constant;
+    let (refactoring, ok) = ExtractRefactoring::create(what, &ctx.ast, options, ctx.selection_offset, ctx.selection_length, set_final);
+    ok.then(|| refactoring.create_change())
+}
+
 /// `RefactorProposalUtility.supportsExtractVariable`.
 fn supports_extract_variable(ctx: &Context) -> bool {
     let mut node = ctx.covered_node();
