@@ -203,6 +203,8 @@ pub struct Project {
     pub libraries: Vec<Library>,
     /// Derived from `classpath`: names of workspace projects this project depends on.
     pub project_deps: Vec<String>,
+    /// Derived from `classpath`: the project dependencies only test code sees.
+    pub test_project_deps: Vec<String>,
     /// JDT core options specific to this project (compliance, prefs file).
     pub options: BTreeMap<String, String>,
     /// Maven: the selected profiles (`org.eclipse.m2e.core.selectedProfiles`).
@@ -230,6 +232,7 @@ impl Project {
             source_folders: Vec::new(),
             libraries: Vec::new(),
             project_deps: Vec::new(),
+            test_project_deps: Vec::new(),
             options: BTreeMap::new(),
             selected_profiles: String::new(),
             resource_filters: resource_filters::ResourceFilters::default(),
@@ -311,11 +314,13 @@ impl Project {
         let mut sources = Vec::new();
         let mut libs = Vec::new();
         let mut deps = Vec::new();
+        let mut main_deps = Vec::new();
         fn walk(
             entries: &[ClasspathEntry],
             sources: &mut Vec<SourceFolder>,
             libs: &mut Vec<Library>,
             deps: &mut Vec<String>,
+            main_deps: &mut Vec<String>,
         ) {
             for e in entries {
                 match e.kind {
@@ -342,18 +347,35 @@ impl Project {
                     }
                     EntryKind::Project => {
                         let name = e.path.trim_start_matches('/').to_owned();
+                        if !e.is_test() && !main_deps.contains(&name) {
+                            main_deps.push(name.clone());
+                        }
                         if !deps.contains(&name) {
                             deps.push(name);
                         }
                     }
-                    EntryKind::Container => walk(&e.children, sources, libs, deps),
+                    EntryKind::Container => walk(&e.children, sources, libs, deps, main_deps),
                 }
             }
         }
-        walk(&self.classpath, &mut sources, &mut libs, &mut deps);
+        walk(&self.classpath, &mut sources, &mut libs, &mut deps, &mut main_deps);
         self.source_folders = sources;
         self.libraries = libs;
+        self.test_project_deps = deps.iter().filter(|d| !main_deps.contains(d)).cloned().collect();
         self.project_deps = deps;
+    }
+
+    /// Whether the project separates test from main code (test-attributed
+    /// source folders, libraries or project dependencies).
+    pub fn has_test_scope(&self) -> bool {
+        self.source_folders.iter().any(|f| f.is_test)
+            || self.libraries.iter().any(|l| l.is_test)
+            || !self.test_project_deps.is_empty()
+    }
+
+    /// Whether `path` is in a source folder that is not a test source folder.
+    pub fn is_main_source(&self, path: &Path) -> bool {
+        self.source_folder_for(path).is_some_and(|f| !f.is_test)
     }
 
     pub fn source_folder_for(&self, path: &Path) -> Option<&SourceFolder> {
@@ -763,6 +785,30 @@ impl Workspace {
     pub fn project_for_uri(&self, uri: &Url) -> Option<&Project> {
         let path = uri_to_path(uri)?;
         self.project_for_path(&path)
+    }
+
+    /// `project` plus the transitive closure of its project dependencies as
+    /// `scope` sees them: dependencies of other projects never export their
+    /// test-only dependencies, and main code doesn't see `project`'s own.
+    pub fn project_closure_for_scope<'a>(&'a self, project: &'a Project, main_only: bool) -> Vec<&'a Project> {
+        let mut out = vec![project];
+        let mut seen: HashSet<&str> = HashSet::from([project.name.as_str()]);
+        let mut i = 0;
+        while i < out.len() {
+            let hide_tests = i > 0 || main_only;
+            for dep in &out[i].project_deps {
+                if hide_tests && out[i].test_project_deps.contains(dep) {
+                    continue;
+                }
+                if let Some(p) = self.project(dep) {
+                    if seen.insert(p.name.as_str()) {
+                        out.push(p);
+                    }
+                }
+            }
+            i += 1;
+        }
+        out
     }
 
     /// `project` plus the transitive closure of its project dependencies.

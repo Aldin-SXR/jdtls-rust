@@ -115,10 +115,16 @@ impl Dispatcher {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let project = uri
-            .and_then(|u| ws.project_for_uri(u))
-            .map(|p| p.name.clone());
-        self.context_for_project(&ws, project.as_deref(), uri.is_none())
+        let project = uri.and_then(|u| ws.project_for_uri(u));
+        let main_only = project.is_some_and(|p| {
+            p.has_test_scope()
+                && uri
+                    .and_then(|u| crate::project::uri_to_path(u))
+                    .is_some_and(|path| p.is_main_source(&path))
+        });
+        let project = project.map(|p| p.name.clone());
+        let all = self.store.all_contents();
+        self.context_scoped(&ws, project.as_deref(), uri.is_none(), all, main_only)
             .await
     }
 
@@ -259,7 +265,21 @@ impl Dispatcher {
         ws: &Workspace,
         project: Option<&str>,
         everything: bool,
+        all: HashMap<String, String>,
+    ) -> RequestContext {
+        self.context_scoped(ws, project, everything, all, false).await
+    }
+
+    /// [`Self::context_with_files`] for the main (non-test) code of the
+    /// project when `main_only`: test libraries, test project dependencies and
+    /// test source files stay out of sight.
+    pub async fn context_scoped(
+        &self,
+        ws: &Workspace,
+        project: Option<&str>,
+        everything: bool,
         mut all: HashMap<String, String>,
+        main_only: bool,
     ) -> RequestContext {
         let cfg = self.config.read().await.clone();
         let Some(project) = project.and_then(|n| ws.project(n)) else {
@@ -300,18 +320,27 @@ impl Dispatcher {
                 options,
             };
         };
-        let closure = ws.project_closure(project);
+        let closure = ws.project_closure_for_scope(project, main_only);
         let names: std::collections::HashSet<&str> =
             closure.iter().map(|p| p.name.as_str()).collect();
         all.retain(|u, _| {
-            Url::parse(u)
-                .ok()
-                .and_then(|u| ws.project_for_uri(&u))
-                .is_some_and(|p| names.contains(p.name.as_str()))
+            let Some(url) = Url::parse(u).ok() else { return false };
+            let Some(owner) = ws.project_for_uri(&url) else { return false };
+            if !names.contains(owner.name.as_str()) {
+                return false;
+            }
+            let hides_tests = main_only || owner.name != project.name;
+            !hides_tests
+                || crate::project::uri_to_path(&url)
+                    .and_then(|path| owner.source_folder_for(&path).map(|f| !f.is_test))
+                    .unwrap_or(true)
         });
         let mut classpath: Vec<String> = Vec::new();
         for p in &closure {
             for lib in &p.libraries {
+                if lib.is_test && (main_only || p.name != project.name) {
+                    continue;
+                }
                 // A referenced project's system library is not exported onto
                 // this project's build path. Use the owning project's VM.
                 if p.name != project.name && p.runtime.as_ref().is_some_and(|vm|
