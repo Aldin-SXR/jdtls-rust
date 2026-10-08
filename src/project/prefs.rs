@@ -89,6 +89,46 @@ pub fn read_properties(path: &Path) -> Option<BTreeMap<String, String>> {
     std::fs::read_to_string(path).ok().map(|t| parse_properties(&t))
 }
 
+/// `java.util.Properties.store` escaping of a key or value.
+fn escape_property(s: &str, key: bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for (i, c) in s.chars().enumerate() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\u{c}' => out.push_str("\\f"),
+            '=' | ':' | '#' | '!' => {
+                out.push('\\');
+                out.push(c);
+            }
+            ' ' if key || i == 0 => out.push_str("\\ "),
+            c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
+                out.push_str(&format!("\\u{:04X}", c as u32))
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Write an Eclipse `.prefs` file (`EclipsePreferences.save`): the keys in
+/// sorted order, without a header comment.
+pub fn write_properties(path: &Path, properties: &BTreeMap<String, String>) -> std::io::Result<()> {
+    let mut text = String::new();
+    for (k, v) in properties {
+        text.push_str(&escape_property(k, true));
+        text.push('=');
+        text.push_str(&escape_property(v, false));
+        text.push('\n');
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_properties;

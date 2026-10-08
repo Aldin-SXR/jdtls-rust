@@ -956,6 +956,28 @@ fn apt_entry(
     e
 }
 
+/// m2e's project preferences (`ResolverConfiguration`).
+const M2E_PREFS: &str = ".settings/org.eclipse.m2e.core.prefs";
+
+/// The selected profiles of m2e's persisted `ResolverConfiguration`.
+fn resolver_configuration(dir: &Path) -> String {
+    super::prefs::read_properties(&dir.join(M2E_PREFS))
+        .and_then(|p| p.get("activeProfiles").cloned())
+        .unwrap_or_default()
+}
+
+/// `IProjectConfigurationManager.setResolverConfiguration`: persist the
+/// selected profiles (with `resolveWorkspaceProjects`).
+pub fn write_resolver_configuration(dir: &Path, selected_profiles: &str) -> std::io::Result<()> {
+    let path = dir.join(M2E_PREFS);
+    let mut prefs = super::prefs::read_properties(&path).unwrap_or_default();
+    prefs.insert("activeProfiles".into(), selected_profiles.to_owned());
+    prefs.insert("eclipse.preferences.version".into(), "1".into());
+    prefs.insert("resolveWorkspaceProjects".into(), "true".into());
+    prefs.insert("version".into(), "1".into());
+    super::prefs::write_properties(&path, &prefs)
+}
+
 fn to_project(
     dir: &Path,
     name: &str,
@@ -966,6 +988,7 @@ fn to_project(
 ) -> Project {
     let mut project = Project::new(name, dir, ProjectKind::Maven);
     project.build_files = vec![dir.join(POM_FILE)];
+    project.selected_profiles = resolver_configuration(dir);
     // m2e sets the project encoding from `project.build.sourceEncoding`.
     project.encoding = model.properties.get("project.build.sourceEncoding").cloned();
     if model.packaging == "pom" {

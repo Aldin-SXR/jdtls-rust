@@ -214,6 +214,15 @@ fn write_atomic(path: &Path, content: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// `IJavaProject.setRawClasspath`: JDT rewrites the whole `.classpath`.
+pub fn persist_raw_classpath(project: &Project) -> io::Result<()> {
+    if project.kind == ProjectKind::Default {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&project.location)?;
+    write_atomic(&project.location.join(".classpath"), &initial_classpath(project))
+}
+
 /// Write the project metadata JDT would create, then commit its raw classpath.
 /// No source file or source folder is created as part of this operation.
 pub fn persist_sources(project: &Project) -> io::Result<()> {
