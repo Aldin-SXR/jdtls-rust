@@ -1,7 +1,7 @@
 //! Port of `LocalCorrectionsSubProcessor` / `LocalCorrectionsBaseSubProcessor`.
 
 mod unreachable;
-mod conversion;
+pub(crate) mod conversion;
 mod unused;
 mod exceptions;
 mod uncaught;

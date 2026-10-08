@@ -779,7 +779,7 @@ fn is_var(t: Node<'_>) -> bool {
 }
 
 /// `ASTNodeFactory.newType` / `newNonVarType(ast, declaration, importRewrite, context)`.
-fn new_type(cu: &mut CuRewrite, _options: &BTreeMap<String, String>, decl: Node<'_>, context: &dyn crate::rewrite::import_rewrite::ImportRewriteContext, non_var: bool) -> RNode {
+pub(crate) fn new_type(cu: &mut CuRewrite, _options: &BTreeMap<String, String>, decl: Node<'_>, context: &dyn crate::rewrite::import_rewrite::ImportRewriteContext, non_var: bool) -> RNode {
     if decl.is(NodeKind::VariableDeclarationFragment) {
         if let Some(lambda) = decl.parent().filter(|p| p.is(NodeKind::LambdaExpression)) {
             if let Some(m) = lambda.method_binding() {

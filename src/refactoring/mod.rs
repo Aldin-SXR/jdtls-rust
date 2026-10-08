@@ -27,6 +27,8 @@ pub mod extract_method_analyzer;
 pub mod snippet_finder;
 pub mod flow;
 pub mod extract_temp;
+pub mod check_source;
+pub mod inline_temp;
 pub mod fragments;
 pub mod naming;
 pub mod scope;
