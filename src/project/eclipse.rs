@@ -366,6 +366,16 @@ pub fn classpath_problems(project: &Project) -> Vec<Marker> {
                     ));
                 }
             }
+            EntryKind::Container if e.path == super::MAVEN_CONTAINER => {
+                for child in e.children.iter().filter(|c| c.kind == EntryKind::Library) {
+                    if let Some(location) = child.location.as_deref().filter(|l| !l.exists()) {
+                        errors.push(format!(
+                            "The container 'Maven Dependencies' references non existing library '{}'",
+                            location.display()
+                        ));
+                    }
+                }
+            }
             _ => {}
         }
     }
