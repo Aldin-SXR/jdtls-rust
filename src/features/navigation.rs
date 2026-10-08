@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use once_cell::sync::Lazy;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tower_lsp::lsp_types::{DocumentHighlight, DocumentHighlightKind, Location, Position, Range, Url};
 
 use crate::analysis::dispatcher::{Dispatcher, RequestContext};
@@ -342,6 +342,27 @@ pub async fn declaration(d: &Dispatcher, uri: &Url, pos: Position) -> Option<Vec
         return Some(Vec::new());
     }
     nav(d, uri, pos, "declaration", false).await.map(|o| o.locations)
+}
+
+/// `java/findLinks` (`FindLinksHandler.findLinks`): `LinkLocation`s as JSON.
+pub async fn find_links(d: &Dispatcher, uri: &Url, pos: Position, link_type: &str) -> Vec<Value> {
+    if link_type != "superImplementation" || !is_resolvable(d, uri) {
+        return Vec::new();
+    }
+    let Some(outcome) = nav(d, uri, pos, "superImplementation", false).await else { return Vec::new() };
+    outcome
+        .locations
+        .iter()
+        .zip(&outcome.raw)
+        .map(|(location, raw)| {
+            json!({
+                "displayName": raw.display_name,
+                "kind": "method",
+                "uri": location.uri,
+                "range": location.range,
+            })
+        })
+        .collect()
 }
 
 /// `textDocument/implementation` (`ImplementationsHandler.findImplementations`).

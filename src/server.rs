@@ -247,6 +247,19 @@ enum ClientFlavor {
 
 impl JavaLanguageServer {
     /// jdt.ls `java/searchSymbols`.
+    /// `java/findLinks` (`FindLinksHandler.findLinks`).
+    pub async fn find_links(&self, params: Value) -> LspResult<Vec<Value>> {
+        let link_type = params["type"].as_str().unwrap_or_default();
+        let position = &params["position"];
+        let (Some(uri), Ok(pos)) = (
+            position["textDocument"]["uri"].as_str().and_then(|u| Url::parse(u).ok()),
+            serde_json::from_value::<Position>(position["position"].clone()),
+        ) else {
+            return Ok(Vec::new());
+        };
+        Ok(navigation::find_links(&self.dispatcher, &uri, pos, link_type).await)
+    }
+
     pub async fn search_symbols(
         &self,
         params: crate::features::workspace_symbols::SearchSymbolParams,

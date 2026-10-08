@@ -910,6 +910,9 @@ pub struct RawLocation {
     /// Highlight kind (1=Text 2=Read 3=Write), 0 otherwise.
     #[serde(default)]
     pub kind: u8,
+    /// `superImplementation`: declaring type and name of the overridden method.
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 /// An element selected for rename (`RenameBindingService.Element`).
