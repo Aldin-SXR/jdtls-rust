@@ -100,7 +100,28 @@ fn parse_dep(node: roxmltree::Node) -> Dep {
 }
 
 pub fn parse_pom(text: &str) -> Option<RawPom> {
-    let doc = roxmltree::Document::parse(text).ok()?;
+    // Maven's pull parser accepts attributes that aren't separated by
+    // whitespace (`a="1"b="2"`), which XML forbids.
+    let repaired;
+    let doc = match roxmltree::Document::parse(text) {
+        Ok(doc) => doc,
+        Err(_) => {
+            static MISSING_SPACE: once_cell::sync::Lazy<regex::Regex> =
+                once_cell::sync::Lazy::new(|| {
+                    regex::Regex::new(r#"(="[^"<>]*")([A-Za-z_][\w:.-]*=)"#).unwrap()
+                });
+            let mut fixed = text.to_owned();
+            loop {
+                let next = MISSING_SPACE.replace_all(&fixed, "$1 $2").into_owned();
+                if next == fixed {
+                    break;
+                }
+                fixed = next;
+            }
+            repaired = fixed;
+            roxmltree::Document::parse(&repaired).ok()?
+        }
+    };
     let root = doc.root_element();
     let mut pom = RawPom {
         group: child_text(root, "groupId"),

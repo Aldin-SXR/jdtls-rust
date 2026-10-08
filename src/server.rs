@@ -943,6 +943,7 @@ impl LanguageServer for JavaLanguageServer {
         }
         // Custom notifications are permitted after initialize completes.
         self.reimport_workspace().await;
+        self.report_imported_projects().await;
         // `InitHandler.triggerInitialization` + `JDTLanguageServer.initialized`.
         let client = self.client.clone();
         let dispatcher = Arc::clone(&self.dispatcher);
@@ -1159,6 +1160,7 @@ impl LanguageServer for JavaLanguageServer {
             }
         }
         self.reimport_workspace().await;
+        self.report_imported_projects().await;
         if !self.legacy_diagnostics().await {
             self.lifecycle.build(None).await;
             self.register_watchers().await;
@@ -2491,6 +2493,9 @@ impl LanguageServer for JavaLanguageServer {
                 // `ProjectsManager.importProjects`: scan the root paths again.
                 self.config.write().await.project_configurations = None;
                 self.reimport_workspace().await;
+                self.report_imported_projects().await;
+                self.send_event(projects::PROJECTS_IMPORTED, self.project_uris(true)).await;
+                self.report_projects_status().await;
                 self.request_compile();
                 Ok(None)
             }

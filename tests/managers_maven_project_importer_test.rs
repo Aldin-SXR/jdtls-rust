@@ -375,5 +375,30 @@ fn test_import_modules_with_same_artifact_id() {
     );
 }
 
-// Unported: test_invalid_project requires the pre-cleanup Java nature and
-// an explicit cleanInvalidJavaProjects call, which has no LSP equivalent.
+#[test]
+fn test_preexisting_i_project_different_name() {
+    let mut ws = workspace();
+    let project_dir = ws.dir.parent().unwrap().join("testImportDifferentName");
+    copy_dir(&fixtures_dir().join("projects/maven/salut"), &project_dir);
+    ws.import_root(&project_dir);
+    ws.wait_for_background_jobs();
+    // `updateWorkspaceFolders([projectDir], [])` again: the job succeeds.
+    ws.client().notify(
+        "workspace/didChangeWorkspaceFolders",
+        json!({ "event": { "added": [{ "uri": dir_uri(&project_dir), "name": "testImportDifferentName" }], "removed": [] } }),
+    );
+    ws.wait_for_background_jobs();
+    ws.assert_is_maven_project(&project_dir);
+}
+
+// https://github.com/redhat-developer/vscode-java/issues/3639
+#[test]
+#[ignore = "m2e fails to configure module1 (no .classpath) and cleanInvalidJavaProjects drops its Java nature during initialization, so over LSP the oracle never shows the one Java project the upstream test sees before calling it; the Rust importer keeps module1 a Java project"]
+fn test_invalid_project() {
+    let mut ws = workspace();
+    ws.import_projects(&["maven/invalid2"]);
+    let projects = ws.all_projects(true);
+    assert_eq!(2, projects.len(), "{projects:?}"); // invalid2 & module1
+    let java_projects = ws.all_projects(false);
+    assert_eq!(1, java_projects.len(), "{java_projects:?}");
+}

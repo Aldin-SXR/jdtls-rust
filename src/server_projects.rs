@@ -395,6 +395,14 @@ impl JavaLanguageServer {
         let import = to_paths(to_import);
         let _ = to_update;
         let ws = self.workspace_snapshot();
+        let deleted: Vec<String> = delete
+            .iter()
+            .filter_map(|d| ws.projects.iter().find(|p| p.root == *d || p.location == *d))
+            .map(|p| crate::project::java_file_uri(&p.root, true))
+            .collect();
+        if !deleted.is_empty() {
+            self.send_event(PROJECTS_DELETED, deleted).await;
+        }
         let mut configs = match self.config.read().await.project_configurations.clone() {
             Some(c) => c
                 .iter()
@@ -425,7 +433,7 @@ impl JavaLanguageServer {
                 });
             }
         }
-        for i in import {
+        for i in import.clone() {
             if !configs.contains(&i) {
                 configs.push(i);
             }
@@ -438,6 +446,15 @@ impl JavaLanguageServer {
                 .collect(),
         );
         self.reimport_workspace().await;
+        let ws = self.workspace_snapshot();
+        let imported: Vec<String> = import
+            .iter()
+            .filter_map(|file| ws.project_for_path(file))
+            .map(|p| crate::project::java_file_uri(&p.root, true))
+            .collect();
+        if !imported.is_empty() {
+            self.send_event(PROJECTS_IMPORTED, imported).await;
+        }
         self.request_compile();
     }
 }
@@ -663,6 +680,51 @@ impl JavaLanguageServer {
     /// `java/projectConfigurationsUpdate`.
     pub async fn project_configurations_update(&self, params: Value) {
         self.project_configuration_update(params).await;
+    }
+}
+
+/// jdt.ls `language/eventNotification`.
+pub(crate) enum EventNotification {}
+
+impl tower_lsp::lsp_types::notification::Notification for EventNotification {
+    type Params = Value;
+    const METHOD: &'static str = "language/eventNotification";
+}
+
+/// `EventType.ProjectsImported`.
+pub(crate) const PROJECTS_IMPORTED: u64 = 200;
+/// `EventType.ProjectsDeleted`.
+pub(crate) const PROJECTS_DELETED: u64 = 210;
+
+impl JavaLanguageServer {
+    pub(crate) async fn send_event(&self, event_type: u64, data: Vec<String>) {
+        self.client
+            .send_notification::<EventNotification>(json!({ "eventType": event_type, "data": data }))
+            .await;
+    }
+
+    /// The `File.toURI()` of every project, in the order of the workspace root.
+    pub(crate) fn project_uris(&self, include_default: bool) -> Vec<String> {
+        let ws = self.workspace_snapshot();
+        let mut projects: Vec<&crate::project::Project> = ws
+            .projects
+            .iter()
+            .filter(|p| include_default || p.kind != ProjectKind::Default)
+            .collect();
+        projects.sort_by(|a, b| a.name.cmp(&b.name));
+        projects
+            .into_iter()
+            .map(|p| crate::project::java_file_uri(&p.root, true))
+            .collect()
+    }
+
+    /// `ProgressiveProjectReporter.stop`: the final flush reports every
+    /// project of a fresh reporter, the default project aside.
+    pub(crate) async fn report_imported_projects(&self) {
+        let uris = self.project_uris(false);
+        if !uris.is_empty() {
+            self.send_event(PROJECTS_IMPORTED, uris).await;
+        }
     }
 }
 
