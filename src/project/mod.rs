@@ -17,6 +17,7 @@ pub mod gradle;
 pub mod invisible;
 pub mod jar;
 pub mod jdt_defaults;
+pub mod metadata;
 pub mod maven;
 pub mod null_analysis;
 pub mod prefs;
@@ -461,6 +462,7 @@ pub struct ImportSettings {
     pub null_analysis: null_analysis::NullAnalysisSettings,
     pub resource_filters: resource_filters::ResourceFilters,
     pub gradle: gradle::config::GradleSettings,
+    pub metadata: metadata::MetadataSettings,
 }
 
 impl ImportSettings {
@@ -488,6 +490,7 @@ impl ImportSettings {
             },
             resource_filters: resource_filters::ResourceFilters::jdtls_default(),
             gradle: gradle::config::GradleSettings::default(),
+            metadata: metadata::MetadataSettings::default(),
         }
     }
 

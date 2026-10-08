@@ -2855,6 +2855,8 @@ fn import_settings(cfg: &Config) -> crate::project::ImportSettings {
     s.gradle.default_vm = s.vm_home.clone();
     s.gradle.launcher_java = s.vm_home.clone();
     s.gradle.scripts_dir = Some(data_dir().join(".metadata/jdtls-rust/gradle"));
+    s.metadata.at_project_root = crate::config::METADATA_AT_PROJECT_ROOT.get().copied().unwrap_or(true);
+    s.metadata.area = Some(crate::project::metadata::metadata_area(&data_dir()));
     s
 }
 

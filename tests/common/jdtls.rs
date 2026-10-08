@@ -109,6 +109,7 @@ impl LspClient {
             if let Some(d) = data_dir {
                 c.arg("-data").arg(d.join("workspace"));
             }
+            c.args(java_options.iter().filter(|o| o.starts_with("-D")));
             c
         };
         if is_oracle() && !java_options.is_empty() {

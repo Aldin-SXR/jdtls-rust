@@ -36,6 +36,13 @@ async fn main() {
         }
     }
 
+    if let Some(value) = args
+        .iter()
+        .find_map(|a| a.strip_prefix("-Djava.import.generatesMetadataFilesAtProjectRoot="))
+    {
+        let _ = config::METADATA_AT_PROJECT_ROOT.set(value.eq_ignore_ascii_case("true"));
+    }
+
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 

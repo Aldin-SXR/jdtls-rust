@@ -7,14 +7,17 @@ pub mod checksums;
 pub mod config;
 mod fallback;
 pub mod model;
-mod sha256;
+pub mod persistence;
+pub(crate) mod sha256;
 pub mod util;
 
 use super::detect::FileDetector;
+use super::metadata::{self, MetadataSettings};
 use super::{
-    compliance_options, normalize_java_version, project_prefs, ClasspathEntry, EntryKind,
-    ImportSettings, Project, ProjectKind, Workspace,
+    compliance_options, normalize_java_version, ClasspathEntry, EntryKind, ImportSettings,
+    Project, ProjectKind, Workspace,
 };
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub(crate) const BUILD_FILES: &[&str] = &[
@@ -112,7 +115,16 @@ fn import_dir(dir: &Path, settings: &ImportSettings) -> Vec<Project> {
     let mut config = config::get_build_configuration(dir, &settings.gradle);
     infer_gradle_java_home(&mut config, settings);
     match model::fetch(&config, &settings.gradle) {
-        Ok(m) => m.project.flatten().into_iter().map(project_from_model).collect(),
+        Ok(m) => {
+            let projects: Vec<Project> = m
+                .project
+                .flatten()
+                .into_iter()
+                .map(|p| project_from_model(p, &settings.metadata))
+                .collect();
+            write_metadata(&m, &projects, &config, settings);
+            projects
+        }
         Err(model::FetchError::Unavailable(reason)) => {
             tracing::warn!(
                 "Gradle is not available, reading {} statically: {reason}",
@@ -150,7 +162,7 @@ fn existing_build_files(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn project_from_model(p: &model::ModelProject) -> Project {
+fn project_from_model(p: &model::ModelProject, metadata: &MetadataSettings) -> Project {
     let dir = super::canonicalize_lenient(&p.dir);
     let mut project = Project::new(&p.name, &dir, ProjectKind::Gradle);
     project.natures = p.natures.clone();
@@ -159,7 +171,7 @@ fn project_from_model(p: &model::ModelProject) -> Project {
     }
     project.build_files = existing_build_files(&dir);
     if project.is_java() {
-        let mut options = project_prefs(&dir);
+        let mut options = metadata::read_preferences(metadata, &project, metadata::JDT_CORE_PREFS);
         if let Some(java) = &p.java {
             if let Some(source) = java.source.as_deref().and_then(normalize_java_version) {
                 let target = java
@@ -233,4 +245,153 @@ fn classpath_from_model(project: &Project, p: &model::ModelProject, dir: &Path) 
     }
     classpath.push(container);
     classpath
+}
+
+/// `GradleBuildSupport.isBuildFile(resource)`: a Gradle script or
+/// `gradle.properties` of a Gradle project, outside the output folder.
+pub fn is_build_file(project: &Project, file: &Path) -> bool {
+    let Some(name) = file.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let build_like = name == "gradle.properties"
+        || name.ends_with(".gradle")
+        || name.ends_with(".gradle.kts");
+    if !(build_like && project.has_nature(super::GRADLE_NATURE) && file.starts_with(&project.location)) {
+        return false;
+    }
+    if !project.is_java() {
+        return true;
+    }
+    project.output.as_ref().is_none_or(|output| !file.starts_with(output))
+}
+
+fn relative_path(from: &Path, to: &Path) -> String {
+    let from: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+    let common = from
+        .iter()
+        .zip(&to_components)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut parts: Vec<String> = vec!["..".to_owned(); from.len() - common];
+    parts.extend(
+        to_components[common..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    parts.join("/")
+}
+
+fn distribution_value(d: &config::GradleDistribution) -> String {
+    match d {
+        config::GradleDistribution::Wrapper => "GRADLE_DISTRIBUTION(WRAPPER)".to_owned(),
+        config::GradleDistribution::FixedVersion(v) => format!("GRADLE_DISTRIBUTION(VERSION({v}))"),
+        config::GradleDistribution::Local(p) => {
+            format!("GRADLE_DISTRIBUTION(LOCAL_INSTALLATION({}))", p.display())
+        }
+    }
+}
+
+/// The files Buildship writes for the imported projects.
+fn write_metadata(
+    m: &model::GradleModel,
+    projects: &[Project],
+    config: &config::BuildConfiguration,
+    settings: &ImportSettings,
+) {
+    let root = projects.first().map(|p| p.location.clone());
+    let filter = format!(
+        "{}|{}",
+        settings.resource_filters.patterns().join("|"),
+        super::resource_filters::CREATED_BY_JAVA_LANGUAGE_SERVER
+    );
+    let filter = if settings.resource_filters.patterns().is_empty() {
+        String::new()
+    } else {
+        filter
+    };
+    for (p, project) in m.project.flatten().into_iter().zip(projects) {
+        let mut builders: Vec<&str> = p.build_commands.iter().map(String::as_str).collect();
+        builders.push("org.eclipse.buildship.core.gradleprojectbuilder");
+        let comment = format!("Project {} created by Buildship.", project.name);
+        let result = (|| -> std::io::Result<()> {
+            metadata::write_project_file(
+                &settings.metadata,
+                project,
+                &metadata::project_description(project, &comment, &builders, &filter),
+            )?;
+            if project.is_java() {
+                metadata::write_classpath_file(&settings.metadata, project)?;
+                write_compliance(project, settings)?;
+            }
+            let mut prefs: BTreeMap<String, String> = BTreeMap::new();
+            if Some(&project.location) == root.as_ref() {
+                prefs.insert("arguments".into(), config.arguments.join(" "));
+                prefs.insert("auto.sync".into(), config.auto_sync.to_string());
+                prefs.insert("build.scans.enabled".into(), "false".into());
+                prefs.insert(
+                    "connection.gradle.distribution".into(),
+                    distribution_value(&config.distribution),
+                );
+                prefs.insert("connection.project.dir".into(), String::new());
+                prefs.insert(
+                    "gradle.user.home".into(),
+                    config
+                        .gradle_user_home
+                        .as_ref()
+                        .map(|h| h.display().to_string())
+                        .unwrap_or_default(),
+                );
+                prefs.insert(
+                    "java.home".into(),
+                    config
+                        .java_home
+                        .as_ref()
+                        .map(|h| h.display().to_string())
+                        .unwrap_or_default(),
+                );
+                prefs.insert("jvm.arguments".into(), config.jvm_arguments.join(" "));
+                prefs.insert("offline.mode".into(), config.offline_mode.to_string());
+                prefs.insert(
+                    "override.workspace.settings".into(),
+                    config.override_workspace_settings.to_string(),
+                );
+                prefs.insert("show.console.view".into(), "true".into());
+                prefs.insert("show.executions.view".into(), "true".into());
+            } else if let Some(root) = &root {
+                prefs.insert(
+                    "connection.project.dir".into(),
+                    relative_path(&project.location, root),
+                );
+            }
+            metadata::write_preferences(
+                &settings.metadata,
+                project,
+                "org.eclipse.buildship.core.prefs",
+                &prefs,
+            )
+        })();
+        if let Err(e) = result {
+            tracing::warn!("Cannot write the metadata of {}: {e}", project.name);
+        }
+    }
+}
+
+/// The compliance settings that differ from the workspace default.
+fn write_compliance(project: &Project, settings: &ImportSettings) -> std::io::Result<()> {
+    let mut prefs = metadata::read_preferences(&settings.metadata, project, metadata::JDT_CORE_PREFS);
+    let default = settings.vm_version.clone().or_else(|| settings.default_compliance().into());
+    let mut changed = false;
+    for key in [super::COMPLIANCE, super::SOURCE, super::TARGET] {
+        if let Some(v) = project.options.get(key) {
+            if Some(v) != default.as_ref() && prefs.get(key) != Some(v) {
+                prefs.insert(key.to_owned(), v.clone());
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        metadata::write_preferences(&settings.metadata, project, metadata::JDT_CORE_PREFS, &prefs)?;
+    }
+    Ok(())
 }
