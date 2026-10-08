@@ -89,6 +89,11 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
     }
     let ctx = &req.context;
     match id {
+        p::UnusedImport | p::DuplicateImport | p::CannotImportPackage | p::ConflictingImport | p::ImportNotFound => super::reorg::remove_import_statement_proposals(ctx, problem, proposals),
+        p::PublicClassMustMatchFileName => super::reorg::wrong_type_name_proposals(env, ctx, problem, proposals).await,
+        p::PackageIsNotExpectedPackage => super::reorg::wrong_package_decl_name_proposals(env, ctx, problem, proposals).await,
+        p::FeatureNotSupported => super::reorg::need_higher_compliance_proposals(env, ctx, problem, proposals, None).await,
+        p::MultiConstantCaseLabelsNotSupported => super::reorg::need_higher_compliance_proposals(env, ctx, problem, proposals, Some("14")).await,
         p::UnusedObjectAllocation => super::local_corrections::unused_allocation(env, ctx, problem, proposals).await,
         p::UnterminatedString => super::local_corrections::add_quote(ctx, problem, proposals),
         p::InvalidOperator => super::local_corrections::invalid_operator(ctx, problem, proposals),

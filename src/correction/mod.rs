@@ -33,6 +33,7 @@ pub mod null_annotations;
 pub mod modifier_corrections;
 pub mod quick_assist;
 pub mod refactor_edit;
+pub mod reorg;
 pub mod quick_fix;
 pub mod parentheses;
 pub mod serial_hash;
