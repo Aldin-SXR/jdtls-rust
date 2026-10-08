@@ -104,6 +104,7 @@ async fn main() {
             "java/addOverridableMethods",
             JavaLanguageServer::add_overridable_methods,
         )
+        .custom_method("java/findLinks", JavaLanguageServer::find_links)
         .custom_method("java/searchSymbols", JavaLanguageServer::search_symbols)
         .custom_method("java/buildWorkspace", JavaLanguageServer::build_workspace)
         .custom_method("java/buildProjects", JavaLanguageServer::build_projects)

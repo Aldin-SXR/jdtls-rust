@@ -86,6 +86,13 @@ public class BridgeProtocol {
         }
     }
 
+    public static class ReferencedModulesResponse extends Response {
+        public List<String> modules;
+        public ReferencedModulesResponse(long id, List<String> modules) {
+            this.id = id; this.method = "referencedModules"; this.modules = modules;
+        }
+    }
+
     public static class BridgeRange {
         public int startLine, startChar, endLine, endChar;
     }

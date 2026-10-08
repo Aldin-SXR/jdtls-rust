@@ -41,6 +41,8 @@ final class NavigationDataService {
         public int startLine, startChar, endLine, endChar;
         /** Highlight kind: 1=Text 2=Read 3=Write (0 for plain locations). */
         public int kind;
+        /** superImplementation: the declaring type and name of the overridden method. */
+        public String displayName;
     }
 
     public static class NavDataResponse extends BridgeProtocol.Response {
@@ -935,6 +937,31 @@ final class NavigationDataService {
         return loc == null ? List.of() : List.of(loc);
     }
 
+    /** {@code FindLinksHandler.findLinks("superImplementation", ...)}. */
+    static List<RawLocation> superImplementation(Units units, int line, int character) {
+        Unit u = units.target;
+        if (u == null) {
+            return List.of();
+        }
+        IBinding element = elementAt(u, u.offset(line, character));
+        if (!(element instanceof IMethodBinding method) || method.isConstructor()
+                || method.getDeclaringClass() == null || method.getDeclaringClass().isInterface()) {
+            return List.of();
+        }
+        IMethodBinding overridden = findOverriddenMethod(method);
+        if (overridden == null || overridden.getMethodDeclaration().isEqualTo(method.getMethodDeclaration())) {
+            return List.of();
+        }
+        RawLocation loc = elementLocation(units, overridden.getMethodDeclaration(), true);
+        if (loc == null) {
+            return List.of();
+        }
+        ITypeBinding declaring = overridden.getDeclaringClass().getErasure();
+        String typeName = declaring.getBinaryName() != null ? declaring.getBinaryName() : declaring.getQualifiedName();
+        loc.displayName = typeName + "." + overridden.getName();
+        return List.of(loc);
+    }
+
     /** {@code MethodOverrideTester.findDeclaringMethod(method, false)}. */
     static IMethodBinding findDeclaringMethod(IMethodBinding method) {
         IMethodBinding result = null;
@@ -1692,7 +1719,7 @@ final class NavigationDataService {
         ClassFileDesc cf = ClassFileService.complete(req.classFile);
         String op = req.op == null ? "" : req.op;
         Map<String, String> files = req.files;
-        if (cf != null && (op.equals("definition") || op.equals("typeDefinition") || op.equals("declaration") || op.equals("highlight"))) {
+        if (cf != null && (op.equals("definition") || op.equals("typeDefinition") || op.equals("declaration") || op.equals("superImplementation") || op.equals("highlight"))) {
             // A class file only references library types.
             files = Map.of();
         }
@@ -1738,6 +1765,7 @@ final class NavigationDataService {
             case "definition" -> definition(units, req.line, req.character);
             case "typeDefinition" -> typeDefinition(units, req.line, req.character);
             case "declaration" -> declaration(units, req.line, req.character);
+            case "superImplementation" -> superImplementation(units, req.line, req.character);
             case "implementation" -> implementations(units, req.line, req.character);
             case "references" -> references(units, req.line, req.character);
             case "highlight" -> OccurrencesFinders.highlights(units.target, req.line, req.character);

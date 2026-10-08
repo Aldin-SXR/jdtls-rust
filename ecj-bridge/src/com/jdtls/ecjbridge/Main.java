@@ -374,6 +374,8 @@ public class Main {
             }
             case "compiledClasses" -> new CompiledClassesResponse(req.id, compiler.compiledClasses(
                 req.files, orEmpty(req.classpath), orDefault(req.sourceLevel), req.names));
+            case "referencedModules" -> new ReferencedModulesResponse(req.id, compiler.referencedModules(
+                req.files, orEmpty(req.classpath), orDefault(req.sourceLevel)));
             case "shutdown" -> new OkResponse(req.id);
             default -> new ErrorResponse(req.id, "Unknown method: " + req.method);
         };

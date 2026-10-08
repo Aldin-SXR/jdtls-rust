@@ -247,6 +247,19 @@ enum ClientFlavor {
 
 impl JavaLanguageServer {
     /// jdt.ls `java/searchSymbols`.
+    /// `java/findLinks` (`FindLinksHandler.findLinks`).
+    pub async fn find_links(&self, params: Value) -> LspResult<Vec<Value>> {
+        let link_type = params["type"].as_str().unwrap_or_default();
+        let position = &params["position"];
+        let (Some(uri), Ok(pos)) = (
+            position["textDocument"]["uri"].as_str().and_then(|u| Url::parse(u).ok()),
+            serde_json::from_value::<Position>(position["position"].clone()),
+        ) else {
+            return Ok(Vec::new());
+        };
+        Ok(navigation::find_links(&self.dispatcher, &uri, pos, link_type).await)
+    }
+
     pub async fn search_symbols(
         &self,
         params: crate::features::workspace_symbols::SearchSymbolParams,
@@ -371,9 +384,10 @@ impl JavaLanguageServer {
         let settings = self.current_import_settings().await;
         let previous = self.workspace_snapshot();
         let import_progress = self.begin_maven_import_progress(&roots, &settings).await;
+        let before = previous.clone();
         let ws = tokio::task::spawn_blocking(move || {
             let mut ws = crate::project::Workspace::import_with_previous(
-                &roots, &settings, Some(&previous),
+                &roots, &settings, Some(&before),
             );
             ws.configure_filters(&settings.resource_filters);
             if let Err(error) = ws.ensure_default_project() {
@@ -410,6 +424,7 @@ impl JavaLanguageServer {
         self.record_build_file_digests();
         if self.service_ready.load(std::sync::atomic::Ordering::SeqCst) {
             self.register_watchers().await;
+            self.send_classpath_updates(&previous).await;
         }
     }
 
@@ -2421,6 +2436,27 @@ impl LanguageServer for JavaLanguageServer {
                 };
                 let uri = navigation::type_uri(&self.dispatcher, &arg(0), &arg(1)).await;
                 Ok(Some(uri.map(Value::String).unwrap_or(Value::Null)))
+            }
+            "java.project.createModuleInfo" => {
+                let uri = params.arguments.first().and_then(Value::as_str).unwrap_or_default();
+                Ok(self.create_module_info(uri).await.map(Value::String))
+            }
+            "java.project.resolveStackTraceLocation" => {
+                let line = params.arguments.first().and_then(Value::as_str);
+                let project_names: Option<Vec<String>> = params
+                    .arguments
+                    .get(1)
+                    .and_then(Value::as_array)
+                    .map(|names| names.iter().filter_map(Value::as_str).map(str::to_owned).collect());
+                let ws = self.workspace_snapshot();
+                let uri = crate::features::resolve_source_mapping::resolve_stack_trace_location(
+                    &self.dispatcher,
+                    &ws,
+                    line,
+                    project_names.as_deref(),
+                )
+                .await;
+                Ok(uri.map(Value::String))
             }
             "java.project.getAll" => {
                 // jdt.ls `ProjectCommand.getAllJavaProjects` / `getAllProjects`

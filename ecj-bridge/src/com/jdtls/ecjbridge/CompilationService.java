@@ -221,6 +221,37 @@ public class CompilationService {
         return out;
     }
 
+    /**
+     * {@code ModuleUtil.getReferencedModules}: compile the sources and name the
+     * modules of the library types the compiler looked up, without {@code java.base}.
+     */
+    public List<String> referencedModules(Map<String, String> sourceFiles, List<String> classpath, String sourceLevel) {
+        Set<String> modules = new HashSet<>();
+        InMemoryNameEnvironment nameEnv = new InMemoryNameEnvironment(sourceFiles, classpath);
+        nameEnv.recordModules(modules);
+        CompilerOptions compilerOptions = buildOptions(sourceLevel);
+        compilerOptions.processAnnotations = false;
+        compilerOptions.performMethodsFullRecovery = true;
+        compilerOptions.performStatementsRecovery = true;
+        Compiler compiler = new Compiler(nameEnv, DefaultErrorHandlingPolicies.proceedWithAllProblems(),
+                compilerOptions, result -> { }, new DefaultProblemFactory(Locale.ENGLISH));
+        ICompilationUnit[] units = sourceFiles.entrySet().stream()
+                .filter(e -> e.getKey().endsWith(".java"))
+                .map(e -> (ICompilationUnit) new InMemoryCompilationUnit(e.getKey(), e.getValue()))
+                .toArray(ICompilationUnit[]::new);
+        try {
+            if (units.length > 0) {
+                compiler.compile(units);
+            }
+        } finally {
+            nameEnv.cleanup();
+        }
+        modules.remove("java.base");
+        List<String> sorted = new ArrayList<>(modules);
+        Collections.sort(sorted);
+        return sorted;
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private CompilerOptions buildOptions(String sourceLevel) {
