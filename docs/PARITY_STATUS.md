@@ -597,7 +597,7 @@ Run `scripts/parity-count.py` for the per-class gap. The largest remaining items
   AST import builder. Exact custom-JDK binding contents retain the
   standalone-parser limitation above.
 * **Lombok** is not supported in any feature.
-* **Cross-file secondary types and package annotations.** `delegate_regressions::secondary_external_source_type_preserves_method_source_order` and two `nullness_generation_regressions` cases (package-info defaults) fail on this machine and did before this session; the oracle passes them. `refactoring_extract_variable_test::test_extract_variable1` fails identically on the oracle here (attached JDK sources change parameter names).
+* **`refactoring_extract_variable_test::test_extract_variable1`** fails identically on the oracle on this machine: attached JDK sources change the inferred parameter name (`index` instead of `i`).
 * **Extension bundles.** jdt.ls loads OSGi bundles (`initializationOptions.bundles`,
   e.g. java-debug and the test runner) that contribute delegate commands. The Rust
   server can't host Eclipse plug-ins; its delegate-command registry
