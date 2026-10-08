@@ -152,6 +152,31 @@ pub fn file_associations() -> Vec<String> {
         .collect()
 }
 
+/// The max & init value of the adaptive debounce time of the validation job
+/// (`BaseDocumentLifeCycleHandler.DOCUMENT_LIFECYCLE_MAX_DEBOUNCE`, ms).
+const DOCUMENT_LIFECYCLE_MAX_DEBOUNCE: i64 = 400;
+
+/// Port of `org.eclipse.jdt.ls.core.internal.MovingAverage`.
+pub struct MovingAverage {
+    /// The average value.
+    pub value: i64,
+    n: i64,
+}
+
+impl MovingAverage {
+    /// `new MovingAverage(initValue)`.
+    pub fn new(init_value: i64) -> Self {
+        MovingAverage { value: init_value, n: 1 }
+    }
+
+    /// `update(value)`: Java `long` arithmetic (division truncates).
+    pub fn update(&mut self, value: i64) -> &mut Self {
+        self.value += (value - self.value) / self.n;
+        self.n += 1;
+        self
+    }
+}
+
 #[derive(Default)]
 struct State {
     /// Problem markers per file, from the last build of its project.
@@ -172,6 +197,8 @@ pub struct Lifecycle {
     dispatcher: Arc<Dispatcher>,
     state: Mutex<State>,
     validate: Arc<Notify>,
+    /// `movingAverageForValidation`.
+    validation_average: Mutex<MovingAverage>,
     build_lock: tokio::sync::Mutex<()>,
     started: std::sync::atomic::AtomicBool,
 }
@@ -188,6 +215,7 @@ impl Lifecycle {
             dispatcher,
             state: Mutex::new(State::default()),
             validate: Arc::new(Notify::new()),
+            validation_average: Mutex::new(MovingAverage::new(DOCUMENT_LIFECYCLE_MAX_DEBOUNCE)),
             build_lock: tokio::sync::Mutex::new(()),
             started: std::sync::atomic::AtomicBool::new(false),
         })
@@ -215,19 +243,30 @@ impl Lifecycle {
         tokio::spawn(async move {
             loop {
                 this.validate.notified().await;
-                // Debounce: run once the triggers stop for a moment.
+                // `validationTimer.schedule(getDocumentLifecycleDelay())`: every
+                // trigger cancels and reschedules the job.
                 loop {
+                    let delay = this.document_lifecycle_delay();
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_millis(150)) => break,
+                        _ = tokio::time::sleep(Duration::from_millis(delay)) => break,
                         _ = this.validate.notified() => {}
                     }
                 }
                 while !this.dispatcher.is_ecj_ready().await {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
+                let start = std::time::Instant::now();
                 this.publish_pending().await;
+                let elapsed = start.elapsed().as_millis() as i64;
+                this.validation_average.lock().unwrap_or_else(|e| e.into_inner()).update(elapsed);
             }
         });
+    }
+
+    /// `getDocumentLifecycleDelay()`.
+    fn document_lifecycle_delay(&self) -> u64 {
+        let average = self.validation_average.lock().unwrap_or_else(|e| e.into_inner()).value;
+        DOCUMENT_LIFECYCLE_MAX_DEBOUNCE.min((1.5 * average as f64).round() as i64).max(0) as u64
     }
 
     // ── Validation of working copies ────────────────────────────────────────
@@ -971,5 +1010,28 @@ mod tests {
             "",
             folder_package(Path::new("/p/src"), Path::new("/p/src/X.java"))
         );
+    }
+}
+
+#[cfg(test)]
+mod moving_average_test {
+    //! Port of `org.eclipse.jdt.ls.core.internal.MovingAverageTest`.
+
+    use super::MovingAverage;
+
+    #[test]
+    fn test_update() {
+        let mut average = MovingAverage::new(400);
+
+        // initialize to 400 at first
+        assert_eq!(400, average.value);
+
+        average.update(200);
+        // the first input value takes over the initial value
+        assert_eq!(200, average.value);
+
+        average.update(100);
+        // (200 + 100) / 2
+        assert_eq!(150, average.value);
     }
 }

@@ -107,12 +107,228 @@ pub fn get_list(configuration: &Value, key: &str, def: Option<Vec<String>>) -> O
                     return Some(s.split(' ').filter(|e| !e.is_empty()).map(str::to_owned).collect());
                 }
             }
-            match serde_json::from_str::<Value>(&s) {
-                Ok(Value::Array(a)) => Some(strings(&a)),
-                _ => def,
-            }
+            parse_lenient_string_list(&s).unwrap_or(def)
         }
         Some(Value::Array(a)) => Some(strings(a)),
         _ => def,
+    }
+}
+
+/// `new Gson().fromJson(str, List<String>)`: Gson reads leniently, so
+/// single-quoted and unquoted elements are accepted (`['a', 'b']`,
+/// `[c, d]`). `None` is a `JsonSyntaxException`; `null` elements are dropped.
+fn parse_lenient_string_list(s: &str) -> Option<Option<Vec<String>>> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    let skip_ws = |i: &mut usize| {
+        while *i < chars.len() && matches!(chars[*i], ' ' | '\t' | '\n' | '\r' | '\u{c}') {
+            *i += 1;
+        }
+    };
+    skip_ws(&mut i);
+    if i == chars.len() {
+        // An empty document is `null`.
+        return Some(None);
+    }
+    if chars[i] != '[' {
+        return None;
+    }
+    i += 1;
+    let mut out = Vec::new();
+    skip_ws(&mut i);
+    if i < chars.len() && chars[i] == ']' {
+        return Some(Some(out));
+    }
+    loop {
+        skip_ws(&mut i);
+        let c = *chars.get(i)?;
+        match c {
+            '"' | '\'' => {
+                i += 1;
+                let mut v = String::new();
+                loop {
+                    let ch = *chars.get(i)?;
+                    i += 1;
+                    if ch == c {
+                        break;
+                    }
+                    if ch == '\\' {
+                        let e = *chars.get(i)?;
+                        i += 1;
+                        match e {
+                            'n' => v.push('\n'),
+                            't' => v.push('\t'),
+                            'r' => v.push('\r'),
+                            'b' => v.push('\u{8}'),
+                            'f' => v.push('\u{c}'),
+                            'u' => {
+                                let hex: String = chars.get(i..i + 4)?.iter().collect();
+                                v.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                                i += 4;
+                            }
+                            other => v.push(other),
+                        }
+                    } else {
+                        v.push(ch);
+                    }
+                }
+                out.push(v);
+            }
+            '[' | '{' | ']' | ',' | ';' => {
+                // A missing element reads as `null` in lenient mode.
+                if c != ']' && c != ',' && c != ';' {
+                    return None;
+                }
+            }
+            _ => {
+                let start = i;
+                while i < chars.len()
+                    && !matches!(
+                        chars[i],
+                        '/' | '\\' | ';' | '#' | '=' | '{' | '}' | '[' | ']' | ':' | ',' | ' ' | '\t' | '\u{c}' | '\r' | '\n'
+                    )
+                {
+                    i += 1;
+                }
+                let lit: String = chars[start..i].iter().collect();
+                if lit.is_empty() {
+                    return None;
+                }
+                if lit != "null" {
+                    out.push(lit);
+                }
+            }
+        }
+        skip_ws(&mut i);
+        match chars.get(i)? {
+            ',' | ';' => i += 1,
+            ']' => return Some(Some(out)),
+            _ => return None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod map_flattener_test {
+    //! Port of `org.eclipse.jdt.ls.core.internal.handlers.MapFlattenerTest`.
+
+    use super::*;
+    use serde_json::json;
+
+    fn get_string1(c: &Value, k: &str) -> Option<String> {
+        get_string(c, k, None)
+    }
+
+    #[test]
+    fn test_get_string() {
+        let mut config = json!({});
+        config["foo"] = json!("bar");
+        let mut middle = json!({});
+        middle["thing"] = json!("value");
+        let mut bottom = json!({});
+        bottom["another"] = json!("thing");
+        middle["bottom"] = bottom;
+        config["java"] = middle;
+
+        assert_eq!(get_string1(&config, "missing"), None, "default");
+        assert_eq!(get_string(&config, "missing", Some("default")).as_deref(), Some("default"));
+        assert_eq!(get_string1(&config, "foo").as_deref(), Some("bar"));
+        assert_eq!(get_string1(&config, "java.thing").as_deref(), Some("value"));
+        assert_eq!(get_string1(&config, "java.bottom.another").as_deref(), Some("thing"));
+    }
+
+    #[test]
+    fn test_get_int() {
+        let mut config = json!({});
+        config["foo"] = json!(1);
+        let mut middle = json!({});
+        middle["nope"] = json!("not an int");
+        let mut bottom = json!({});
+        bottom["another"] = json!("3");
+        middle["bottom"] = bottom;
+        config["java"] = middle;
+
+        assert_eq!(0, get_int(&config, "missing", 0));
+        assert_eq!(1, get_int(&config, "foo", 0));
+        assert_eq!(2, get_int(&config, "java.nope", 2));
+        assert_eq!(3, get_int(&config, "java.bottom.another", 0));
+    }
+
+    #[test]
+    fn test_get_boolean() {
+        let mut config = json!({});
+        config["foo"] = json!(true);
+        let mut middle = json!({});
+        middle["thing"] = json!("TRUE");
+        let mut bottom = json!({});
+        bottom["another"] = json!(true);
+        middle["bottom"] = bottom;
+        config["java"] = middle;
+
+        assert!(get_boolean(&config, "foo", false));
+        assert!(get_boolean(&config, "java.thing", false));
+        assert!(get_boolean(&config, "java.default", true));
+        assert!(!get_boolean(&config, "java.missing", false));
+        assert!(get_boolean(&config, "java.bottom.another", false));
+    }
+
+    #[test]
+    fn test_get_list() {
+        let mut config = json!({});
+        config["foo"] = json!("['a', 'b']");
+        let middle = json!({});
+        config["java"] = middle;
+        let mut bottom = json!({});
+        bottom["another"] = json!("c, d");
+        config["java"]["bottom"] = bottom;
+
+        let foo = get_list(&config, "foo", None);
+        assert!(foo.is_some());
+        let foo = foo.unwrap();
+        assert_eq!("a", foo[0]);
+        assert_eq!("b", foo[1]);
+
+        let nope = get_list(&config, "java", None);
+        assert!(nope.is_none());
+
+        let def: Vec<String> = Vec::new();
+        let ptr = def.as_ptr();
+        let same = get_list(&config, "java", Some(def)).unwrap();
+        assert!(std::ptr::eq(ptr, same.as_ptr()));
+
+        let bar = get_list(&config, "java.bottom.another", None);
+        assert!(bar.is_some());
+        let bar = bar.unwrap();
+        assert_eq!("c", bar[0]);
+        assert_eq!("d", bar[1]);
+
+        config["args"] = json!("a  b");
+        let args = get_list(&config, "args", None);
+        assert!(args.is_some());
+        let args = args.unwrap();
+        assert_eq!(2, args.len());
+        assert_eq!("a", args[0]);
+        assert_eq!("b", args[1]);
+        config["args"] = json!("a  b");
+
+        config["args2"] = json!("a");
+        let args2 = get_list(&config, "args2", None);
+        assert!(args2.is_some());
+        let args2 = args2.unwrap();
+        assert_eq!(1, args2.len());
+        assert_eq!("a", args2[0]);
+    }
+
+    #[test]
+    fn test_get_value() {
+        let mut config = json!({});
+        config["foo"] = json!(1);
+        let middle = json!({});
+        config["java"] = middle;
+        let mut bottom = json!({});
+        bottom["another"] = json!(2);
+        config["java"]["bottom"] = bottom;
+
+        assert!(std::ptr::eq(&config["java"]["bottom"], get_value(&config, "java.bottom").unwrap()));
     }
 }
