@@ -7,7 +7,7 @@ suite. For how the port is done, see [PORTING.md](PORTING.md).
   binary-editor, initial correction, completion and project-manager integrations. `main` is unchanged.
 * **Reference:** eclipse.jdt.ls 1.58.0. The upstream checkout is 1.58.0-SNAPSHOT
   (2026-04-10), and the oracle in `.oracle/` is the 1.58.0 release.
-* **Last updated:** 2026-10-07.
+* **Last updated:** 2026-10-08.
 
 ## Summary
 
@@ -19,10 +19,10 @@ of `CompletionHandlerTest`'s 156.
 
 | | Tests | Share of upstream |
 |---|---:|---:|
-| Ported | 1,335 | 63.1% |
-| Passing | 1,298 | 61.3% |
-| Ported but `#[ignore]`d | 37 | 1.7% |
-| Not ported yet | 782 | 36.9% |
+| Ported | 1,409 | 66.6% |
+| Passing | 1,365 | 64.5% |
+| Ported but `#[ignore]`d | 44 | 2.1% |
+| Not ported yet | 708 | 33.4% |
 
 Our own regression suites (`tests/lsp.rs`, `tests/*_regressions.rs`) and unit tests that
 are not ports are excluded from these counts.
@@ -31,11 +31,11 @@ are not ports are excluded from these counts.
 
 | Area (`core.internal.*`) | Upstream | Ported | Passing | Passing % |
 |---|---:|---:|---:|---:|
-| handlers | 868 | 702 | 692 | 79% |
+| handlers | 868 | 768 | 751 | 86% |
 | correction | 610 | 367 | 346 | 56% |
 | managers | 211 | 134 | 128 | 60% |
 | refactoring | 118 | 4 | 4 | 3% |
-| (root) | 72 | 7 | 7 | 9% |
+| (root) | 72 | 8 | 8 | 11% |
 | commands | 60 | 23 | 23 | 38% |
 | preferences | 53 | 53 | 53 | 100% |
 | javadoc | 32 | 32 | 32 | 100% |
@@ -43,9 +43,9 @@ are not ports are excluded from these counts.
 | filesystem | 21 | 0 | 0 | 0% |
 | cleanup | 18 | 3 | 3 | 16% |
 | syntaxserver | 14 | 0 | 0 | 0% |
-| contentassist | 6 | 0 | 0 | 0% |
+| contentassist | 6 | 6 | 6 | 100% |
 | framework/protobuf | 2 | 0 | 0 | 0% |
-| corext | 1 | 0 | 0 | 0% |
+| corext | 1 | 1 | 1 | 100% |
 | javafx | 1 | 0 | 0 | 0% |
 
 ## Ported classes
@@ -64,7 +64,7 @@ are not ports are excluded from these counts.
 | handlers/CompletionHandlerChainTest | `handlers_completion_handler_chain_test` | 12 | 12 | 0 | 12/12 |
 | handlers/CompletionHandlerTest | `handlers_completion_handler_test` | 156 | 150 | 6 | all active ports verified on the oracle in targeted runs; see the completion evidence |
 | handlers/DocumentHighlightHandlerTest | `handlers_document_highlight_handler_test` | 5 | 5 | 0 | pass |
-| handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` | 19 | 19 | 0 | 19/19 |
+| handlers/DocumentLifeCycleHandlerTest | `handlers_document_life_cycle_handler_test` + `src/document_store.rs` | 21 | 21 | 0 | 19/19 LSP cases; the two `DocumentMonitor` cases are unit tests. `testNonJdtError` (needs a generic resource-marker API) is not ported |
 | handlers/DocumentSymbolHandlerTest | `handlers_document_symbol_handler_test` | 14 | 13 | 1 | 13/13 active |
 | handlers/FileEventHandlerTest | `handlers_file_event_handler_test` | 8 | 8 | 0 | 8/8 |
 | handlers/FoldingRangeHandlerTest | `handlers_folding_range_handler_test` | 9 | 9 | 0 | 9/9 |
@@ -98,8 +98,8 @@ are not ports are excluded from these counts.
 | handlers/SignatureHelpHandlerTest | `handlers_signature_help_handler_test` | 56 | 55 | 1 | 54/55; `test_signature_help_erasure_type`, where jdt.ls returns no doc |
 | handlers/SmartDetectionHandlerTest | `handlers_smart_detection_handler_test` | 2 | 2 | 0 | 2/2 |
 | handlers/TypeHierarchyHandlerTest | `handlers_type_hierarchy_handler_test` | 4 | 4 | 0 | 4/4 |
-| handlers/WorkspaceDiagnosticsHandlerTest | `handlers_workspace_diagnostics_handler_test` | 2 | 2 | 0 | 2/2 (package deletion and diagnostic filtering) |
-| handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` | 1 | 1 | 0 | 1/1 (unknown-command error) |
+| handlers/WorkspaceDiagnosticsHandlerTest | `handlers_workspace_diagnostics_handler_test` + `src/features/markers.rs` | 11 | 8 | 3 | 7/9 LSP cases (the two oracle failures are ignored here); marker conversion cases are unit tests. The m2e pom-marker cases (5) and `testEncoding` are not ported |
+| handlers/WorkspaceExecuteCommandHandlerTest | `handlers_workspace_execute_command_handler_test` + `src/features/execute_command.rs` | 5 | 5 | 0 | 1/1 LSP case; the delegate-handler cases are unit tests of the registry with the test plug-in's contributions. `testRegistryEventListener` (OSGi bundles) is not ported |
 | handlers/WorkspaceSymbolHandlerTest | `handlers_workspace_symbol_handler_test` | 19 | 19 | 0 | 19/19; all three restored stub-JDK assertions verified |
 | correction/AssignToVariableRefactorTest | `correction_assign_to_variable_refactor_test` | 2 | 2 | 0 | 2/2 (advanced assignment commands) |
 | cleanup/CleanUpsTest | `cleanup_clean_ups_test` | 3 | 3 | 0 | 3/3; no cleanup, invert equals, organize imports; 15 methods remain unported |
@@ -142,6 +142,17 @@ are not ports are excluded from these counts.
 | preferences/PreferencesTest | unit tests in `src/features/preferences/model.rs` (`preferences_test`) | 16 | 16 | 0 | n/a (unit tests) |
 | preferences/PreferenceManagerTest | unit tests in `src/features/preferences/manager.rs` (`preference_manager_test`) | 15 | 15 | 0 | n/a (unit tests) |
 | preferences/NullAnalysisTest | `preferences_null_analysis_test` | 6 | 6 | 0 | 6/6 |
+| MovingAverageTest | `src/features/lifecycle.rs` | 1 | 1 | 0 | unit test; drives the adaptive validation debounce |
+| handlers/MapFlattenerTest | `src/features/preferences/map_flattener.rs` | 5 | 5 | 0 | unit tests; lenient Gson list parsing |
+| handlers/JavaSettingsTest | `handlers_java_settings_test` | 8 | 7 | 1 | 7/7 |
+| handlers/PostfixCompletionTest | `handlers_postfix_completion_test` | 29 | 29 | 0 | 29/29 (oracle with `-Djava.lsp.joinOnCompletion=true`) |
+| handlers/CompletionResolveHandlerTest | `handlers_completion_resolve_handler_test` | 2 | 1 | 1 | 1/1 |
+| handlers/CompletionInsertReplaceCapabilityTest | `handlers_completion_insert_replace_capability_test` | 1 | 1 | 0 | 1/1 |
+| handlers/CompletionRankingProviderTest | `handlers_completion_ranking_provider_test` | 2 | 0 | 2 | not applicable (registers a Mockito provider in-process) |
+| handlers/CompletionRankingAggregationTest | `src/features/completion/ranking.rs` | 4 | 4 | 0 | unit tests |
+| contentassist/SnippetUtilsTest | `src/features/completion/snippets.rs` | 5 | 5 | 0 | unit tests |
+| contentassist/SortTextHelperTest | `src/features/completion/sort_text.rs` | 1 | 1 | 0 | unit test |
+| corext/template/java/JavaLanguageServerTemplateStoreTest | `src/features/completion/template_store.rs` | 1 | 1 | 0 | unit test |
 
 ## Ignored tests
 
@@ -166,6 +177,12 @@ Rust run and is excluded from the upstream-port count.
 | Unported type proposals: ambiguous-type "Explicitly import" (7), type parameters / import-only type change (8), `NewCUProposal` create type (8), add-all-missing-imports (2); `@Disabled` upstream (2) | 27 | `correction_unresolved_types_quick_fix_test` |
 | Unported `GetterSetterCorrectionSubProcessor` / `SelfEncapsulateFieldRefactoring` (`src/correction/getter_setter.rs` is a stub) | 6 | `correction_getter_setter_quick_fix_test` |
 | Gradle model/update parity for an invalid build | 1 | ProjectsManager `test_sending_warning_project_status`; successful-update and reload-marker assertions now run with the compatible Gradle VM |
+| No LSP equivalent: upstream makes a working copy without a lifecycle handler (the oracle also fails over LSP) | 1 | WorkspaceDiagnostics `test_working_copy` (`test_working_copy2` is the LSP form) |
+| Oracle publishes no "Unknown referenced nature" report (`isIgnored` drops CheckMissingNatures markers) | 1 | WorkspaceDiagnostics `test_missing_natures` |
+| Needs JDT incremental-builder semantics (duplicate class-file locator problems) | 1 | WorkspaceDiagnostics `test_bad_location_exception` |
+| The Rust build writes no class files to output folders | 1 | JavaSettings `test_configure_settings` |
+| Registers a Mockito ranking provider inside the Java server | 2 | `correction_ranking_provider_test` both cases (the ranking mechanism is ported in `ranking.rs`) |
+| `@Disabled` upstream (needs a real JDK) | 1 | `test_module_completion_resolve_shows_documentation` |
 
 ## Lifecycle/init integration evidence
 
@@ -491,9 +508,10 @@ Run `scripts/parity-count.py` for the per-class gap. The largest remaining items
 * Type quick fixes (`NewCUProposal`, add import / add-all-missing-imports, ambiguous
   types, type parameters) and getter/setter self-encapsulation: 33 ported tests wait on them.
 * Refactoring (118 tests): extract variable/constant are wired (`quick_assist::refactor_proposals`); next ExtractField/ExtractMethod and the remaining classes.
-* Postfix completion (29), the remaining correction classes (null annotations, Javadoc,
-  convert-to-record, reorg, lambda, ...), Gradle importer (45), `ProjectCommandTest` (28),
-  core utilities, syntax server and filesystem tests.
+* The remaining correction classes (null annotations, Javadoc, convert-to-record,
+  reorg, lambda, ...), Gradle importer (45), `ProjectCommandTest` (28), m2e pom
+  markers (WorkspaceDiagnostics, MavenBuildSupport), core utilities, syntax server and
+  filesystem tests.
 * Environment for running the suite in a Linux container: install JDK 8 (for
   `test_forbidden_reference`) and JDK 25, and set
   `JAVA_HOME` to it for tests (JDK 21 stays the default `java` for Gradle 8.5);
@@ -566,6 +584,14 @@ Run `scripts/parity-count.py` for the per-class gap. The largest remaining items
   AST import builder. Exact custom-JDK binding contents retain the
   standalone-parser limitation above.
 * **Lombok** is not supported in any feature.
+* **Extension bundles.** jdt.ls loads OSGi bundles (`initializationOptions.bundles`,
+  e.g. java-debug and the test runner) that contribute delegate commands. The Rust
+  server can't host Eclipse plug-ins; its delegate-command registry
+  (`features/execute_command.rs`) only takes Rust contributions.
+* **Builder.** Saved-file problems come from a full rebuild of the affected projects,
+  not JDT's incremental builder: duplicate types across files are reported by ECJ in
+  build order rather than as the builder's duplicate class-file problems, and no class
+  files are written to output folders.
 
 ## Saved work branches
 
