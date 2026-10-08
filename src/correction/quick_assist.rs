@@ -4,6 +4,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod lambda;
+mod util;
+
 use super::edit::Env;
 use super::handler::Request;
 use super::{kind, messages, relevance, Change, Context, CuChange, LazyChange, Proposal};
@@ -34,6 +37,12 @@ pub async fn assists(env: &Env<'_>, req: &Request<'_>) -> Vec<Proposal> {
     }
     if let Some(covering) = req.context.covering_node() {
         convert_to_record_proposals(env, &req.context, covering, &mut proposals).await;
+        let options = env.options(&req.context.ast.uri).await;
+        lambda::add_inferred_lambda_parameter_types(&req.context, &options, covering, &mut proposals);
+        lambda::add_var_lambda_parameter_types(&req.context, &options, covering, &mut proposals);
+        lambda::remove_var_or_inferred_lambda_parameter_types(&req.context, covering, &mut proposals);
+        lambda::change_lambda_body_to_block(&req.context, covering, &mut proposals);
+        lambda::change_lambda_body_to_expression(&req.context, covering, &mut proposals);
     }
     // jdt.ls offers "Add Javadoc comment" only for units backed by a file
     // (verified against 1.58.0 for a working copy of a nonexistent file);
