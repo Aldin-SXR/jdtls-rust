@@ -96,6 +96,56 @@ pub async fn get_refactor_edit(env: &Env<'_>, params: Value) -> Option<Value> {
     }
 }
 
+/// `InferSelectionHandler.inferSelectionsForRefactor(params)`.
+pub async fn infer_selection(env: &Env<'_>, params: Value) -> Option<Value> {
+    use crate::refactoring::{extract_constant::ExtractConstant, extract_field::ExtractField, extract_method::ExtractMethod, extract_temp::ExtractTemp};
+    let command = params["command"].as_str()?.to_owned();
+    let action: CodeActionParams = serde_json::from_value(params["context"].clone()).ok()?;
+    let ast = crate::semantic_ast::fetch(env.dispatcher, &action.text_document.uri).await.ok()?;
+    let doc = Doc16::new(ast.text());
+    let start = doc.to_offset(action.range.start.line, action.range.start.character).max(0) as usize;
+    let end = doc.to_offset(action.range.end.line, action.range.end.character).max(0) as usize;
+    let ctx = Context::new(ast.clone(), start, end.saturating_sub(start));
+    let options = env.options(&ast.uri).await;
+    let mut candidates = Vec::new();
+    let mut parent = ctx.covering_node();
+    while let Some(p) = parent.filter(|p| p.kind().is_expression()) {
+        if p.is(NodeKind::ParenthesizedExpression) {
+            parent = p.parent();
+            continue;
+        }
+        let (offset, length) = (p.start(), p.length());
+        let scopes = match command.as_str() {
+            "extractMethod" => ExtractMethod::new(ast.clone(), options.clone(), offset, length).check_initial_conditions().is_ok().then(Vec::new),
+            "extractVariableAllOccurrence" | "extractVariable" => ExtractTemp::new(ast.clone(), options.clone(), offset, length).check_initial_conditions().is_ok().then(Vec::new),
+            "extractConstant" => ExtractConstant::new(ast.clone(), options.clone(), offset, length).check_initial_conditions().is_ok().then(Vec::new),
+            "extractField" => {
+                let mut r = ExtractField::new(ast.clone(), options.clone(), offset, length);
+                if r.check_initial_conditions().is_ok() {
+                    Some(super::quick_assist::initialize_scopes(&mut r)).filter(|s| !s.is_empty())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(scopes) = scopes {
+            let rw = crate::rewrite::ASTRewrite::new(ast.clone());
+            let mut info = json!({ "name": crate::rewrite::flattener::Flattener::as_string(&rw, RNode::Orig(p.id)), "offset": offset, "length": length });
+            if command == "extractField" {
+                info["params"] = json!(scopes);
+            }
+            candidates.push(info);
+        }
+        parent = p.parent();
+    }
+    if candidates.is_empty() {
+        None
+    } else {
+        Some(Value::Array(candidates))
+    }
+}
+
 /// The name of the first new variable declaration fragment of a rewrite
 /// (the declaration position of the extract refactorings).
 fn new_declaration_name(rw: &crate::rewrite::ASTRewrite) -> Option<RNode> {

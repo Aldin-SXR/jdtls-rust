@@ -370,7 +370,7 @@ pub fn initialize_scope_from_name(name: Option<&str>) -> Option<i32> {
 }
 
 /// `RefactorProposalUtility.getInitializeScopes(refactoring)`.
-fn initialize_scopes(refactoring: &mut ExtractField) -> Vec<&'static str> {
+pub(crate) fn initialize_scopes(refactoring: &mut ExtractField) -> Vec<&'static str> {
     let mut scopes = Vec::new();
     if refactoring.can_enable_setting_declare_in_method() {
         scopes.push(INITIALIZE_SCOPES[extract_field::INITIALIZE_IN_METHOD as usize]);
