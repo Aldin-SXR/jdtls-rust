@@ -34,6 +34,7 @@ pub mod markers;
 pub mod navigation;
 pub mod paste;
 pub mod preferences;
+pub mod progress;
 pub mod project_commands;
 pub mod rename;
 pub mod scanner;
