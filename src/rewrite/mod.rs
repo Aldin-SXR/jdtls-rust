@@ -219,6 +219,8 @@ pub struct ASTRewrite {
     source_ranges: std::collections::HashMap<NodeId, (usize, usize)>,
     /// `NoCommentSourceRangeComputer`: every node's plain range.
     no_comment_ranges: bool,
+    /// Original nodes passed to `track(node)`.
+    tracked: HashSet<NodeId>,
 }
 
 impl ASTRewrite {
@@ -232,7 +234,19 @@ impl ASTRewrite {
             tight_nodes: HashSet::new(),
             source_ranges: std::collections::HashMap::new(),
             no_comment_ranges: false,
+            tracked: HashSet::new(),
         }
+    }
+
+    /// `ASTRewrite.track(node)` for an original node: the analyzer marks its
+    /// range with a `RangeMarker` (which belongs to the rewrite's edits).
+    pub fn track(&mut self, node: NodeId) {
+        self.tracked.insert(node);
+    }
+
+    /// Whether `track(node)` was called (`getTrackedNodeData(node) != null`).
+    pub fn is_tracked(&self, node: NodeId) -> bool {
+        self.tracked.contains(&node)
     }
 
     pub fn has_changes(&self) -> bool {

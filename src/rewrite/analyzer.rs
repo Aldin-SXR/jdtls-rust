@@ -958,10 +958,19 @@ impl<'a, 'f> Analyzer<'a, 'f> {
             self.current_edit = e;
             self.source_copy_end_nodes.push(node);
         }
+        if self.rw.is_tracked(node) {
+            let (offset, length) = self.extended_range(node);
+            let e = self.edits.new_edit(offset, length, EditKind::RangeMarker);
+            self.add_edit(e)?;
+            self.current_edit = e;
+        }
         self.ensure_space_before_replace(node)
     }
 
     fn post_visit(&mut self, node: NodeId) {
+        if self.rw.is_tracked(node) {
+            self.current_edit = self.edits.edits[self.current_edit].parent.unwrap_or(EditTree::ROOT);
+        }
         while self.source_copy_end_nodes.last() == Some(&node) {
             self.source_copy_end_nodes.pop();
             self.current_edit = self.edits.edits[self.current_edit].parent.unwrap_or(EditTree::ROOT);
