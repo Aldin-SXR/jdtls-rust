@@ -11,6 +11,7 @@ pub mod code_lens;
 pub mod completion;
 pub mod document_symbol;
 pub mod dom;
+pub mod execute_command;
 pub mod file_events;
 pub mod folding_range;
 pub mod formatting;

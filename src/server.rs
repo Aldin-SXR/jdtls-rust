@@ -2619,14 +2619,10 @@ impl LanguageServer for JavaLanguageServer {
                 )
                 .await)
             }
-            other => {
+            _ => {
                 // `WorkspaceExecuteCommandHandler.executeCommand`.
-                warn!("Unsupported workspace/executeCommand request: {other}");
-                Err(tower_lsp::jsonrpc::Error {
-                    code: tower_lsp::jsonrpc::ErrorCode::MethodNotFound,
-                    message: format!("No delegateCommandHandler for {other}").into(),
-                    data: None,
-                })
+                crate::features::execute_command::WorkspaceExecuteCommandHandler::instance()
+                    .execute_command(Some(&params))
             }
         }
     }
