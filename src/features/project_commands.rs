@@ -679,6 +679,58 @@ pub fn workspace_link(p: &Project) -> PathBuf {
     p.location.join(WORKSPACE_LINK)
 }
 
+/// `IClasspathAttribute.SOURCE_ATTACHMENT_ENCODING`.
+const SOURCE_ATTACHMENT_ENCODING: &str = "source_encoding";
+
+/// `SourceAttachmentCommand.updateSourceAttachment([{classFileUri, attributes}])`
+/// for raw library and variable entries: the new attachment path (blank
+/// removes it) and encoding replace the entry's, and the `.classpath` is
+/// rewritten. Entries of containers are not editable here.
+pub fn update_source_attachment(ws: &mut Workspace, class_file_uri: &str, attributes: &Value) -> Value {
+    let error = |m: String| json!({ "errorMessage": m });
+    let Some(r) = crate::classfile::ClassFileRef::parse(class_file_uri) else {
+        return error(format!("Cannot find the class file {class_file_uri}"));
+    };
+    let roots: Vec<(String, PathBuf)> = ws.projects.iter().map(|p| (p.name.clone(), p.root.clone())).collect();
+    let Some(index) = ws.projects.iter().position(|p| p.name == r.project) else {
+        return error(format!("Cannot find the class file {class_file_uri}"));
+    };
+    let jar = crate::classfile::resolve_root_path(&r.root_path, Some(ws.projects[index].root.as_path()), &roots);
+    let project = &mut ws.projects[index];
+    let blank = |v: Option<&str>| v.is_none_or(|s| s.trim().is_empty());
+    let source_path = attributes.get("sourceAttachmentPath").and_then(Value::as_str);
+    let encoding = attributes.get("sourceAttachmentEncoding").and_then(Value::as_str);
+    let entry = project.classpath.iter_mut().find(|e| {
+        matches!(e.kind, EntryKind::Library | EntryKind::Variable) && e.location.as_deref() == Some(jar.as_path())
+    });
+    let Some(entry) = entry else {
+        let in_container = project.classpath.iter().any(|e| {
+            e.kind == EntryKind::Container && e.children.iter().any(|c| c.location.as_deref() == Some(jar.as_path()))
+        });
+        return error(if in_container {
+            "The JAR of this class file belongs to a container which does not allow modifications to source attachments on its entries.".to_owned()
+        } else {
+            format!("Cannot find the ClasspathEntry for the JAR '{}' of this class file", location_string(&jar))
+        });
+    };
+    entry.source_attachment = (!blank(source_path)).then(|| PathBuf::from(source_path.unwrap()));
+    // `updateElements`: replace the encoding attribute in place, append a
+    // new one, or drop it when blank.
+    let new_encoding = (!blank(encoding)).then(|| (SOURCE_ATTACHMENT_ENCODING.to_owned(), encoding.unwrap().to_owned()));
+    match (entry.attributes.iter().position(|(n, _)| n == SOURCE_ATTACHMENT_ENCODING), new_encoding) {
+        (Some(i), Some(a)) => entry.attributes[i] = a,
+        (Some(i), None) => {
+            entry.attributes.remove(i);
+        }
+        (None, Some(a)) => entry.attributes.push(a),
+        (None, None) => {}
+    }
+    if let Err(e) = crate::project::classpath::persist_raw_classpath(project) {
+        return error(format!("Update the ClasspathEntry to the project failure. Reason: \"{e}\""));
+    }
+    json!({})
+}
+
 /// `SourceAttachmentCommand.resolveSourceAttachment([{classFileUri}])`.
 pub fn resolve_source_attachment(ws: &Workspace, class_file_uri: Option<&str>) -> Value {
     let error = |m: String| json!({ "errorMessage": m });

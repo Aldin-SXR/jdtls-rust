@@ -2491,6 +2491,13 @@ impl LanguageServer for JavaLanguageServer {
                 Ok(None)
             }
             "java.project.resolveSourceAttachment" => {
+                match params.arguments.first() {
+                    None => return Ok(Some(serde_json::json!({ "errorMessage": "The parameter is missing." }))),
+                    Some(arg) if json_model(arg).is_none_or(|v| !v.is_object()) => {
+                        return Ok(Some(serde_json::json!({ "errorMessage": "Invalid parameter to resolve source attachment." })))
+                    }
+                    Some(_) => {}
+                }
                 let request = params.arguments.first().and_then(json_model);
                 let class_file = request
                     .as_ref()

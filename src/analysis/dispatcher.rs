@@ -272,7 +272,7 @@ impl Dispatcher {
             }
             let mut options = crate::project::jdtls_default_options();
         // `StandardProjectsManager.configureSettings`: `java.settings.url`.
-        options.extend(crate::project::prefs::settings_url_options(
+        options.extend(crate::features::configuration::settings_url_options(
             crate::features::preferences::current().get_settings_url(),
             &cfg.root_paths,
         ));
@@ -327,7 +327,7 @@ impl Dispatcher {
         classpath.extend(cfg.classpath.iter().cloned());
         let mut options = crate::project::jdtls_default_options();
         // `StandardProjectsManager.configureSettings`: `java.settings.url`.
-        options.extend(crate::project::prefs::settings_url_options(
+        options.extend(crate::features::configuration::settings_url_options(
             crate::features::preferences::current().get_settings_url(),
             &cfg.root_paths,
         ));
@@ -878,7 +878,7 @@ impl Dispatcher {
         let ws = self.workspace.read().unwrap_or_else(|e| e.into_inner());
         let mut options = crate::project::jdtls_default_options();
         // `StandardProjectsManager.configureSettings`: `java.settings.url`.
-        options.extend(crate::project::prefs::settings_url_options(
+        options.extend(crate::features::configuration::settings_url_options(
             crate::features::preferences::current().get_settings_url(),
             &cfg.root_paths,
         ));

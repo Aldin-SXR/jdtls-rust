@@ -39,7 +39,7 @@ impl JavaLanguageServer {
         let vm = vm_home(&cfg);
         let vm_version = vm.as_deref().and_then(crate::project::vm_version);
         let formatter = formatting::options::workspace_formatter_options(&cfg.format, &cfg.root_paths);
-        let settings = crate::project::prefs::settings_url_options(
+        let settings = crate::features::configuration::settings_url_options(
             crate::features::preferences::current().get_settings_url(),
             &cfg.root_paths,
         );
@@ -125,6 +125,23 @@ impl JavaLanguageServer {
                     self.update_projects(&[name]).await;
                 }
                 Ok(None)
+            }
+            "java.project.updateSourceAttachment" => {
+                let Some(request) = arg(0) else {
+                    return Some(Ok(Some(json!({ "errorMessage": "The parameter is missing." }))));
+                };
+                let Some(request) = json_model(request).filter(Value::is_object) else {
+                    return Some(Ok(Some(json!({ "errorMessage": "Invalid parameter to update source attachment." }))));
+                };
+                let class_file_uri = request.get("classFileUri").and_then(Value::as_str).unwrap_or_default().to_owned();
+                let attributes = request.get("attributes").cloned().unwrap_or(Value::Null);
+                let _guard = self.import_lock.lock().await;
+                let mut ws = self.workspace_snapshot();
+                let result = pc::update_source_attachment(&mut ws, &class_file_uri, &attributes);
+                if result.get("errorMessage").is_none() {
+                    self.commit_project_change(ws, None).await;
+                }
+                Ok(Some(result))
             }
             "java.project.resolveWorkspaceSymbol" => self.resolve_workspace_symbol(arg(0)).await,
             _ => return None,

@@ -613,3 +613,27 @@ pub fn setting_value<'a>(
         .get(key)
         .or_else(|| key.split('.').try_fold(settings, |v, k| v.get(k)))
 }
+
+#[cfg(test)]
+mod vm_command_test {
+    use super::*;
+
+    #[test]
+    fn test_get_all_vm_installs() {
+        let mut registry = RuntimeRegistry::default();
+        registry.installs.push(VmInstall {
+            id: "1".into(),
+            kind: TEST_VM_TYPE.into(),
+            name: "JavaSE-21".into(),
+            home: PathBuf::from("/fakejdks/21"),
+            version: Some("21".into()),
+            libraries: Vec::new(),
+        });
+        let all_vm_installs = registry.all_vm_installs();
+        assert!(!all_vm_installs.is_empty());
+
+        assert!(all_vm_installs
+            .iter()
+            .any(|vm| vm["typeName"].as_str().unwrap().contains("org.eclipse.jdt.ls.core.internal.TestVMType")));
+    }
+}

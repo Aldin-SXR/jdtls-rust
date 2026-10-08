@@ -64,7 +64,7 @@ fn entry_xml(project: &Project, entry: &ClasspathEntry) -> String {
     if let Some(source) = &entry.source_attachment {
         text.push_str(&format!(
             " sourcepath=\"{}\"",
-            xml(&location(project, source))
+            xml(&source_attachment_path(project, source))
         ));
     }
     if entry.exported {
@@ -84,6 +84,17 @@ fn entry_xml(project: &Project, entry: &ClasspathEntry) -> String {
         text.push_str("</attributes></classpathentry>");
     }
     text
+}
+
+/// JDT's `sourcepath`: the workspace full path (`/project/lib/a-src.jar`)
+/// of a file inside the project, the absolute path of any other file.
+fn source_attachment_path(project: &Project, path: &Path) -> String {
+    match path.strip_prefix(&project.location) {
+        Ok(relative) if project.kind != ProjectKind::Invisible => {
+            format!("/{}/{}", project.name, relative.to_string_lossy().replace('\\', "/"))
+        }
+        _ => location(project, path),
+    }
 }
 
 fn initial_classpath(project: &Project) -> String {
