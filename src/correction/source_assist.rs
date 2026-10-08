@@ -95,6 +95,8 @@ pub async fn source_actions(
     let at = first(&out);
     out.extend(crate::features::tostring::actions::actions(env, req, at).await);
     out.extend(crate::features::delegates::actions::actions(env, req).await);
+    let at = first(&out);
+    out.extend(super::sort_members::actions(env, req, at).await);
     out
 }
 

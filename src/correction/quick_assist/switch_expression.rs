@@ -260,7 +260,7 @@ fn is_line_comment(c: Node<'_>) -> bool {
 
 /// `getNewStatementFromReturn` / `getNewStatementForCase`: the statement
 /// text with leading and trailing comments.
-fn statement_with_comments(statement: Node<'_>, expression: Node<'_>) -> String {
+pub(super) fn statement_with_comments(statement: Node<'_>, expression: Node<'_>) -> String {
     let ast = statement.ast;
     let mut b = String::new();
     for comment in leading_comments(statement) {
@@ -282,7 +282,7 @@ fn statement_with_comments(statement: Node<'_>, expression: Node<'_>) -> String 
 }
 
 /// `getNewYieldStatement` / `getNewYieldStatementFromReturn`.
-fn yield_with_comments(statement: Node<'_>, expression: Node<'_>) -> String {
+pub(super) fn yield_with_comments(statement: Node<'_>, expression: Node<'_>) -> String {
     let ast = statement.ast;
     let mut b = String::new();
     for comment in leading_comments(statement) {
@@ -299,7 +299,7 @@ fn yield_with_comments(statement: Node<'_>, expression: Node<'_>) -> String {
     b
 }
 
-fn assignment_rhs<'a>(statement: Node<'a>) -> Option<Node<'a>> {
+pub(super) fn assignment_rhs<'a>(statement: Node<'a>) -> Option<Node<'a>> {
     statement.child("expression")?.child("rightHandSide")
 }
 
@@ -515,7 +515,7 @@ fn execute(op: &Operation<'_>, ctx: &Context, options: &Options) -> Option<(ASTR
 }
 
 /// `replaceWithLeadingComments`.
-fn replace_with_leading_comments(rw: &mut ASTRewrite, block: Node<'_>, old_node: Node<'_>, new_node: RNode) {
+pub(super) fn replace_with_leading_comments(rw: &mut ASTRewrite, block: Node<'_>, old_node: Node<'_>, new_node: RNode) {
     let comments = leading_comments(old_node);
     let parent = RNode::Orig(block.id);
     if let Some(first) = comments.first() {
