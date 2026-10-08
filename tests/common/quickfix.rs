@@ -184,6 +184,22 @@ impl QuickFixTest {
         self.assert_code_actions_list(&actions, expected);
     }
 
+    /// `assertCodeActionsMultiFile(cu, range, expecteds...)`: the first
+    /// expected title's action, its `changes` entries in order against the
+    /// expected contents.
+    pub fn assert_code_actions_multi_file(&mut self, uri: &str, range: Value, expected: &[Expected]) {
+        let actions = self.evaluate_code_actions_range(uri, range);
+        let action = actions.iter().find(|a| get_title(a) == expected[0].name);
+        let action = action.unwrap_or_else(|| panic!("Should prompt code action: {}\nactual: {:?}", expected[0].name, actions.iter().map(get_title).collect::<Vec<_>>()));
+        let changes = action["edit"]["changes"].as_object().unwrap_or_else(|| panic!("No changes: {action}"));
+        let mut entries = changes.iter();
+        for e in expected {
+            let (uri, edits) = entries.next().expect("No edits generated");
+            let actual = evaluate_changes(&self.ws, uri, edits.as_array().map(Vec::as_slice).unwrap_or(&[]));
+            assert_eq!(dos2unix(&e.content), actual, "{} has the wrong content ", get_title(action));
+        }
+    }
+
     /// `assertCodeActions(codeActions, expecteds...)`.
     pub fn assert_code_actions_list(&mut self, actions: &[Value], expected: &[Expected]) {
         if actions.len() < expected.len() {

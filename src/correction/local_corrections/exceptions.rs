@@ -315,7 +315,7 @@ pub async fn unnecessary_throws(
         if let Some(tag) = method.child("javadoc").and_then(|doc| {
             doc.list("tags").into_iter().find(|tag| {
                 matches!(tag.simple("tagName"), Some("@throws" | "@exception"))
-                    && super::javadoc::argument(*tag).as_deref() == Some(name.as_str())
+                    && crate::correction::javadoc_tags::argument(*tag).as_deref() == Some(name.as_str())
             })
         }) {
             rw.remove(RNode::Orig(tag.id));
@@ -327,5 +327,5 @@ pub async fn unnecessary_throws(
             Change::Cu(vec![CuChange::rewrite(rw).with_imports(imports)]),
         ));
     }
-    super::javadoc::document_unused(env, ctx, problem, proposals).await;
+    crate::correction::javadoc_tags::unused_and_undocumented_parameter_or_exception_proposals(env, ctx, problem, proposals).await;
 }

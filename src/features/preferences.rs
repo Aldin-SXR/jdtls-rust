@@ -88,6 +88,13 @@ pub fn current() -> model::Preferences {
     MANAGER.read().unwrap_or_else(|e| e.into_inner()).get_preferences().clone()
 }
 
+/// `JavaManipulation.getCodeTemplateStore().findTemplateById(id)`: the
+/// pattern of a template the preference manager registers (`typecomment`,
+/// `filecomment`, `newtype`).
+pub fn code_template(id: &str) -> Option<String> {
+    MANAGER.read().unwrap_or_else(|e| e.into_inner()).code_template_store().find_template_by_id(id).map(|t| t.pattern.clone())
+}
+
 fn cleanup_actions_from(settings: &Value) -> Vec<String> {
     let strings = |key| lookup(settings, &["java", "cleanup", key])
         .and_then(|v| v.as_array().cloned()).unwrap_or_default()

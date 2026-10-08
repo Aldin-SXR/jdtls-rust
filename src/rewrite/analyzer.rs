@@ -958,10 +958,19 @@ impl<'a, 'f> Analyzer<'a, 'f> {
             self.current_edit = e;
             self.source_copy_end_nodes.push(node);
         }
+        if self.rw.is_tracked(node) {
+            let (offset, length) = self.extended_range(node);
+            let e = self.edits.new_edit(offset, length, EditKind::RangeMarker);
+            self.add_edit(e)?;
+            self.current_edit = e;
+        }
         self.ensure_space_before_replace(node)
     }
 
     fn post_visit(&mut self, node: NodeId) {
+        if self.rw.is_tracked(node) {
+            self.current_edit = self.edits.edits[self.current_edit].parent.unwrap_or(EditTree::ROOT);
+        }
         while self.source_copy_end_nodes.last() == Some(&node) {
             self.source_copy_end_nodes.pop();
             self.current_edit = self.edits.edits[self.current_edit].parent.unwrap_or(EditTree::ROOT);
@@ -1316,8 +1325,10 @@ impl<'a, 'f> Analyzer<'a, 'f> {
             }
             Javadoc => {
                 let start_pos = self.start(node) + 3;
-                let separator = self.line_delimiter() + &self.indent_at_offset(self.start(node)) + " * ";
-                self.rewrite_node_list_end(node, "tags", start_pos, &separator, &separator, &separator)?;
+                // `ASTRewriteAnalyzer.visit(Javadoc)`: a plain list rewrite (no end keyword).
+                let prefix = if self.rw.ast.node(node).flag("markdown") { "///" } else { " * " };
+                let separator = self.line_delimiter() + &self.indent_at_offset(self.start(node)) + prefix;
+                self.rewrite_node_list(node, "tags", start_pos, &separator, &separator)?;
             }
             JavaDocTextElement | TextElement => {
                 let v = self.new_value(node, "text").simple().unwrap_or("").to_owned();

@@ -3,15 +3,16 @@
 mod unreachable;
 mod conversion;
 mod unused;
-mod javadoc;
 mod exceptions;
 mod uncaught;
 mod allocation;
 mod assignment;
 mod expressions;
 mod nls;
+mod static_access;
 pub use expressions::{expression_variable, invalid_operator};
 pub use nls::unnecessary_tag;
+pub use static_access::correct_access_to_static;
 pub use exceptions::{unnecessary_throws, unreachable_catch};
 pub use allocation::proposals as unused_allocation;
 pub use assignment::{refactors as assignment_refactors, get_refactor_edit};
@@ -19,9 +20,8 @@ pub use uncaught::{proposals as uncaught_exception, resource_proposals, resource
 pub use unreachable::proposals as unreachable_code;
 pub use unused::{proposals as unused_member, type_parameter as unused_type_parameter};
 pub(crate) use exceptions::{type_name as exception_type_name, type_references};
-pub(crate) use javadoc::{argument as javadoc_tag_argument, insert_throws_tag};
+pub(crate) use crate::correction::javadoc_tags::{argument as javadoc_tag_argument, insert_throws_tag};
 
-use super::edit::Env;
 use super::parentheses::needs_parentheses;
 use super::{kind, messages, relevance, Change, Context, CuChange, ProblemLocation, Proposal};
 use crate::rewrite::text_edit::{EditKind, EditTree};
@@ -155,5 +155,3 @@ fn replace_cast(rw: &mut ASTRewrite, cast: crate::semantic_ast::Node<'_>, replac
     rw.replace(RNode::Orig(to_replace.id), Some(mv));
 }
 
-/// `correctAccessToStatic` (`addCorrectAccessToStaticProposals`).
-pub async fn correct_access_to_static(_env: &Env<'_>, _ctx: &Context, _problem: &ProblemLocation, _proposals: &mut Vec<Proposal>) {}

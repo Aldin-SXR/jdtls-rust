@@ -24,6 +24,7 @@ pub fn set_all_modifiers(rw: &mut ASTRewrite, decl: RNode, modifiers: i32) {
 /// `ModifierRewrite.internalSetModifiers`.
 fn internal_set_modifiers(rw: &mut ASTRewrite, decl: RNode, modifiers: i32, considered: i32) {
     let mut new_modifiers = modifiers & considered;
+    let mut tracked_fallback = false;
     let original = rw.original_value(decl, "modifiers").list();
     for curr in original {
         if rw.kind(curr) == NodeKind::Modifier {
@@ -35,6 +36,12 @@ fn internal_set_modifiers(rw: &mut ASTRewrite, decl: RNode, modifiers: i32, cons
             if considered & flag != 0 {
                 if new_modifiers & flag == 0 {
                     rw.list_remove(decl, "modifiers", curr);
+                    if !tracked_fallback {
+                        tracked_fallback = true;
+                        if let RNode::Orig(id) = curr {
+                            rw.track(id);
+                        }
+                    }
                 }
                 new_modifiers &= !flag;
             }
@@ -45,7 +52,14 @@ fn internal_set_modifiers(rw: &mut ASTRewrite, decl: RNode, modifiers: i32, cons
         .into_iter()
         .filter(|n| rw.kind(*n).is_annotation())
         .last();
-    for keyword in modifier::keywords(new_modifiers) {
+    let new_keywords = modifier::keywords(new_modifiers);
+    if new_keywords.is_empty() && !tracked_fallback {
+        // "out of tricks...": the declaration's position is tracked.
+        if let RNode::Orig(id) = decl {
+            rw.track(id);
+        }
+    }
+    for keyword in new_keywords {
         let curr = rw.new_modifier(keyword);
         if modifier::flag_of(keyword) & VISIBILITY_MODIFIERS != 0 {
             match last_annotation {

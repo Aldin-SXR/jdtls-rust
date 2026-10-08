@@ -127,6 +127,16 @@ impl Names<'_> {
     }
 }
 
+/// `GetterSetterUtil.getGetterName(variableBinding, project, null, isBoolean)`.
+pub(crate) fn getter_name(options: &std::collections::BTreeMap<String, String>, use_is: bool, v: BindingRef<'_>, is_boolean: bool) -> String {
+    Names { options, use_is }.getter(v, is_boolean)
+}
+
+/// `GetterSetterUtil.getSetterName(variableBinding, project, null, isBoolean)`.
+pub(crate) fn setter_name(options: &std::collections::BTreeMap<String, String>, use_is: bool, v: BindingRef<'_>, is_boolean: bool) -> String {
+    Names { options, use_is }.setter(v, is_boolean)
+}
+
 /// `isBoolean(context)`: `boolean` or `java.lang.Boolean`.
 fn is_boolean(p: &Parameter<'_>) -> bool {
     p.variable.var_type().is_some_and(|t| {

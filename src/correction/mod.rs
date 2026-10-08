@@ -23,9 +23,11 @@ pub mod edit;
 pub mod handler;
 pub mod messages;
 pub mod relevance;
+pub mod return_type;
 
 pub mod assign_to_field;
 pub mod getter_setter;
+pub mod javadoc_tags;
 pub mod local_corrections;
 pub mod modifier_corrections;
 pub mod quick_assist;

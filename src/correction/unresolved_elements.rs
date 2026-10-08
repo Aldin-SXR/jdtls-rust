@@ -31,7 +31,8 @@ use crate::rewrite::text_edit::{EditKind, EditTree};
 use crate::rewrite::ASTRewrite;
 use crate::semantic_ast::{modifier, problem as p, Ast, BindingRef, Node, NodeId, NodeKind};
 
-use self::types::{can_assign, declaration, erasure, normalize, normalize_wildcard, type_label, type_names, well_known};
+pub(crate) use self::types::normalize_wildcard;
+use self::types::{can_assign, declaration, erasure, normalize, type_label, type_names, well_known};
 
 /// `ASTResolving.findCompilationUnitForBinding`: `Some(None)` is the
 /// invocation's unit, `Some(Some(uri))` another unit of the project.

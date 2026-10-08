@@ -204,6 +204,26 @@ async fn process(env: &Env<'_>, req: &Request<'_>, problem: &ProblemLocation, pr
         p::IncompatibleTypesInForeach => super::type_mismatch::type_mismatch_in_for_each(env, ctx, problem, proposals).await,
         p::IncompatibleReturnType => super::type_mismatch::incompatible_return_type(env, ctx, problem, proposals).await,
         p::IncompatibleExceptionInThrowsClause => super::type_mismatch::incompatible_throws(env, ctx, problem, proposals).await,
+        p::MethodButWithConstructorName => super::return_type::method_with_constructor_name(ctx, problem, proposals),
+        p::VoidMethodReturnsValue => super::return_type::void_method_returns(env, ctx, problem, proposals).await,
+        p::MethodReturnsVoid => super::return_type::method_returns_void(env, ctx, problem, proposals).await,
+        p::MissingReturnType => super::return_type::missing_return_type(env, ctx, problem, proposals).await,
+        p::ShouldReturnValue | p::ShouldReturnValueHintMissingDefault => super::return_type::missing_return_statement(ctx, problem, proposals),
+        p::SwitchExpressionsReturnWithinSwitchExpression => super::return_type::replace_return_with_yield(ctx, problem, proposals),
+        p::JavadocMissing => {
+            if let Some(node) = problem.covering_node(ctx.ast()) {
+                super::javadoc_tags::missing_javadoc_comment_proposals(env, ctx, node, super::kind::QUICK_FIX, proposals).await;
+            }
+        }
+        p::JavadocMissingParamTag | p::JavadocMissingReturnTag | p::JavadocMissingThrowsTag => super::javadoc_tags::missing_javadoc_tag_proposals(ctx, problem, proposals),
+        p::JavadocInvalidThrowsClassName
+        | p::JavadocDuplicateThrowsClassName
+        | p::JavadocDuplicateReturnTag
+        | p::JavadocDuplicateParamName
+        | p::JavadocInvalidParamName
+        | p::JavadocUnexpectedTag
+        | p::JavadocInvalidTag => super::javadoc_tags::remove_javadoc_tag_proposals(ctx, problem, proposals),
+        p::JavadocInvalidMemberTypeQualification => super::javadoc_tags::invalid_qualification_proposals(ctx, problem, proposals),
         p::UnsafeTypeConversion | p::RawTypeReference | p::UnsafeRawMethodInvocation | p::UnsafeElementTypeConversion => super::infer_type_arguments::raw_type_reference_proposals(env, ctx, problem, proposals).await,
         _ => {}
     }
